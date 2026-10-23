@@ -17,6 +17,7 @@ if [ ! -f .env ]; then
     sed -i "s/^NE8000_DOMAIN=.*/NE8000_DOMAIN=$DOMAIN/" .env
   else
     sed -i "s/^NE8000_BEHIND_PROXY=.*/NE8000_BEHIND_PROXY=0/" .env
+    echo "NE8000_BIND=0.0.0.0" >> .env
   fi
   chmod 600 .env
   echo "Created .env (admin password: $PW). Change it after the first sign-in."
@@ -27,7 +28,7 @@ if [ -n "$DOMAIN" ]; then
   echo "Open https://$DOMAIN"
 else
   docker compose up -d --build
-  echo "Running on 127.0.0.1:8080 on this server."
-  echo "To use it from other machines without a domain, change the ports line in docker-compose.yml"
-  echo "to \"8080:8080\" and only allow your LAN/VPN to reach port 8080 (firewall)."
+  IP=$(hostname -I | awk '{print $1}')
+  echo "Open http://$IP:8080 from your network."
+  echo "Only your LAN / VPN should reach port 8080, for example:  sudo ufw allow from 10.0.0.0/8 to any port 8080"
 fi

@@ -10,7 +10,9 @@ services:
     volumes:
       - ./data:/data            # users, plans, billing settings, audit log, session key
     ports:
-      - "127.0.0.1:8080:8080"   # only the reverse proxy on this host can reach it; see deploy/Caddyfile
+      # 127.0.0.1 = only a reverse proxy on this host can reach it (HTTPS setup). install.sh sets
+      # NE8000_BIND=0.0.0.0 for LAN / VPN use without a domain; firewall port 8080 to your network.
+      - "${NE8000_BIND:-127.0.0.1}:8080:8080"
     # If the router's management network is only reachable from the host itself
     # (VPN, policy routing), use the host network instead of ports:
     # network_mode: host
