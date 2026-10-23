@@ -22,13 +22,15 @@
   <div class="card">
     <h2>NE8000 Manager</h2>
     <div class="muted">Huawei NetEngine 8000 M8 &middot; SSH</div>
-    <label for="host">Management IP / hostname</label><input id="host" placeholder="192.168.0.10" autocomplete="off">
-    <label for="port">SSH port</label><input id="port" type="number" value="22">
+    <div id="pickRouter" class="hidden"><label for="routerSel">Router</label><select id="routerSel"></select></div>
+    <div id="hostFields"><label for="host">Management IP / hostname</label><input id="host" placeholder="192.168.0.10" autocomplete="off">
+    <label for="port">SSH port</label><input id="port" type="number" value="22"></div>
     <label for="username">Username</label><input id="username" autocomplete="username">
     <label for="password">Password</label><input id="password" type="password" autocomplete="current-password">
     <div class="actions" style="justify-content:flex-start"><button class="btn primary" id="connectBtn">Connect</button><button class="btn" id="demoBtn">Try demo mode</button></div>
     <div class="err" id="loginError"></div>
-    <div class="faint" style="margin-top:14px;font-size:12px">Signed in as <b class="meName"></b> &middot; <a href="#account" class="mgr">My account</a><span class="adminOnly"> &middot; <a href="#appusers" class="mgr">App users</a> &middot; <a href="#audit" class="mgr">Audit log</a></span> &middot; <a href="#" class="signOut">Sign out</a></div>
+    <div class="faint" id="noRoutersTip" style="display:none;margin-top:10px;font-size:12px">Tip: add your routers under <a href="#routers" class="mgr">Manager &rsaquo; Routers</a> so everyone just picks one from a list, and the app only connects to those.</div>
+    <div class="faint" style="margin-top:14px;font-size:12px">Signed in as <b class="meName"></b> &middot; <a href="#account" class="mgr">My account</a><span class="adminOnly"> &middot; <a href="#routers" class="mgr">Routers</a> &middot; <a href="#appusers" class="mgr">App users</a> &middot; <a href="#audit" class="mgr">Audit log</a></span> &middot; <a href="#" class="signOut">Sign out</a></div>
   </div>
 </div>
 

@@ -133,7 +133,7 @@ const NAV = [
   ['Billing', [['billing', 'Splynx billing', I.bill]]],
   ['Routing', [['bgp', 'BGP', I.route], ['ospf', 'OSPF', I.route], ['mpls', 'MPLS / LDP', I.route]]],
   ['System', [['resources', 'Resources', I.graph], ['hardware', 'Hardware', I.hw], ['users', 'Router users', I.user], ['settings', 'Settings', I.sys], ['logs', 'Logs & alarms', I.log]]],
-  ['Manager', [['account', 'My account', I.user], ['appusers', 'App users', I.user], ['audit', 'Audit log', I.log]]],
+  ['Manager', [['account', 'My account', I.user], ['routers', 'Routers', I.rtr], ['appusers', 'App users', I.user], ['audit', 'Audit log', I.log]]],
   ['Tools', [['traffic', 'Traffic monitor', I.graph], ['ping', 'Ping / Traceroute', I.tool], ['console', 'Console', I.term], ['config', 'Config editor', I.term], ['backup', 'Backup', I.tool]]],
 ];
 $('#side').innerHTML = NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>` : '') + items.map(([k, t, ic]) =>
@@ -141,7 +141,7 @@ $('#side').innerHTML = NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>
 $('#side').onclick = e => { const a = e.target.closest('a[data-p]'); if (a) { location.hash = a.dataset.p; $('#side').classList.remove('open'); } };
 $('#menuBtn').onclick = () => $('#side').classList.toggle('open');
 
-let timers = [], charts = [], current = null, DEMO = false, ME = null, AUTH = {};
+let timers = [], charts = [], current = null, DEMO = false, ME = null, AUTH = {}, ROUTER_LIST = [];
 function every(ms, fn) { timers.push(setInterval(() => { if (!document.hidden) fn().catch(e => console.warn(e)); }, ms)); }
 function cleanup() { timers.forEach(clearInterval); timers = []; charts.forEach(c => c.destroy()); charts = []; }
 function chart(host, opts) { const c = new TimeChart(host, opts); charts.push(c); return c; }
@@ -668,8 +668,21 @@ $('#saveBtn').onclick = saveCfg;
 /* ---------- login ---------- */
 async function connect(demo) {
   $('#loginError').textContent = ''; const b = $('#connectBtn'); b.disabled = true; b.textContent = 'Connecting…';
-  try { await post('/api/connect', { demo, host: $('#host').value, port: $('#port').value, username: $('#username').value, password: $('#password').value }); $('#password').value = ''; await start(); }
+  const rid = !demo && ROUTER_LIST.length ? $('#routerSel').value : '';
+  if (rid) try { localStorage.setItem('ne8000.router', rid); } catch (e) {}
+  try { await post('/api/connect', { demo, router_id: rid, host: $('#host').value, port: $('#port').value, username: $('#username').value, password: $('#password').value }); $('#password').value = ''; await start(); }
   catch (e) { $('#loginError').textContent = e.message; } finally { b.disabled = false; b.textContent = 'Connect'; }
+}
+function routerPicker() {
+  ROUTER_LIST = AUTH.routers || [];
+  const has = ROUTER_LIST.length > 0;
+  $('#pickRouter').classList.toggle('hidden', !has); $('#hostFields').classList.toggle('hidden', has);
+  $('#noRoutersTip').style.display = !has && ME.role === 'admin' ? '' : 'none';
+  if (!has) return;
+  let last = ''; try { last = localStorage.getItem('ne8000.router') || ''; } catch (e) {}
+  $('#routerSel').innerHTML = ROUTER_LIST.map(r => `<option value="${esc(r.id)}" ${r.id === last ? 'selected' : ''}>${esc(r.name)} (${esc(r.host)}:${r.port})</option>`).join('');
+  const fill = () => { const r = ROUTER_LIST.find(x => x.id === $('#routerSel').value); if (r && r.username && !$('#username').value) $('#username').value = r.username; };
+  $('#routerSel').onchange = () => { $('#username').value = ''; fill(); }; fill();
 }
 $('#connectBtn').onclick = () => connect(false); $('#demoBtn').onclick = () => connect(true);
 $('#password').onkeydown = e => { if (e.key === 'Enter') connect(false); };
@@ -693,15 +706,16 @@ async function start() {
   $('#appLogin').classList.add('hidden');
   document.querySelectorAll('.meName').forEach(e => e.textContent = `${ME.username} (${ME.role})`);
   document.body.classList.toggle('ro', ME.role === 'viewer');
-  document.querySelectorAll('#side a[data-p=appusers], #side a[data-p=audit]').forEach(a => a.style.display = ME.role === 'admin' ? '' : 'none');
+  document.querySelectorAll('#side a[data-p=appusers], #side a[data-p=audit], #side a[data-p=routers]').forEach(a => a.style.display = ME.role === 'admin' ? '' : 'none');
   $('#demoBtn').style.display = AUTH.allow_demo ? '' : 'none';
+  routerPicker();
   if (AUTH.default_host && !$('#host').value) { $('#host').value = AUTH.default_host; $('#port').value = AUTH.default_port || 22; }
   const s = await api('/api/status');
   document.querySelectorAll('.adminOnly').forEach(e => e.style.display = ME.role === 'admin' ? '' : 'none');
   const want = location.hash.slice(1);
-  if (!s.connected && !['account', 'appusers', 'audit'].includes(want)) {
-    $('#login').classList.remove('hidden'); $('#shell').classList.add('hidden'); ($('#host').value ? $('#username') : $('#host')).focus();
-    window.onhashchange = () => { if (['account', 'appusers', 'audit'].includes(location.hash.slice(1))) location.reload(); };
+  if (!s.connected && !['account', 'routers', 'appusers', 'audit'].includes(want)) {
+    $('#login').classList.remove('hidden'); $('#shell').classList.add('hidden'); (ROUTER_LIST.length || $('#host').value ? $('#username') : $('#host')).focus();
+    window.onhashchange = () => { if (['account', 'routers', 'appusers', 'audit'].includes(location.hash.slice(1))) location.reload(); };
     return;
   }
   if (!s.connected) { $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden'); $('#tHost').textContent = 'not connected'; $('#logoutBtn').textContent = 'Connect router'; $('#saveBtn').style.display = 'none';

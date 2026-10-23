@@ -1,5 +1,5 @@
-/* Manager pages: my account, app users (admin) and the audit log (admin). */
-const MANAGER_PAGES = ['account', 'appusers', 'audit'];
+/* Manager pages: my account, routers (admin), app users (admin) and the audit log (admin). */
+const MANAGER_PAGES = ['account', 'routers', 'appusers', 'audit'];
 const ROLE_HELP = { admin: 'everything, including app users', operator: 'everything except app users', viewer: 'read only' };
 const when = t => t ? new Date(t * 1000).toLocaleString() : '';
 
@@ -47,10 +47,48 @@ PAGES.appusers = async c => {
   };
 };
 
+PAGES.routers = async c => {
+  const { routers } = await api('/api/routers');
+  c.innerHTML = head('Routers', 'the routers people can connect to', `<button class="btn primary" id="rtAdd">+ Router</button>`) +
+    `<div class="card"><div id="rtT"></div><p class="faint" style="font-size:12.5px;margin-bottom:0">Once at least one router is saved, the app only connects to saved routers and the connect screen shows them as a list.
+    Router passwords are never stored: each person types their own router password when connecting.</p></div>`;
+  table($('#rtT'), [{ t: 'Name', k: 'name', f: r => `<b>${esc(r.name)}</b>` }, { t: 'Address', k: 'host', f: r => `<span class="mono">${esc(r.host)}:${r.port}</span>` },
+    { t: 'Default username', k: 'username', f: r => esc(r.username) || '<span class="faint">none</span>' }, { t: 'Notes', k: 'notes', cls: 'wrap', f: r => esc(r.notes) },
+    { t: '', sort: false, cls: 'acts', f: r => `<button class="btn sm" data-edit="${esc(r.id)}">Edit</button><button class="btn sm danger" data-del="${esc(r.id)}">Delete</button>` }],
+    routers, { filter: false, empty: 'No routers saved yet. Add one so people can pick it when connecting.' });
+  const form = r => {
+    const m = $('#modal'), v = k => r ? esc(r[k] ?? '') : '';
+    m.innerHTML = `<h2>${r ? 'Edit ' + esc(r.name) : 'New router'}</h2><div class="form">
+      <label>Name</label><input id="frName" value="${v('name')}" placeholder="BNG-NDOVU1" autocomplete="off">
+      <label>Management IP / hostname</label><input id="frHost" value="${v('host')}" placeholder="192.168.0.10" autocomplete="off">
+      <label>SSH port</label><input id="frPort" type="number" value="${r ? r.port : 22}">
+      <label>Default username</label><input id="frUser" value="${v('username')}" placeholder="optional, filled in on the connect screen" autocomplete="off">
+      <label>Notes</label><input id="frNotes" value="${v('notes')}" placeholder="optional" autocomplete="off"></div>
+      <div class="err"></div><div class="actions"><button class="btn" data-a="c">Cancel</button><button class="btn primary" data-a="s">${r ? 'Save' : 'Add router'}</button></div>`;
+    $('#modalBg').classList.remove('hidden'); $('#frName').focus();
+    m.querySelector('.actions').onclick = async e => {
+      if (e.target.dataset.a === 'c') return closeModal(); if (e.target.dataset.a !== 's') return;
+      const body = { name: $('#frName').value, host: $('#frHost').value, port: $('#frPort').value, username: $('#frUser').value, notes: $('#frNotes').value };
+      try {
+        if (r) await api('/api/routers/' + encodeURIComponent(r.id), { method: 'PUT', body: JSON.stringify(body) });
+        else await post('/api/routers', body);
+        closeModal(); toast('Saved'); PAGES.routers(c);
+      } catch (err) { m.querySelector('.err').textContent = err.message; }
+    };
+  };
+  $('#rtAdd').onclick = () => form(null);
+  $('#rtT').onclick = async e => {
+    const ed = e.target.dataset.edit, del = e.target.dataset.del;
+    if (ed) form(routers.find(r => r.id === ed));
+    const d = del && routers.find(r => r.id === del);
+    if (d && confirm(`Remove ${d.name} (${d.host}) from the saved routers? People already connected stay connected.`)) { try { await api('/api/routers/' + encodeURIComponent(del), { method: 'DELETE' }); toast('Removed'); PAGES.routers(c); } catch (err) { toast(err.message, true); } }
+  };
+};
+
 const AUDIT_TEXT = {
   login: 'signed in', login_failed: 'failed sign-in', logout: 'signed out', password_changed: 'changed their password', user_added: 'added app user', user_changed: 'changed app user',
   user_deleted: 'deleted app user', router_connect: 'connected to router', router_disconnect: 'disconnected from router', action: 'change', config: 'config editor', save: 'saved config',
-  billing_settings: 'billing settings', billing_sync_apply: 'billing sync (apply)', billing_map: 'billing port mapping', plan_execute: 'ran plan', plan_deleted: 'deleted plan',
+  billing_settings: 'billing settings', billing_sync_apply: 'billing sync (apply)', billing_map: 'billing port mapping', router_added: 'added router', router_changed: 'changed router', router_deleted: 'removed router', plan_execute: 'ran plan', plan_deleted: 'deleted plan',
 };
 PAGES.audit = async c => {
   const { events } = await api('/api/audit?n=500');

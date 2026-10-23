@@ -78,7 +78,7 @@ You need Python 3.9 or newer.
 - **Windows**: double-click `run.bat`.
 - **Linux / macOS**: `./run.sh`
 
-Then open http://127.0.0.1:5000. On first start the console prints an app login (`admin` and a random password). Sign in, change the password under **Manager › My account**, then enter the router's IP, SSH port, username and password, or click **Try demo mode** to explore with a simulated router (changes in demo mode only affect the simulation).
+Then open http://127.0.0.1:5000. On first start the console prints an app login (`admin` and a random password). Sign in, change the password under **Manager › My account**, then add your router under **Manager › Routers** (or type its IP and SSH port), enter your router username and password, or click **Try demo mode** to explore with a simulated router (changes in demo mode only affect the simulation).
 
 ## Hosting
 The app is ready to run on a server for your whole NOC team. Put it on a Linux server (or VM) that can reach the router's management IP, and put HTTPS in front of it.
@@ -86,6 +86,7 @@ The app is ready to run on a server for your whole NOC team. Put it on a Linux s
 ### App logins
 Everyone signs in to NE8000 Manager first, then connects to the router with their own SSH account.
 - **Roles:** *admin* (everything, including app users), *operator* (everything except app users), *viewer* (can look at everything, every change is refused).
+- Admins add routers under **Manager › Routers** (name, management IP, SSH port, optional default username). Everyone then picks a router from a list on the connect screen, and once at least one router is saved the app only connects to saved routers. Router passwords are never stored.
 - Admins manage logins under **Manager › App users**. Passwords are stored as salted hashes, need at least 10 characters, and a password change or deleted user signs that person out everywhere.
 - After 5 failed sign-ins from one address that address is locked for 5 minutes (20 failures lock the username).
 - 5 failed router SSH logins lock that app user's router connections for 5 minutes. Viewers cannot read the full configuration (it contains password hashes and SNMP communities).
@@ -118,9 +119,9 @@ Follow the steps at the top of `deploy/ne8000.service`: copy the app to `/opt/ne
 | `NE8000_ADMIN_USER` / `NE8000_ADMIN_PASSWORD` | admin / random | first admin, only used when there are no users yet |
 | `NE8000_BEHIND_PROXY` | 0 | set to 1 behind an HTTPS proxy: HTTPS-only login cookie, real client IPs from X-Forwarded-For |
 | `NE8000_TRUSTED_PROXY` | `*` | address of the proxy whose X-Forwarded headers are trusted (keep the app port private) |
-| `NE8000_ALLOWED_ROUTERS` | empty (any) | routers the app may connect to: IPs, subnets or hostnames, comma-separated. Recommended |
+| `NE8000_ALLOWED_ROUTERS` | empty (any) | extra routers the app may connect to besides the ones saved under Manager › Routers: IPs, subnets or hostnames, comma-separated |
 | `NE8000_ALLOW_DEMO` | 1 | show "Try demo mode" |
-| `NE8000_DEFAULT_HOST` / `NE8000_DEFAULT_PORT` | empty / 22 | pre-fill the router form |
+| `NE8000_DEFAULT_HOST` / `NE8000_DEFAULT_PORT` | empty / 22 | pre-fill the router form when no routers are saved |
 | `NE8000_SESSION_HOURS` | 12 | how long a sign-in lasts |
 | `NE8000_THREADS` | 16 | web server threads |
 | `NE8000_SECRET_KEY` | generated, saved in the data folder | session signing key |

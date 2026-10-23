@@ -20,6 +20,7 @@ import actions
 import auth
 import billing
 import plans
+import routers
 from device import DeviceError, RealRouter, is_read_only
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -38,14 +39,17 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", S
 
 USERS = auth.UserStore(DATA_DIR)
 AUDIT = auth.Audit(DATA_DIR)
+SAVED = routers.RouterStore(DATA_DIR)
 THROTTLE_IP = auth.Throttle(limit=5)        # per client address
 THROTTLE_USER = auth.Throttle(limit=20)     # per username, high enough that strangers cannot easily lock out a real user
 THROTTLE_ROUTER = auth.Throttle(limit=5)    # failed router SSH logins per app user (slows password guessing on the router)
 
 
 def allowed_routers():
-    """NE8000_ALLOWED_ROUTERS: comma-separated IPs, subnets or hostnames the app may connect to (empty = any)."""
-    return [x.strip() for x in os.environ.get("NE8000_ALLOWED_ROUTERS", "").split(",") if x.strip()]
+    """Routers the app may connect to: the ones admins saved under Manager > Routers, plus
+    NE8000_ALLOWED_ROUTERS (comma-separated IPs, subnets or hostnames). Both empty = any."""
+    env = [x.strip() for x in os.environ.get("NE8000_ALLOWED_ROUTERS", "").split(",") if x.strip()]
+    return env + [h for h in SAVED.hosts() if h not in env]
 
 
 def check_router_allowed(host):
@@ -61,7 +65,7 @@ def check_router_allowed(host):
                 return
         except ValueError:
             pass
-    raise DeviceError("This server is not allowed to connect to that router. Allowed: " + ", ".join(allow))
+    raise DeviceError("That router is not in the saved list. An admin can add it under Manager > Routers.")
 
 ROUTERS = {}   # browser session id -> Router. Credentials are never stored.
 NAME_RE = re.compile(r"^[A-Za-z0-9/.:\-_]{1,64}$")
@@ -101,6 +105,7 @@ def close_router(r):
 OPEN = {"index", "static", "auth_login", "auth_me", "healthz"}
 # endpoints a viewer may POST to; everything else that changes something needs operator or admin
 VIEWER_POST = {"connect", "disconnect", "cli", "run_action", "auth_logout", "auth_password"}
+ADMIN_ONLY = {"users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete"}
 
 
 def current_user():
@@ -131,7 +136,7 @@ def guard():
             return jsonify(error="Missing request header."), 403
         if u["role"] == "viewer" and request.endpoint not in VIEWER_POST:
             return jsonify(error="Your account is read-only."), 403
-    if request.endpoint in ("users_list", "users_add", "users_update", "users_delete", "audit_log") and u["role"] != "admin":
+    if request.endpoint in ADMIN_ONLY and u["role"] != "admin":
         return jsonify(error="Only admins can do this."), 403
     return None
 
@@ -160,7 +165,7 @@ def auth_me():
     u = current_user()
     if not u:
         return jsonify(user=None)
-    return jsonify(user={"username": u["username"], "role": u["role"]}, allow_demo=ALLOW_DEMO,
+    return jsonify(user={"username": u["username"], "role": u["role"]}, allow_demo=ALLOW_DEMO, routers=SAVED.list(),
                    default_host=os.environ.get("NE8000_DEFAULT_HOST", ""), default_port=os.environ.get("NE8000_DEFAULT_PORT", "22"))
 
 
@@ -243,6 +248,32 @@ def users_delete(name):
     return jsonify(users=USERS.list())
 
 
+@app.get("/api/routers")
+def routers_list():
+    return jsonify(routers=SAVED.list())
+
+
+@app.post("/api/routers")
+def routers_add():
+    r = SAVED.add(request.get_json(force=True))
+    AUDIT.log(me(), "router_added", name=r["name"], host=r["host"], port=r["port"])
+    return jsonify(routers=SAVED.list())
+
+
+@app.put("/api/routers/<rid>")
+def routers_update(rid):
+    r = SAVED.update(rid, request.get_json(force=True))
+    AUDIT.log(me(), "router_changed", name=r["name"], host=r["host"], port=r["port"])
+    return jsonify(routers=SAVED.list())
+
+
+@app.delete("/api/routers/<rid>")
+def routers_delete(rid):
+    r = SAVED.delete(rid)
+    AUDIT.log(me(), "router_deleted", name=r["name"], host=r["host"])
+    return jsonify(routers=SAVED.list())
+
+
 @app.get("/api/audit")
 def audit_log():
     return jsonify(events=AUDIT.tail(int(request.args.get("n", 300))))
@@ -286,6 +317,11 @@ def connect():
         from demo import DemoRouter
         r = DemoRouter((data.get("host") or "").strip() or "demo")
     else:
+        saved = SAVED.get(data.get("router_id")) if data.get("router_id") else None
+        if data.get("router_id") and not saved:
+            raise DeviceError("That saved router no longer exists. Reload the page.")
+        if saved:
+            data["host"], data["port"] = saved["host"], saved["port"]
         host = (data.get("host") or "").strip()
         if not host:
             raise DeviceError("Host is required.")
