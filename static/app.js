@@ -381,16 +381,20 @@ function addrForm() { change({ title: 'Add IP address', action: 'interface.ip_ad
 PAGES.routes = async c => {
   const vpns = (await api('/api/view/vpn_instances')).instances.map(v => v.name);
   const vpn = c._vpn || '';
-  const r = await api('/api/routes' + (vpn ? '?vpn=' + encodeURIComponent(vpn) : ''));
-  c.innerHTML = head('Routes', r.summary, `<select id="rVpn"><option value="">Public (_public_)</option>${vpns.map(v => `<option ${v === vpn ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>`) +
+  const lk = c._lookup || '';
+  const r = await api('/api/routes?' + new URLSearchParams({ ...(vpn ? { vpn } : {}), ...(lk ? { lookup: lk } : {}) }));
+  c.innerHTML = head('Routes', r.summary, `<input id="rLk" placeholder="Lookup: 8.8.8.8 or 8.8.8.0/24" value="${esc(lk)}" style="max-width:230px"><button class="btn" id="rLkBtn">${lk ? 'Clear lookup' : 'Look up'}</button><select id="rVpn"><option value="">Public (_public_)</option>${vpns.map(v => `<option ${v === vpn ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>`) +
     `<div class="card"><h3>Static routes</h3><div id="rS"></div></div><div class="card"><h3>Routing table</h3><div id="rT"></div></div>`;
   $('#rVpn').onchange = () => { c._vpn = $('#rVpn').value; PAGES.routes(c); };
+  $('#rLk').oninput = () => $('#rLkBtn').textContent = $('#rLk').value.trim() && $('#rLk').value.trim() !== lk ? 'Look up' : lk ? 'Clear lookup' : 'Look up';
+  $('#rLkBtn').onclick = () => { const v = $('#rLk').value.trim(); c._lookup = v && v !== lk ? v : ''; PAGES.routes(c).catch(e => { c._lookup = ''; toast(e.message, true); }); };
+  $('#rLk').onkeydown = e => { if (e.key === 'Enter') $('#rLkBtn').click(); };
   table($('#rS'), [{ t: 'Destination', k: 'prefix', f: x => `<b>${esc(x.prefix)}/${esc(maskLen(x.mask))}</b>` }, { t: 'Gateway', k: 'next_hop' }, { t: 'Interface', k: 'interface' }, { t: 'Pref', k: 'preference', num: true }, { t: 'VPN', k: 'vpn' }, { t: 'Description', k: 'description' },
     { t: '', sort: false, cls: 'acts', f: x => `<button class="btn sm danger" onclick='change({title:"Remove static route",action:"route.static_remove",params:{line:${attr(x.line)}}})'>Remove</button>` }],
     r.static, { toolbar: `<button class="btn" onclick="routeForm()">+ Static route</button>`, empty: 'No static routes' });
   const proto = [...new Set(r.routes.map(x => x.protocol))];
   table($('#rT'), [{ t: 'Destination', k: 'destination', f: x => `<b>${esc(x.destination)}</b>` }, { t: 'Protocol', k: 'protocol' }, { t: 'Pref', k: 'preference', num: true }, { t: 'Cost', k: 'cost', num: true }, { t: 'Flags', k: 'flags' }, { t: 'Next hop', k: 'next_hop', cls: 'mono' }, { t: 'Interface', k: 'interface' }],
-    r.routes, { toolbar: `<span class="muted" style="font-size:12px">${proto.map(p => `${esc(p)} ${r.routes.filter(x => x.protocol === p).length}`).join(' · ')}</span>` });
+    r.routes, { empty: r.lookup ? 'No route for ' + r.lookup : 'No routes', toolbar: `<span class="muted" style="font-size:12px">${r.large ? 'Large table: BGP routes are not listed. ' : ''}${proto.map(p => `${esc(p)} ${r.routes.filter(x => x.protocol === p).length}`).join(' · ')}</span>` });
 };
 function maskLen(m) { return m.includes('.') ? m.split('.').reduce((a, o) => a + (+o).toString(2).split('1').length - 1, 0) : m; }
 function routeForm() { change({ title: 'Add static route', action: 'route.static_add', fields: [{ k: 'prefix', label: 'Destination', ph: '0.0.0.0/0' }, { k: 'next_hop', label: 'Gateway', ph: '172.16.0.0' }, { k: 'interface', label: 'Out interface', ph: 'optional, e.g. NULL0', list: ifCache.map(i => i.name) }, { k: 'preference', label: 'Preference', type: 'number', ph: '60' }, { k: 'vpn', label: 'VPN instance', ph: 'optional' }, { k: 'description', label: 'Description' }] }); }
@@ -398,7 +402,7 @@ function routeForm() { change({ title: 'Add static route', action: 'route.static
 PAGES.arp = async c => {
   const r = await api('/api/view/arp');
   c.innerHTML = head('ARP') + `<div class="card"><h3>ARP table</h3><div id="arT"></div></div><div class="card"><h3>Static ARP</h3><div id="arS"></div></div>`;
-  table($('#arT'), [{ t: 'IP', k: 'ip', cls: 'mono', f: x => `<b>${esc(x.ip)}</b>` }, { t: 'MAC', k: 'mac', cls: 'mono' }, { t: 'Type', k: 'type', f: x => ({ I: 'Interface', S: 'Static' }[x.type] || (x.type.startsWith('D') ? 'Dynamic' : esc(x.type))) }, { t: 'Expire (min)', k: 'expire', num: true }, { t: 'Interface', k: 'interface' }, { t: 'VPN', k: 'vpn' }], r.entries);
+  table($('#arT'), [{ t: 'IP', k: 'ip', cls: 'mono', f: x => `<b>${esc(x.ip)}</b>` }, { t: 'MAC', k: 'mac', cls: 'mono' }, { t: 'Type', k: 'type', f: x => ({ I: 'Interface', S: 'Static' }[x.type] || (x.type.startsWith('D') ? 'Dynamic' : esc(x.type))) }, { t: 'Expire (min)', k: 'expire', num: true }, { t: 'Interface', k: 'interface' }, { t: 'VLAN', k: 'vlan' }, { t: 'VPN', k: 'vpn' }], r.entries);
   table($('#arS'), [{ t: 'Entry', k: 'line', cls: 'mono', f: x => esc(x.line) }, { t: '', sort: false, cls: 'acts', f: x => `<button class="btn sm danger" onclick='change({title:"Remove static ARP",action:"arp.static_remove",params:{ip:${attr(x.line.split(" ")[2])}}})'>Remove</button>` }],
     r.static.map(line => ({ line })), { filter: false, toolbar: `<button class="btn" onclick="arpForm()">+ Static ARP</button>`, empty: 'None' });
 };
@@ -434,7 +438,8 @@ PAGES.bgp = async c => {
     <div class="tile"><div class="l">Down</div><div class="v" style="color:${b.peers.length - est.length ? 'var(--bad)' : ''}">${b.peers.length - est.length}</div></div><div class="tile"><div class="l">Prefixes received</div><div class="v">${Fmt.num(b.peers.reduce((a, p) => a + p.prefixes, 0))}</div></div></div>
     <div class="card"><h3>Peers</h3><div id="bP"></div></div>
     <div class="grid g2"><div class="card"><h3>Advertised networks</h3><div id="bN"></div></div><div class="card"><h3>Configuration</h3><pre>${esc(Object.entries(b.config).map(([k, v]) => 'bgp ' + k + '\n ' + v.join('\n ')).join('\n'))}</pre></div></div>
-    <div class="card" id="bRcard"><h3 id="bRt">BGP routing table</h3><div id="bR" class="muted">Pick a peer’s Received / Advertised, or <button class="btn sm" onclick="bgpRoutes()">load the full BGP table</button></div></div>`;
+    <div class="card" id="bRcard"><h3 id="bRt">BGP routing table</h3><div class="row" style="gap:6px;margin-bottom:10px"><input id="bLk" placeholder="Lookup: 8.8.8.8 or 8.8.8.0/24" style="max-width:260px"><button class="btn sm" id="bLkBtn">Look up</button></div><div id="bR" class="muted">Pick a peer’s Received / Advertised, look up an address, or <button class="btn sm" onclick="bgpRoutes()">load the full BGP table</button></div></div>`;
+  $('#bLkBtn').onclick = () => bgpRoutes(null, null, $('#bLk').value.trim()); $('#bLk').onkeydown = e => { if (e.key === 'Enter') $('#bLkBtn').click(); };
   table($('#bP'), [{ t: 'Peer', k: 'peer', f: p => `<b>${esc(p.peer)}</b>` }, { t: 'Description', k: 'description' }, { t: 'Remote AS', k: 'as' }, { t: 'Type', sort: false, f: p => p.as === b.local_as ? 'iBGP' : 'eBGP' },
     { t: 'State', k: 'state', f: p => bgpPill(p.state) }, { t: 'Up/Down', k: 'up_down' }, { t: 'Prefixes', k: 'prefixes', num: true }, { t: 'Msg in/out', k: 'msg_rcvd', num: true, f: p => `${Fmt.num(p.msg_rcvd)} / ${Fmt.num(p.msg_sent)}` }, { t: 'OutQ', k: 'out_q', num: true },
     { t: '', sort: false, cls: 'acts', f: p => `<button class="btn sm" onclick='bgpRoutes(${attr(p.peer)},"received")'>Received</button><button class="btn sm" onclick='bgpRoutes(${attr(p.peer)},"advertised")'>Advertised</button>
@@ -453,10 +458,10 @@ function peerForm() {
     { k: 'password', label: 'MD5 password', type: 'password', ph: 'optional' }, { k: 'route_policy_in', label: 'Import route-policy', ph: 'optional' }, { k: 'route_policy_out', label: 'Export route-policy', ph: 'optional' },
     { k: 'route_limit', label: 'Max prefixes', type: 'number', ph: 'optional' }, { k: 'next_hop_local', label: 'next-hop-local', type: 'check' }] });
 }
-async function bgpRoutes(peer, which) {
-  $('#bRt').textContent = peer ? `Routes ${which} ${which === 'received' ? 'from' : 'to'} ${peer}` : 'BGP routing table';
+async function bgpRoutes(peer, which, lookup) {
+  $('#bRt').textContent = lookup ? `BGP paths for ${lookup}` : peer ? `Routes ${which} ${which === 'received' ? 'from' : 'to'} ${peer}` : 'BGP routing table';
   $('#bR').innerHTML = '<span class="muted">Loading…</span>'; $('#bRcard').scrollIntoView({ behavior: 'smooth' });
-  const r = await api('/api/bgp/routes?' + new URLSearchParams(peer ? { peer, which } : {}));
+  let r; try { r = await api('/api/bgp/routes?' + new URLSearchParams(lookup ? { lookup } : peer ? { peer, which } : {})); } catch (e) { $('#bR').innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
   if (!r.routes.length) { $('#bR').innerHTML = `<pre>${esc(r.raw)}</pre>`; return; }
   table($('#bR'), [{ t: 'Status', k: 'status', cls: 'mono' }, { t: 'Network', k: 'network', f: x => `<b>${esc(x.network)}</b>` }, { t: 'Next hop', k: 'next_hop', cls: 'mono' }, { t: 'MED', k: 'med', num: true }, { t: 'Local pref', k: 'local_pref', num: true }, { t: 'AS path / origin', k: 'path', cls: 'mono' }], r.routes);
 }

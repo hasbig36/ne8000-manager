@@ -381,7 +381,10 @@ def status():
 def view(name):
     if name not in VIEWS:
         raise DeviceError("Unknown view.")
-    return jsonify(getattr(router(), name)())
+    data = getattr(router(), name)()
+    if name == "system" and current_user()["role"] == "viewer":
+        data["snmp"] = "(hidden for read-only accounts)"
+    return jsonify(data)
 
 
 @app.get("/api/resources")
@@ -407,7 +410,15 @@ def queues():
 
 @app.get("/api/routes")
 def routes():
-    return jsonify(router().routes(safe_name(request.args.get("vpn") or None, "VPN instance")))
+    return jsonify(router().routes(safe_name(request.args.get("vpn") or None, "VPN instance"), route_lookup()))
+
+
+def route_lookup():
+    """?lookup=8.8.8.8 or 8.8.8.0/24 (validated: it goes into a router command)."""
+    v = (request.args.get("lookup") or "").strip()
+    if v and not re.match(r"^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$", v):
+        raise DeviceError("Lookup takes an IPv4 address or prefix, e.g. 8.8.8.8 or 8.8.8.0/24.")
+    return v or None
 
 
 @app.get("/api/bgp/routes")
@@ -415,7 +426,7 @@ def bgp_routes():
     peer = request.args.get("peer") or None
     if peer and not re.match(r"^[\d.:a-fA-F]+$", peer):
         raise DeviceError("Invalid peer.")
-    return jsonify(router().bgp_routes(peer, request.args.get("which", "received")))
+    return jsonify(router().bgp_routes(peer, request.args.get("which", "received"), route_lookup()))
 
 
 @app.post("/api/action")
@@ -445,7 +456,9 @@ def cli():
         raise DeviceError("The console runs display, ping and tracert only. Use Config editor for changes.")
     if current_user()["role"] == "viewer" and "configuration" in command.lower():
         raise auth.AuthError("Viewers cannot read the full configuration.")
-    return jsonify(output=router().run(command, read_timeout=120))
+    r = router()
+    r.check_table_size(command)
+    return jsonify(output=r.run(command, read_timeout=120))
 
 
 @app.post("/api/config")

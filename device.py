@@ -10,6 +10,8 @@ import parsers as P
 READ_ONLY_PREFIXES = ("display ", "dis ", "disp ", "ping ", "tracert ")
 HISTORY = 720            # samples kept per series (1 hour at 5 s)
 POLL_SECONDS = 5
+ROUTE_LIST_LIMIT = 5000      # never list more routes than this in one go
+LISTABLE_PROTOCOLS = ("DIRECT", "STATIC", "OSPF", "ISIS", "RIP", "UNR")
 WATCH_TTL = 90           # stop polling an interface's counters this long after the GUI last asked
 
 
@@ -197,7 +199,7 @@ class Router:
             row.update(ips.get(row["name"], {"ip": "", "vpn": ""}))
             row["description"] = desc.get(row["name"], "")
             lines = cfg.get(row["name"], [])
-            row["vlan"] = next((l.split()[-1] for l in lines if l.startswith(("vlan-type dot1q", "dot1q termination vid"))), "")
+            row["vlan"] = P.vlan_from_config(lines)
             row["mtu"] = next((l.split()[1] for l in lines if l.startswith("mtu ")), "")
             row["l2"] = "portswitch" in lines
             row["secondary"] = [_cidr(l) for l in lines if l.startswith("ip address ") and l.endswith(" sub")]
@@ -235,18 +237,37 @@ class Router:
         cfg = self.interface_config()
         return {"rules": P.parse_qos_from_config(cfg),
                 "queues": [{"interface": n, "line": l} for n, c in cfg.items() for l in c if l.startswith("port-queue")],
-                "policies": self.cached("display traffic policy user-defined", 10),
+                "policies": "" if (pol := self.cached("display traffic policy user-defined", 10)).strip().startswith("Error:") else pol,
                 "interfaces": [n for n in cfg if not n.lower().startswith(("null", "loopback"))]}
 
     def queue_stats(self, name):
         text = self.run(f"display port-queue statistics interface {name} outbound")
         return {"queues": P.parse_port_queue(text), "raw": text}
 
-    def routes(self, vpn=None):
+    def routes(self, vpn=None, lookup=None):
+        """The routing table. A table with a full Internet feed (about a million prefixes) is never
+        listed whole: it takes minutes and ties up an SSH line on the router. Then only the smaller
+        protocols are listed, and a lookup finds the route for one address or prefix."""
         cmd = f"display ip routing-table vpn-instance {vpn}" if vpn else "display ip routing-table"
-        text = self.cached(cmd)
-        return {"routes": P.parse_routing_table(text), "summary": P.first_str(r"(Destinations\s*:.*)", text),
-                "static": P.parse_static_routes(self.cached("display current-configuration | include ip route-static", 10))}
+        static = P.parse_static_routes(self.cached("display current-configuration | include ip route-static", 10))
+        if lookup:
+            text = self.run(f"{cmd} {lookup.replace('/', ' ')}")
+            return {"routes": P.parse_routing_table(text), "summary": f"Lookup {lookup}", "static": static, "lookup": lookup, "raw": text}
+        stats = P.parse_route_stats(self.cached(cmd + " statistics", 30))
+        if stats is None or stats["total"] <= ROUTE_LIST_LIMIT:
+            text = self.cached(cmd)
+            return {"routes": P.parse_routing_table(text), "summary": P.first_str(r"(Destinations\s*:.*)", text),
+                    "static": static, "stats": stats}
+        rows, skipped = [], []
+        for proto, n in stats["protocols"].items():
+            if not n:
+                continue
+            if proto.replace("-", "") in LISTABLE_PROTOCOLS and n <= ROUTE_LIST_LIMIT:
+                rows += P.parse_routing_table(self.cached(f"{cmd} protocol {proto.lower().replace('-', '')}", 30))
+            else:
+                skipped.append(f"{proto} {n:,}")
+        return {"routes": rows, "static": static, "stats": stats, "large": True, "skipped": skipped,
+                "summary": f"{stats['total']:,} prefixes. Not listed: {', '.join(skipped)}. Use Lookup to find the route for an address."}
 
     def arp(self):
         static = self.cached("display current-configuration | include arp static", 10)
@@ -265,11 +286,37 @@ class Router:
         return {**P.parse_bgp_summary(text), "peers": P.parse_bgp_peers(text),
                 "config": P.parse_config_blocks(self.cached("display current-configuration configuration bgp", 10), "bgp")}
 
-    def bgp_routes(self, peer=None, which="received"):
+    def check_table_size(self, command):
+        """Console guard: refuse to dump a whole routing table that is too big to list."""
+        c = " ".join(command.lower().split())
+        m = re.fullmatch(r"(?:dis|disp|display) (ip|bgp) routing-table((?: vpn-instance \S+)?)(?: verbose)?", c)
+        if not m:
+            return
+        if m.group(1) == "ip":
+            stats = P.parse_route_stats(self.cached(f"display ip routing-table{m.group(2)} statistics", 30))
+            count = stats["total"] if stats else None
+        else:
+            count = P.first_int(r"Total Number of Routes\s*:\s*(\d+)", self.run("display bgp routing-table statistics"))
+        if count and count > ROUTE_LIST_LIMIT:
+            raise DeviceError(f"That table has {count:,} routes, too many to print here. Add an address (e.g. {command.strip()} 8.8.8.8), "
+                              "use '| include', or add 'statistics'.")
+
+    def bgp_routes(self, peer=None, which="received", lookup=None):
+        if lookup:
+            text = self.run(f"display bgp routing-table {lookup.replace('/', ' ')}")
+            return {"routes": P.parse_bgp_routes(text), "raw": text, "lookup": lookup}
         if peer:
             cmd = f"display bgp routing-table peer {peer} {'advertised-routes' if which == 'advertised' else 'received-routes'}"
         else:
             cmd = "display bgp routing-table"
+        count = P.first_int(r"(?:Total Number of Routes|routes total)\s*:\s*(\d+)", self.run(cmd + " statistics"), re.I)
+        if count is None and peer and which != "advertised":
+            count = next((p["prefixes"] for p in P.parse_bgp_peers(self.cached("display bgp peer", 10)) if p["peer"] == peer), None)
+        if count is None or count > ROUTE_LIST_LIMIT:
+            what = f"{count:,} routes" if count is not None else "an unknown number of routes"
+            return {"routes": [], "too_many": count, "raw": f"This would list {what}, more than the {ROUTE_LIST_LIMIT:,} this page shows at once "
+                    "(listing a full Internet table takes minutes and ties up an SSH line on the router).\n"
+                    "Use Lookup with an address or prefix, e.g. 8.8.8.8 or 8.8.8.0/24."}
         text = self.run(cmd, read_timeout=120)
         return {"routes": P.parse_bgp_routes(text), "raw": text}
 

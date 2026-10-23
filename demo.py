@@ -8,6 +8,7 @@ import re
 import time
 
 from device import Router
+import parsers as P
 
 BOOT = time.time() - (42 * 86400 + 7 * 3600 + 13 * 60)
 
@@ -146,10 +147,31 @@ class DemoRouter(Router):
             return self.show_interface(c.split(" ", 2)[2])
         if cl.startswith("display port-queue statistics interface"):
             return self.show_port_queue(c.split()[4])
+        if cl.startswith("display bgp routing-table") and cl.endswith(" statistics"):
+            text = self._run(c[: -len(" statistics")], read_timeout)
+            return f" Total Number of Routes: {len(P.parse_bgp_routes(text))}"
+        if re.match(r"display bgp routing-table \d", cl):
+            return self.show_bgp_lookup(c.split()[3])
         if cl.startswith("display bgp routing-table peer"):
             return self.show_bgp_routes(c.split()[4], "advertised" in cl)
         if cl.startswith("display ip routing-table"):
-            return self.show_routes(c.split()[-1] if "vpn-instance" in cl else None)
+            w = c.split()[3:]
+            vpn = w[w.index("vpn-instance") + 1] if "vpn-instance" in w else None
+            text = self.show_routes(vpn)
+            if w and w[-1] == "statistics":
+                rows = P.parse_routing_table(text)
+                protos = ["DIRECT", "STATIC", "OSPF", "BGP", "UNR"]
+                count = {k: sum(1 for r in rows if r["protocol"].upper().replace("IBGP", "BGP").replace("EBGP", "BGP") == k) for k in protos}
+                return f"Summary Prefixes : {len(rows)}\nProto      total      active     added      deleted    freed\n" + \
+                       "\n".join(f"{k:<11}{n:<11}{n:<11}{n:<11}0          0" for k, n in count.items())
+            if "protocol" in w:
+                want = w[w.index("protocol") + 1].lower()
+                return "\n".join(l for l in text.splitlines() if not re.match(r"^\s*\S*\d+\.\d+\.\d+\.\d+/\d+\s", l) or
+                                 re.search(r"\s(\w+)\s+\d+\s+\d+", l).group(1).lower().replace("ibgp", "bgp").replace("ebgp", "bgp") == want)
+            ip = next((x for x in w if re.match(r"\d+\.\d+\.\d+\.\d+$", x)), None)
+            if ip:
+                return self.show_route_lookup(text, ip)
+            return text
         if "| include" in cl:
             pat = c.split("| include", 1)[1].strip()
             return "\n".join(l for l in self.show_config().splitlines() if pat in l)
@@ -701,6 +723,24 @@ Statistics last cleared:never
             last = r[0]
             out.append(f"{dest:>19}  {r[1]:<7} {r[2]:<4} {r[3]:<11} {r[4]:<4}{r[5]:<16}{r[6]}")
         return "\n".join(out)
+
+    def show_route_lookup(self, text, ip):
+        import ipaddress
+        addr, best = ipaddress.ip_address(ip), None
+        for r in P.parse_routing_table(text):
+            net = ipaddress.ip_network(r["destination"], strict=False)
+            if addr in net and (best is None or net.prefixlen > best[0].prefixlen):
+                best = (net, r)
+        head = "Route Flags: R - relay, D - download to fib, T - to vpn-instance, B - black hole route\n" + "-" * 78 + \
+               f"\nRouting Table : _public_\nSummary Count : {1 if best else 0}\n\nDestination/Mask    Proto   Pre  Cost        Flags NextHop         Interface\n\n"
+        if not best:
+            return head
+        r = best[1]
+        return head + f"{r['destination']:>19}  {r['protocol']:<7} {r['preference']:<4} {r['cost']:<11} {r['flags']:<4}{r['next_hop']:<16}{r['interface']}"
+
+    def show_bgp_lookup(self, ip):
+        return (" BGP local router ID : 1.1.1.1\n Local AS number : 65001\n"
+                f" (demo mode: no BGP path information is simulated for {ip})")
 
     def show_arp_all(self):
         out = ["ARP timeout:1200s", "IP ADDRESS      MAC ADDRESS    EXPIRE(M) TYPE        INTERFACE        VPN-INSTANCE",

@@ -47,13 +47,26 @@ def parse_memory(text):
 
 
 def parse_temperature(text):
-    """`display temperature` -> [{slot, board, sensor, temp}]"""
-    rows = []
+    """`display temperature` -> [{slot, board, sensor, temp}]
+
+    Two layouts are understood: a table with the slot in the first column, and the
+    NE8000 M8 layout with a "Base-Board, Unit:C, Slot 9" heading per slot and rows of
+    PCB  I2C Addr Chl Status Minor Major Fatal FanTMin FanTMax Temp(C)."""
+    rows, slot = [], ""
     for line in text.splitlines():
-        m = re.match(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)", line)
+        h = re.search(r"Unit:C,\s*Slot\s*(\d+)", line)
+        if h:
+            slot = h.group(1)
+            continue
+        m = re.match(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s*$", line)
         if m:
             rows.append({"slot": m.group(1), "board": m.group(2), "sensor": m.group(3), "status": m.group(4),
                          "temp": int(m.group(8)), "minor": int(m.group(6)), "major": int(m.group(7))})
+            continue
+        m = re.match(r"^\s*([A-Za-z]\S*)\s+(\d+)\s+(\d+)\s+(\d+)\s+([A-Za-z]+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s+(-?\d+)\s*$", line)
+        if m:
+            rows.append({"slot": slot, "board": m.group(1), "sensor": f"{m.group(2)}/{m.group(3)}/{m.group(4)}",
+                         "status": m.group(5), "temp": int(m.group(11)), "minor": int(m.group(6)), "major": int(m.group(7))})
     return rows
 
 
@@ -86,7 +99,35 @@ def parse_local_users(text):
     return rows
 
 
+ALARM_LEVELS = {"1": "Critical", "2": "Major", "3": "Minor", "4": "Warning"}
+
+
+def _parse_alarm_columns(text):
+    """NE8000 M8 layout: Sequence AlarmId Level Date Time Description, with the time and
+    the description wrapped over several lines in fixed-width columns."""
+    rows, cur, dcol, tcol = [], None, 39, 28
+    for line in text.splitlines():
+        if line.startswith("Sequence") and "Description" in line:
+            dcol, tcol = line.index("Description"), line.index("Date") if "Date" in line else 28
+            continue
+        m = re.match(r"^(\d+)\s+(0x[0-9A-Fa-f]+)\s+(\d)\s+(\d{4}-\d\d-\d\d)", line)
+        if m:
+            cur = {"seq": m.group(1), "id": m.group(2), "name": m.group(2), "level": ALARM_LEVELS.get(m.group(3), m.group(3)),
+                   "state": "Active", "time": m.group(4), "description": line[dcol:].rstrip()}
+            rows.append(cur)
+        elif cur and line.strip() and not line.startswith("-") and len(line) > tcol and not line[:tcol].strip():
+            t = line[tcol:dcol].strip()
+            if t:
+                cur["time"] += (" " if cur["time"].count(" ") == 0 else "") + t
+            cur["description"] += line[dcol:].rstrip()
+    for r in rows:
+        r["description"] = r["description"].strip()
+    return rows
+
+
 def parse_alarms(text):
+    if re.search(r"^Sequence\s+AlarmId", text, re.M):
+        return _parse_alarm_columns(text)
     rows, cur = [], None
     for line in text.splitlines():
         m = re.match(r"^\s*(\d+)/(\w+)/([^/]+)/([^/]*)/(\S+?)/(\S+?)/(\w+)/(\w+)/?(.*)$", line)
@@ -104,9 +145,13 @@ def parse_logbuffer(text):
     for line in text.splitlines():
         m = re.match(r"^(\w{3}\s+\d+\s+\d{4}\s+[\d:.]+\S*|\d{4}-\d\d-\d\d\s+[\d:.]+\S*)\s+(\S+)\s+(%%\S+|\S+)\s*(.*)$", line)
         if m:
-            sev = first_str(r"/(\d)/", m.group(3))
-            rows.append({"time": m.group(1), "host": m.group(2), "tag": m.group(3), "severity": sev,
-                         "message": m.group(4)})
+            tag, msg = m.group(3), m.group(4)
+            if tag.startswith("%%") and ":" in tag:
+                tag, rest = tag.split(":", 1)
+                msg = (rest + " " + msg).strip()
+                msg = re.sub(r"^CID=[^;]*;\s*", "", msg)
+            sev = first_str(r"/(\d)/", tag)
+            rows.append({"time": m.group(1), "host": m.group(2), "tag": tag, "severity": sev, "message": msg})
     return rows
 
 
@@ -204,6 +249,18 @@ def parse_interface_detail(text):
     return d
 
 
+def vlan_from_config(lines):
+    """The VLAN of a sub-interface from its config lines: "3099" for dot1q, "2046/7" for QinQ (pe-vid/ce-vid)."""
+    for l in lines:
+        m = re.match(r"^(?:vlan-type dot1q|dot1q termination vid|user-vlan)\s+(\d+)", l)
+        if m:
+            return m.group(1)
+        m = re.match(r"^qinq termination pe-vid\s+(\d+)\s+ce-vid\s+(\d+(?:\s+to\s+\d+)?)", l)
+        if m:
+            return m.group(1) + "/" + m.group(2).replace(" to ", "-")
+    return ""
+
+
 def parse_config_blocks(text, keyword="interface"):
     """Split `display current-configuration` style text into {header: [lines]} for blocks starting with keyword."""
     blocks, cur = {}, None
@@ -270,6 +327,19 @@ def parse_routing_table(text):
     return rows
 
 
+def parse_route_stats(text):
+    """`display ip routing-table statistics` -> {"total": N, "protocols": {"BGP": N, ...}} (None if not understood)."""
+    total = first_int(r"Summary Prefixes\s*:\s*(\d+)", text)
+    if total is None:
+        return None
+    protos = {}
+    for line in text.splitlines():
+        m = re.match(r"^\s*([A-Z][A-Z0-9-]*)\s+(\d+)\s+(\d+)\s+\d+", line)
+        if m and m.group(1) not in ("TOTAL", "PROTO"):
+            protos[m.group(1)] = int(m.group(2))
+    return {"total": total, "protocols": protos}
+
+
 def parse_static_routes(config_text):
     rows = []
     for line in config_text.splitlines():
@@ -284,13 +354,21 @@ def parse_static_routes(config_text):
     return rows
 
 
+ARP_RE = re.compile(r"^(" + IPV4 + r")\s+([0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}|Incomplete)\s+(\d+\s+)?"
+                    r"([A-Z]+(?:-\d*)?(?:\s+-(?=\s))?)\s+(\S+)(?:\s+(\S+))?\s*$")
+
+
 def parse_arp(text):
     rows = []
     for line in text.splitlines():
-        m = re.match(r"^(" + IPV4 + r")\s+([0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4})\s+(\d+|)\s*(\S+)\s+(\S+)(?:\s+(\S+))?", line.strip())
+        m = ARP_RE.match(line.strip())
         if m:
-            rows.append({"ip": m.group(1), "mac": m.group(2), "expire": m.group(3), "type": m.group(4),
-                         "interface": m.group(5), "vpn": m.group(6) or ""})
+            rows.append({"ip": m.group(1), "mac": m.group(2), "expire": (m.group(3) or "").strip(),
+                         "type": m.group(4).split()[0], "interface": m.group(5), "vpn": m.group(6) or "", "vlan": ""})
+            continue
+        v = re.match(r"^\s{20,}(\d+|-)/(\d+|-)(?=\s|$)", line)
+        if v and rows and not rows[-1]["vlan"]:
+            rows[-1]["vlan"] = v.group(1) + ("" if v.group(2) == "-" else "/" + v.group(2))
     return rows
 
 
@@ -298,8 +376,12 @@ def parse_lldp(text):
     rows = []
     for line in text.splitlines():
         parts = line.split()
-        if len(parts) >= 4 and parts[1].isdigit() and re.match(r"^(GE|GigabitEthernet|\d+GE|XGE|Eth)", parts[0]):
+        if len(parts) < 4 or not re.match(r"^[A-Za-z0-9][\w-]*\d(/\d+)*(\.\d+)?$", parts[0]) or parts[0].lower().startswith("local"):
+            continue
+        if parts[1].isdigit():
             rows.append({"local": parts[0], "exptime": parts[1], "neighbor_port": parts[2], "neighbor": " ".join(parts[3:])})
+        elif parts[-1].isdigit():
+            rows.append({"local": parts[0], "exptime": parts[-1], "neighbor_port": parts[-2], "neighbor": " ".join(parts[1:-2])})
     return rows
 
 
