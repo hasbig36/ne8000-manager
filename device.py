@@ -249,7 +249,8 @@ class Router:
         listed whole: it takes minutes and ties up an SSH line on the router. Then only the smaller
         protocols are listed, and a lookup finds the route for one address or prefix."""
         cmd = f"display ip routing-table vpn-instance {vpn}" if vpn else "display ip routing-table"
-        static = P.parse_static_routes(self.cached("display current-configuration | include ip route-static", 10))
+        static = [r for r in P.parse_static_routes(self.cached("display current-configuration | include ip route-static", 10))
+                  if not vpn or r.get("vpn") == vpn]   # public view lists all static routes, as before
         if lookup:
             text = self.run(f"{cmd} {lookup.replace('/', ' ')}")
             return {"routes": P.parse_routing_table(text), "summary": f"Lookup {lookup}", "static": static, "lookup": lookup, "raw": text}
