@@ -1,0 +1,5 @@
+# Caddy on the host (not in Docker). Gets a Let's Encrypt certificate automatically.
+ne8000.example.com {
+	encode gzip
+	reverse_proxy 127.0.0.1:8080
+}

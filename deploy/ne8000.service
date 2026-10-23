@@ -1,0 +1,29 @@
+# systemd unit for running without Docker on Linux.
+#   sudo useradd --system --home /opt/ne8000-gui ne8000
+#   sudo cp -r ne8000-gui /opt/ && cd /opt/ne8000-gui && sudo python3 -m venv .venv && sudo .venv/bin/pip install -r requirements.txt
+#   sudo mkdir -p /var/lib/ne8000 && sudo chown ne8000 /var/lib/ne8000
+#   sudo cp deploy/ne8000.service /etc/systemd/system/ && sudo systemctl enable --now ne8000
+#   sudo journalctl -u ne8000      (shows the first admin password)
+[Unit]
+Description=NE8000 Manager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ne8000
+WorkingDirectory=/opt/ne8000-gui
+Environment=NE8000_DATA_DIR=/var/lib/ne8000
+Environment=NE8000_HOST=127.0.0.1
+Environment=NE8000_PORT=8080
+Environment=NE8000_BEHIND_PROXY=1
+# EnvironmentFile=/opt/ne8000-gui/.env
+ExecStart=/opt/ne8000-gui/.venv/bin/python app.py
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ne8000
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

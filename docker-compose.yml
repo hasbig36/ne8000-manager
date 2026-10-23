@@ -1,0 +1,35 @@
+# NE8000 Manager. Start:  docker compose up -d   then   docker compose logs  (shows the first admin password)
+services:
+  ne8000:
+    build: .
+    container_name: ne8000-manager
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/data            # users, plans, billing settings, audit log, session key
+    ports:
+      - "127.0.0.1:8080:8080"   # only the reverse proxy on this host can reach it; see deploy/Caddyfile
+    # If the router's management network is only reachable from the host itself
+    # (VPN, policy routing), use the host network instead of ports:
+    # network_mode: host
+
+  # Optional: automatic HTTPS with Caddy. Set NE8000_DOMAIN in .env, open ports 80/443,
+  # then:  docker compose --profile https up -d
+  caddy:
+    image: caddy:2
+    profiles: ["https"]
+    restart: unless-stopped
+    environment:
+      - NE8000_DOMAIN=${NE8000_DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [ne8000]
+
+volumes:
+  caddy_data:

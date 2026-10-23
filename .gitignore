@@ -1,0 +1,10 @@
+.env
+data/
+data.backup-*/
+plans/
+billing*.json
+users.json
+secret_key
+audit.log
+.venv/
+__pycache__/

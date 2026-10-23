@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+plans
+data
+billing.json
+billing_state.json
+users.json
+secret_key
+audit.log
+.env
+data.backup-*
+.git
