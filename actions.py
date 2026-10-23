@@ -54,7 +54,7 @@ def word(p, key, label=None, required=True):
 
 def text_line(p, key, maxlen=242):
     v = s(p, key)
-    if "\n" in v or "\r" in v or len(v) > maxlen:
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in v) or len(v) > maxlen:
         raise ActionError(f"{key} must be one line, at most {maxlen} characters.")
     return v
 
@@ -588,6 +588,8 @@ def build(name, params):
 def custom_lines(p):
     """Free-form configuration lines (used by network plans)."""
     lines = [l.rstrip() for l in s(p, "lines").splitlines() if l.strip() and not l.strip().startswith("#")]
+    if any(any(ord(ch) < 32 and ch != "\t" or ord(ch) == 127 for ch in l) for l in lines):
+        raise ActionError("Configuration lines may not contain control characters.")
     if not lines:
         raise ActionError("Enter at least one configuration line.")
     if any(l.strip().lower() in ("return", "save", "reboot") or l.strip().lower().startswith(("reboot", "reset saved")) for l in lines):

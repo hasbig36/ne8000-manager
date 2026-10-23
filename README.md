@@ -88,6 +88,7 @@ Everyone signs in to NE8000 Manager first, then connects to the router with thei
 - **Roles:** *admin* (everything, including app users), *operator* (everything except app users), *viewer* (can look at everything, every change is refused).
 - Admins manage logins under **Manager › App users**. Passwords are stored as salted hashes, need at least 10 characters, and a password change or deleted user signs that person out everywhere.
 - After 5 failed sign-ins from one address that address is locked for 5 minutes (20 failures lock the username).
+- 5 failed router SSH logins lock that app user's router connections for 5 minutes. Viewers cannot read the full configuration (it contains password hashes and SNMP communities).
 - **Manager › Audit log** records sign-ins, router connections, every change with its commands, config edits, saves, billing changes and plan executions, with the person and their IP. Plan versions and executions are recorded under the signed-in user.
 - Forgot the admin password? On the server: `python app.py --add-user admin --role admin` (or `docker compose exec ne8000 python app.py --add-user admin`) sets a new one.
 
@@ -117,6 +118,7 @@ Follow the steps at the top of `deploy/ne8000.service`: copy the app to `/opt/ne
 | `NE8000_ADMIN_USER` / `NE8000_ADMIN_PASSWORD` | admin / random | first admin, only used when there are no users yet |
 | `NE8000_BEHIND_PROXY` | 0 | set to 1 behind an HTTPS proxy: HTTPS-only login cookie, real client IPs from X-Forwarded-For |
 | `NE8000_TRUSTED_PROXY` | `*` | address of the proxy whose X-Forwarded headers are trusted (keep the app port private) |
+| `NE8000_ALLOWED_ROUTERS` | empty (any) | routers the app may connect to: IPs, subnets or hostnames, comma-separated. Recommended |
 | `NE8000_ALLOW_DEMO` | 1 | show "Try demo mode" |
 | `NE8000_DEFAULT_HOST` / `NE8000_DEFAULT_PORT` | empty / 22 | pre-fill the router form |
 | `NE8000_SESSION_HOURS` | 12 | how long a sign-in lasts |

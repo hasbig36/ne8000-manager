@@ -40,6 +40,28 @@ USERS = auth.UserStore(DATA_DIR)
 AUDIT = auth.Audit(DATA_DIR)
 THROTTLE_IP = auth.Throttle(limit=5)        # per client address
 THROTTLE_USER = auth.Throttle(limit=20)     # per username, high enough that strangers cannot easily lock out a real user
+THROTTLE_ROUTER = auth.Throttle(limit=5)    # failed router SSH logins per app user (slows password guessing on the router)
+
+
+def allowed_routers():
+    """NE8000_ALLOWED_ROUTERS: comma-separated IPs, subnets or hostnames the app may connect to (empty = any)."""
+    return [x.strip() for x in os.environ.get("NE8000_ALLOWED_ROUTERS", "").split(",") if x.strip()]
+
+
+def check_router_allowed(host):
+    allow = allowed_routers()
+    if not allow:
+        return
+    import ipaddress
+    for a in allow:
+        if host.lower() == a.lower():
+            return
+        try:
+            if ipaddress.ip_address(host) in ipaddress.ip_network(a, strict=False):
+                return
+        except ValueError:
+            pass
+    raise DeviceError("This server is not allowed to connect to that router. Allowed: " + ", ".join(allow))
 
 ROUTERS = {}   # browser session id -> Router. Credentials are never stored.
 NAME_RE = re.compile(r"^[A-Za-z0-9/.:\-_]{1,64}$")
@@ -123,6 +145,8 @@ def security_headers(resp):
                             "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
     if request.path.startswith("/api/"):
         resp.headers["Cache-Control"] = "no-store"
+    if request.is_secure:
+        resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
     return resp
 
 
@@ -134,7 +158,9 @@ def healthz():
 @app.get("/api/auth/me")
 def auth_me():
     u = current_user()
-    return jsonify(user=u and {"username": u["username"], "role": u["role"]}, allow_demo=ALLOW_DEMO,
+    if not u:
+        return jsonify(user=None)
+    return jsonify(user={"username": u["username"], "role": u["role"]}, allow_demo=ALLOW_DEMO,
                    default_host=os.environ.get("NE8000_DEFAULT_HOST", ""), default_port=os.environ.get("NE8000_DEFAULT_PORT", "22"))
 
 
@@ -263,7 +289,23 @@ def connect():
         host = (data.get("host") or "").strip()
         if not host:
             raise DeviceError("Host is required.")
-        r = RealRouter(host, data.get("username", ""), data.get("password", ""), data.get("port") or 22)
+        if len(host) > 253 or not re.match(r"^[A-Za-z0-9.:\-\[\]]+$", host):
+            raise DeviceError("Invalid host.")
+        try:
+            port = int(data.get("port") or 22)
+        except ValueError:
+            raise DeviceError("Invalid SSH port.")
+        if not 1 <= port <= 65535:
+            raise DeviceError("Invalid SSH port.")
+        check_router_allowed(host)
+        THROTTLE_ROUTER.check(me())
+        try:
+            r = RealRouter(host, data.get("username", ""), data.get("password", ""), port)
+        except DeviceError:
+            THROTTLE_ROUTER.fail(me())
+            AUDIT.log(me(), "router_connect_failed", host=host, ip=client_ip())
+            raise
+        THROTTLE_ROUTER.ok(me())
     old = ROUTERS.pop(session.get("sid"), None)
     if old:
         close_router(old)
@@ -365,6 +407,8 @@ def cli():
     command = (request.get_json(force=True).get("command") or "").strip()
     if not is_read_only(command):
         raise DeviceError("The console runs display, ping and tracert only. Use Config editor for changes.")
+    if current_user()["role"] == "viewer" and "configuration" in command.lower():
+        raise auth.AuthError("Viewers cannot read the full configuration.")
     return jsonify(output=router().run(command, read_timeout=120))
 
 
@@ -386,6 +430,8 @@ def save():
 
 @app.get("/api/running-config")
 def running_config():
+    if current_user()["role"] == "viewer":
+        raise auth.AuthError("Viewers cannot read the full configuration.")
     r = router()
     text = r.run("display current-configuration", read_timeout=180)
     if request.args.get("download"):

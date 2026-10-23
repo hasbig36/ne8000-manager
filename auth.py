@@ -111,9 +111,14 @@ class UserStore:
     def _admins(self):
         return sum(1 for u in self.users.values() if u["role"] == "admin")
 
+    _DUMMY = generate_password_hash("not-a-real-password")
+
     def verify(self, name, password):
         u = self.users.get((name or "").strip())
-        if not u or not check_password_hash(u["hash"], password or ""):
+        if not u:
+            check_password_hash(self._DUMMY, password or "")  # same time for unknown users: no username probing
+            return None
+        if not check_password_hash(u["hash"], password or ""):
             return None
         with self.lock:
             u["last_login"] = time.time()

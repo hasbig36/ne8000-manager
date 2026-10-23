@@ -17,7 +17,14 @@ class DeviceError(Exception):
     pass
 
 
+def has_control_chars(text):
+    """Newlines or control characters would let one 'command' smuggle in more lines."""
+    return any(ord(ch) < 32 or ord(ch) == 127 for ch in text)
+
+
 def is_read_only(command):
+    if has_control_chars(command) or len(command) > 300:
+        return False
     c = command.strip().lower()
     return c in ("display", "dis") or c.startswith(READ_ONLY_PREFIXES)
 
