@@ -275,6 +275,42 @@ def qos_car_remove(p):
     return [f"interface {name}", f"undo qos car {direction}"]
 
 
+def _dirs(p):
+    d = s(p, "direction") or "both"
+    if d not in ("both", "inbound", "outbound"):
+        raise ActionError("Direction must be both, inbound or outbound.")
+    return ["inbound", "outbound"] if d == "both" else [d]
+
+
+@action("qos.profile_apply")
+def qos_profile_apply(p):
+    """Bind a QoS profile (its CAR rate) to an interface, like the router's reseller sub-interfaces."""
+    name, prof = iface(p), word(p, "profile", "Profile")
+    out = [f"interface {name}"]
+    for d in _dirs(p):
+        cur = p.get("current") if isinstance(p.get("current"), dict) else {}
+        old = s(p, "old_" + d) or str((cur.get(name) or {}).get(d) or "")
+        if old and old != prof:
+            out.append(f"undo qos-profile {word({'x': old}, 'x', 'Current profile')} {d} identifier none")
+        out.append(f"qos-profile {prof} {d} identifier none")
+    return out
+
+
+@action("qos.profile_remove")
+def qos_profile_remove(p):
+    name, prof = iface(p), word(p, "profile", "Profile")
+    return [f"interface {name}"] + [f"undo qos-profile {prof} {d} identifier none" for d in _dirs(p)]
+
+
+@action("qos.profile_create")
+def qos_profile_create(p):
+    """A QoS profile with one CAR rate. Rates in kbit/s; burst sizes default to the router's."""
+    prof = word(p, "name", "Profile name")
+    cir = integer(p, "cir", 8, 400_000_000, "CIR (kbit/s)")
+    pir = integer(p, "pir", cir, 400_000_000, "PIR (kbit/s)", required=False)
+    return [f"qos-profile {prof}", f"car cir {cir}" + (f" pir {pir}" if pir else "") + " green pass yellow pass red discard", "quit"]
+
+
 @action("qos.shaping")
 def qos_shaping(p):
     name = iface(p)

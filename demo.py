@@ -49,9 +49,11 @@ class DemoRouter(Router):
         I("GigabitEthernet0/1/4.100", desc="Customer-C VLAN100", ips=[("10.20.100.1", 24)], vlan=100, base=40e6)
         I("GigabitEthernet0/1/4.200", desc="Customer-D VLAN200", ips=[("10.20.200.1", 24)], vlan=200, vpn="CUST-D", base=25e6)
         I("GigabitEthernet0/1/6", desc="Reseller aggregation (Nairobi)", base=470e6)
-        I("GigabitEthernet0/1/6.301", desc="Reseller AlphaNet", ips=[("102.216.117.1", 30)], vlan=301, base=180e6)
+        I("GigabitEthernet0/1/6.301", desc="Reseller AlphaNet", ips=[("102.216.117.1", 30)], vlan=301, base=180e6,
+          qos=["qos-profile 600Mbps inbound identifier none", "qos-profile 600Mbps outbound identifier none"])
         I("GigabitEthernet0/1/6.302", desc="Reseller BetaLink", ips=[("102.216.117.5", 30)], vlan=302, base=90e6)
-        I("GigabitEthernet0/1/6.303", desc="Reseller Gamma Cable 552903", ips=[("10.99.3.1", 30)], vlan=303, base=120e6)
+        I("GigabitEthernet0/1/6.303", desc="Reseller Gamma Cable 552903", ips=[("10.99.3.1", 30)], vlan=303, base=120e6,
+          qos=["qos-profile 500Mbps inbound identifier none", "qos-profile 500Mbps outbound identifier none"])
         I("GigabitEthernet0/1/6.304", desc="Shared reseller VLAN", ips=[("102.216.117.33", 27)], vlan=304, base=70e6)
         I("GigabitEthernet0/1/6.399", desc="TEST ne8000test", ips=[("10.99.99.1", 30)], vlan=399, base=5e6)
         I("GigabitEthernet0/1/5", desc="L2-Trunk", base=60e6, l2=True, trunk="10 20 30")
@@ -80,6 +82,8 @@ class DemoRouter(Router):
         self.vpns = {"CUST-D": "65001:200", "__LOCAL_OAM_VPN__": "<not set>"}
         self.policies = {"LIMIT-GUEST": {"classifier": "LIMIT-GUEST_c", "acl": 3001, "cir": 50000}}
         self.queues = {}
+        self.profiles = {"100Mbps": [100000, 100000], "300Mbps": [300000, 300000], "500Mbps": [500000, 500000],
+                         "600Mbps": [600000, 600000], "1Gbps": [1000000, 1000000], "500MBPS": [1024, 512000]}
         self.extra_log = []
         self._backfill()
         self.start_poller()
@@ -218,7 +222,7 @@ class DemoRouter(Router):
         import copy
         return copy.deepcopy({k: v for k, v in self.__dict__.items()
                               if k in ("ifs", "vlan_db", "static", "arp_static", "bgp_peers", "bgp_networks", "ospf_networks",
-                                       "users", "ntp", "snmp", "vpns", "policies", "queues", "sysname_")})
+                                       "users", "ntp", "snmp", "vpns", "policies", "queues", "profiles", "sysname_")})
 
     def _restore(self, snap):
         self.__dict__.update(snap)
@@ -228,6 +232,15 @@ class DemoRouter(Router):
         w = line.split()
         if line == "quit":
             return ("system", None)
+        if view == "qosprofile":
+            if w[:2] == ["car", "cir"]:
+                cir = int(w[2]); pir = int(w[w.index("pir") + 1]) if "pir" in w else cir
+                self.profiles[ctx] = [cir, pir]
+                return None
+            view, ctx = "system", None
+        if w[0] == "qos-profile" and len(w) == 2 and view == "system":
+            self.profiles.setdefault(w[1], [None, None])
+            return ("qosprofile", w[1])
         if w[0] == "interface" and len(w) == 2:
             name = w[1]
             if name not in self.ifs:
@@ -420,6 +433,17 @@ class DemoRouter(Router):
             i["qos"] = [q for q in i["qos"] if not q.startswith("port shaping")]
         elif w[0] == "port-queue":
             i["qos"] = [q for q in i["qos"] if not q.startswith(f"port-queue {w[1]} ")] + [line]
+        elif w[0] == "qos-profile" and len(w) >= 3:
+            if w[1] not in self.profiles:
+                return f"The QoS profile {w[1]} does not exist."
+            if any(q.startswith("qos-profile ") and q.split()[2] == w[2] for q in i["qos"]):
+                return f"A QoS profile is already applied in the {w[2]} direction. Undo it first."
+            i["qos"].append(line)
+        elif w[:2] == ["undo", "qos-profile"]:
+            before = len(i["qos"])
+            i["qos"] = [q for q in i["qos"] if not (q.startswith("qos-profile ") and q.split()[1:3] == w[2:4])]
+            if len(i["qos"]) == before:
+                return "The QoS profile is not applied in that direction."
         elif w[0] == "traffic-policy":
             if w[1] not in self.policies:
                 return f"The traffic policy {w[1]} does not exist."
@@ -619,6 +643,12 @@ Statistics last cleared:never
         lines += [" " + q for q in i["qos"]]
         return lines
 
+    def show_current_configuration_configuration_qos_profile(self):
+        out = []
+        for name, (cir, pir) in self.profiles.items():
+            out += ["#", f"qos-profile {name}"] + ([f" car cir {cir} pir {pir} cbs 18700000 pbs 18700000 green pass yellow pass red discard"] if cir else [])
+        return "\n".join(out + ["#"])
+
     def show_current_configuration_interface(self):
         return "\n".join("\n".join(self.if_config(n, i)) + "\n#" for n, i in self.ifs.items())
 
@@ -648,6 +678,7 @@ Statistics last cleared:never
         out += ["aaa"] + [f" local-user {u} password irreversible-cipher $1c$demo$ level {l}" for u, l in self.users.items()] + ["#"]
         for name, p in self.policies.items():
             out += [f"traffic policy {name}", f" classifier {p['classifier']} behavior {name}_b", "#"]
+        out += [self.show_current_configuration_configuration_qos_profile()]
         out += [self.show_current_configuration_interface()]
         out += [self.show_current_configuration_configuration_bgp()]
         out += [f"ospf {proc} router-id 1.1.1.1" if i == 0 else "" for i, (proc, a, n) in enumerate(self.ospf_networks[:1])]

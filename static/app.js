@@ -356,18 +356,26 @@ function portForm(name) {
 PAGES.queues = async c => {
   const q = await api('/api/view/qos'); await ensureIfs();
   const ifl = q.interfaces;
-  c.innerHTML = head('Queues / QoS', 'rate limits, shaping, port queues and traffic policies') +
+  c.innerHTML = head('Queues / QoS', 'QoS profiles, rate limits, shaping, port queues and traffic policies') +
     `<div class="card"><h3>Rate limits and shaping</h3><div id="qRules"></div></div>
+    <div class="card"><h3>QoS profiles</h3><div id="qProf"></div></div>
     <div class="grid g2"><div class="card"><h3>Port-queue scheduling</h3><div id="qQ"></div></div>
     <div class="card"><h3>Queue statistics <span class="sp"></span><select id="qIf">${ifl.filter(n => !n.includes('.')).sort((a, b) => busy(b) - busy(a)).map(n => `<option>${esc(n)}</option>`).join('')}</select></h3><div id="qStats" class="muted">Pick an interface.</div></div></div>
     <div class="card"><h3>Traffic policies <span class="sp"></span><button class="btn sm" onclick="simpleQueueForm()">+ Simple queue (policy)</button><button class="btn sm" onclick="bindForm()">Bind policy to interface</button></h3><pre>${esc(q.policies || '(none)')}</pre></div>`;
-  window._qIfs = ifl;
-  table($('#qRules'), [{ t: 'Interface', k: 'interface', f: r => `<b>${esc(r.interface)}</b>` }, { t: 'Type', k: 'kind', f: r => ({ 'rate-limit': 'Rate limit (CAR)', shaping: 'Port shaping', policy: 'Traffic policy ' + esc(r.policy) }[r.kind]) },
-    { t: 'Direction', k: 'direction' }, { t: 'Max rate', k: 'cir_kbps', num: true, f: r => r.cir_kbps ? Fmt.bps(r.cir_kbps * 1000) : '-' }, { t: 'Burst rate (PIR)', k: 'pir_kbps', num: true, f: r => r.pir_kbps ? Fmt.bps(r.pir_kbps * 1000) : '-' },
+  window._qIfs = ifl; window._qProfiles = q.profiles || [];
+  window._qBound = {}; q.rules.filter(r => r.kind === 'profile').forEach(r => { (window._qBound[r.interface] = window._qBound[r.interface] || {})[r.direction] = r.profile; });
+  table($('#qRules'), [{ t: 'Interface', k: 'interface', f: r => `<b>${esc(r.interface)}</b>` }, { t: 'Type', k: 'kind', f: r => ({ 'rate-limit': 'Rate limit (CAR)', shaping: 'Port shaping', policy: 'Traffic policy ' + esc(r.policy), profile: 'QoS profile <b>' + esc(r.profile) + '</b>' }[r.kind]) },
+    { t: 'Direction', k: 'direction' }, { t: 'Rate (CIR)', k: 'cir_kbps', num: true, f: r => r.cir_kbps ? Fmt.bps(r.cir_kbps * 1000) : '-' }, { t: 'Peak (PIR)', k: 'pir_kbps', num: true, f: r => r.pir_kbps ? Fmt.bps(r.pir_kbps * 1000) : '-' },
     { t: 'Current', sort: false, f: r => { const i = ifCache.find(x => x.name === r.interface); return i ? ubar(r.direction === 'inbound' ? i.in_util : i.out_util) : ''; } },
     { t: 'Command', k: 'line', cls: 'mono faint' },
-    { t: '', sort: false, cls: 'acts', f: r => `<button class="btn sm danger" onclick='change(${attr(r.kind === 'shaping' ? { title: 'Remove shaping on ' + r.interface, action: 'qos.shaping_remove', params: { interface: r.interface } } : r.kind === 'policy' ? { title: 'Unbind policy from ' + r.interface, action: 'qos.policy_unbind', params: { interface: r.interface, direction: r.direction } } : { title: 'Remove rate limit on ' + r.interface, action: 'qos.car_remove', params: { interface: r.interface, direction: r.direction } })})'>Remove</button>` }],
-    q.rules, { toolbar: `<button class="btn" onclick="carForm()">+ Rate limit</button><button class="btn" onclick="shapeForm()">+ Port shaping</button>`, empty: 'No rate limits configured' });
+    { t: '', sort: false, cls: 'acts', f: r => (r.kind === 'profile' ? `<button class="btn sm" onclick='profileForm(${attr(r.interface)})'>Change</button>` : '') + `<button class="btn sm danger" onclick='change(${attr(r.kind === 'profile' ? { title: 'Remove QoS profile ' + r.profile + ' (' + r.direction + ') from ' + r.interface, action: 'qos.profile_remove', params: { interface: r.interface, profile: r.profile, direction: r.direction } } : r.kind === 'shaping' ? { title: 'Remove shaping on ' + r.interface, action: 'qos.shaping_remove', params: { interface: r.interface } } : r.kind === 'policy' ? { title: 'Unbind policy from ' + r.interface, action: 'qos.policy_unbind', params: { interface: r.interface, direction: r.direction } } : { title: 'Remove rate limit on ' + r.interface, action: 'qos.car_remove', params: { interface: r.interface, direction: r.direction } })})'>Remove</button>` }],
+    q.rules, { toolbar: `<button class="btn" onclick="profileForm()">+ Apply QoS profile</button><button class="btn" onclick="carForm()">+ Rate limit</button><button class="btn" onclick="shapeForm()">+ Port shaping</button>`, empty: 'No rate limits configured' });
+  table($('#qProf'), [{ t: 'Profile', k: 'name', f: x => `<b>${esc(x.name)}</b>` }, { t: 'CIR (guaranteed)', k: 'cir_kbps', num: true, f: x => x.cir_kbps ? Fmt.bps(x.cir_kbps * 1000) : '-' },
+    { t: 'PIR (max)', k: 'pir_kbps', num: true, f: x => x.pir_kbps ? Fmt.bps(x.pir_kbps * 1000) : '-' },
+    { t: 'Used by', k: 'interfaces', cls: 'wrap', f: x => x.interfaces.length ? x.interfaces.map(esc).join(', ') : '<span class="faint">not used</span>' },
+    { t: 'Command', k: 'lines', cls: 'mono faint wrap', f: x => esc(x.lines.join(' / ')) },
+    { t: '', sort: false, cls: 'acts', f: x => `<button class="btn sm" onclick='profileForm(null, ${attr(x.name)})'>Apply to interface</button>` }],
+    q.profiles || [], { toolbar: `<button class="btn" onclick="profileCreateForm()">+ QoS profile</button>`, empty: 'No QoS profiles defined' });
   table($('#qQ'), [{ t: 'Interface', k: 'interface' }, { t: 'Setting', k: 'line', cls: 'mono' }], q.queues, { toolbar: `<button class="btn" onclick="queueForm()">+ Queue scheduling</button>`, empty: 'Default scheduling on all ports' });
   $('#qIf').onchange = () => queueStats($('#qIf').value);
   queueStats($('#qIf').value);
@@ -387,6 +395,16 @@ async function queueStats(name) {
 const busy = n => { const i = ifCache.find(x => x.name === n); return i ? i.in_util + i.out_util : 0; };
 const ifOpts = () => (window._qIfs || ifCache.map(i => i.name));
 function carForm() { change({ title: 'Rate limit (CAR)', action: 'qos.car', intro: 'Polices traffic on an interface or sub-interface, like a MikroTik simple queue max-limit.', fields: [{ k: 'interface', label: 'Interface', type: 'select', options: ifOpts() }, { k: 'direction', label: 'Direction', type: 'select', options: [['inbound', 'Inbound (upload from customer)'], ['outbound', 'Outbound (download to customer)']] }, { k: 'cir', label: 'Max rate (kbit/s)', type: 'number', ph: '100000 = 100 Mbit/s' }, { k: 'pir', label: 'Burst rate (kbit/s)', type: 'number', ph: 'optional' }] }); }
+const profLabel = x => `${x.name} (${x.pir_kbps && x.pir_kbps !== x.cir_kbps ? 'max ' + Fmt.bps(x.pir_kbps * 1000) + ', guaranteed ' + Fmt.bps(x.cir_kbps * 1000) : Fmt.bps((x.cir_kbps || 0) * 1000)})`;
+function profileForm(ifn, prof) {
+  const cur = ifn && window._qBound[ifn] || {};
+  change({ title: ifn ? 'QoS profile on ' + ifn : 'Apply QoS profile', action: 'qos.profile_apply', params: { current: window._qBound },
+    intro: 'Limits the interface to the profile\'s rate. A profile already on the interface in that direction is replaced.',
+    fields: [{ k: 'interface', label: 'Interface', type: 'select', options: ifOpts(), value: ifn || '' },
+      { k: 'profile', label: 'Profile', type: 'select', options: window._qProfiles.map(x => [x.name, profLabel(x)]), value: prof || cur.inbound || '' },
+      { k: 'direction', label: 'Direction', type: 'select', options: [['both', 'Both (upload and download)'], ['inbound', 'Inbound (upload from customer)'], ['outbound', 'Outbound (download to customer)']] }] });
+}
+function profileCreateForm() { change({ title: 'New QoS profile', action: 'qos.profile_create', intro: 'A named speed limit you can apply to many interfaces. Rates in kbit/s (100 Mbit/s = 100000).', fields: [{ k: 'name', label: 'Name', ph: '250Mbps' }, { k: 'cir', label: 'CIR, guaranteed (kbit/s)', type: 'number', ph: '250000' }, { k: 'pir', label: 'PIR, maximum (kbit/s, optional)', type: 'number', ph: 'same as CIR' }] }); }
 function shapeForm() { change({ title: 'Port shaping', action: 'qos.shaping', intro: 'Shapes all outbound traffic on a physical port.', fields: [{ k: 'interface', label: 'Port', type: 'select', options: ifOpts().filter(n => !n.includes('.')) }, { k: 'mbps', label: 'Rate (Mbit/s)', type: 'number', ph: '1000' }] }); }
 function queueForm() { change({ title: 'Port-queue scheduling', action: 'qos.queue', fields: [{ k: 'interface', label: 'Port', type: 'select', options: ifOpts().filter(n => !n.includes('.')) }, { k: 'queue', label: 'Queue', type: 'select', options: ['be', 'af1', 'af2', 'af3', 'af4', 'ef', 'cs6', 'cs7'] }, { k: 'schedule', label: 'Scheduling', type: 'select', options: [['wfq', 'WFQ (weighted)'], ['pq', 'PQ (strict priority)'], ['lpq', 'LPQ (low priority)']] }, { k: 'weight', label: 'Weight', type: 'number', ph: '1-100, WFQ only' }, { k: 'shaping_pct', label: 'Shaping %', type: 'number', ph: 'optional, of port rate' }] }); }
 function simpleQueueForm() { change({ title: 'Simple queue (traffic policy)', action: 'qos.simple_policy', intro: 'Creates an ACL, classifier, CAR behavior and policy. Bind it to an interface afterwards.', fields: [{ k: 'name', label: 'Name', ph: 'CUST-A-100M' }, { k: 'acl', label: 'ACL number', type: 'number', ph: '3000-3999' }, { k: 'source', label: 'Source prefix', ph: '10.20.100.0/24' }, { k: 'destination', label: 'Destination prefix', ph: 'optional' }, { k: 'cir', label: 'Max rate (kbit/s)', type: 'number', ph: '100000' }] }); }

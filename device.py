@@ -237,7 +237,16 @@ class Router:
 
     def qos(self):
         cfg = self.interface_config()
-        return {"rules": P.parse_qos_from_config(cfg),
+        rules = P.parse_qos_from_config(cfg)
+        text = self.cached("display current-configuration configuration qos-profile", 10)
+        profiles = [] if text.strip().startswith(("Error", "^")) or "Error:" in text[:200] else P.parse_qos_profiles(text)
+        by_name = {x["name"]: x for x in profiles}
+        for x in profiles:
+            x["interfaces"] = sorted({r["interface"] for r in rules if r.get("profile") == x["name"]})
+        for r in rules:   # a profile binding limits at the profile's CAR rate
+            if r["kind"] == "profile" and r["profile"] in by_name:
+                r["cir_kbps"], r["pir_kbps"] = by_name[r["profile"]]["cir_kbps"], by_name[r["profile"]]["pir_kbps"]
+        return {"rules": rules, "profiles": profiles,
                 "queues": [{"interface": n, "line": l} for n, c in cfg.items() for l in c if l.startswith("port-queue")],
                 "policies": "" if (pol := self.cached("display traffic policy user-defined", 10)).strip().startswith("Error:") else pol,
                 "interfaces": [n for n in cfg if not n.lower().startswith(("null", "loopback"))]}

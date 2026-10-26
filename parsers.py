@@ -483,10 +483,37 @@ def parse_qos_from_config(blocks):
             if m:
                 rows.append({"interface": iface, "kind": "shaping", "direction": "outbound",
                              "cir_kbps": int(m.group(1)) * 1000, "pir_kbps": None, "line": l})
+            m = re.match(r"^qos-profile (\S+) (inbound|outbound)\b", l)
+            if m:
+                rows.append({"interface": iface, "kind": "profile", "direction": m.group(2), "profile": m.group(1),
+                             "cir_kbps": None, "pir_kbps": None, "line": l})
             m = re.match(r"^traffic-policy (\S+) (inbound|outbound)", l)
             if m:
                 rows.append({"interface": iface, "kind": "policy", "direction": m.group(2), "policy": m.group(1),
                              "cir_kbps": None, "pir_kbps": None, "line": l})
+    return rows
+
+
+def parse_qos_profiles(text):
+    """`display current-configuration configuration qos-profile` -> [{name, cir_kbps, pir_kbps, cbs, pbs, lines}]."""
+    rows, cur = [], None
+    for line in text.splitlines():
+        m = re.match(r"^qos-profile (\S+)\s*$", line)
+        if m:
+            cur = {"name": m.group(1), "cir_kbps": None, "pir_kbps": None, "cbs": None, "pbs": None, "lines": []}
+            rows.append(cur)
+            continue
+        if cur is None:
+            continue
+        if not line.startswith(" "):
+            cur = None
+            continue
+        t = line.strip()
+        cur["lines"].append(t)
+        m = re.match(r"^car cir (\d+)(?: pir (\d+))?(?: cbs (\d+))?(?: pbs (\d+))?", t)
+        if m and cur["cir_kbps"] is None:
+            cur["cir_kbps"], cur["pir_kbps"] = int(m.group(1)), int(m.group(2)) if m.group(2) else None
+            cur["cbs"], cur["pbs"] = int(m.group(3)) if m.group(3) else None, int(m.group(4)) if m.group(4) else None
     return rows
 
 
