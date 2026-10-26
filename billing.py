@@ -142,8 +142,17 @@ class SplynxClient:
                 and (not partner_ids or int(c.get("partner_id") or 0) in partner_ids)
                 and (not location_ids or int(c.get("location_id") or 0) in location_ids)]
 
-    def services(self):
-        return self.list_all("/api/2.0/admin/customers/customer/0/internet-services")   # customer 0 = every customer
+    def services(self, customer_ids=None):
+        """Internet services of the given customers (all customers if None). customer 0 = every customer."""
+        path = "/api/2.0/admin/customers/customer/0/internet-services"
+        if customer_ids is None:
+            return self.list_all(path)
+        ids, out = sorted(set(map(int, customer_ids))), []
+        for i in range(0, len(ids), 200):   # keep the URL short
+            params = {"main_attributes[customer_id][0]": "IN"}
+            params.update({f"main_attributes[customer_id][1][{j}]": x for j, x in enumerate(ids[i:i + 200])})
+            out += self.list_all(path, params)
+        return out
 
     def partners(self):
         return self.get("/api/2.0/admin/administration/partners") or []
@@ -166,8 +175,8 @@ class StaticSource:
         return [c for c in self._c if (not partner_ids or int(c["partner_id"]) in partner_ids)
                 and (not location_ids or int(c["location_id"]) in location_ids)]
 
-    def services(self):
-        return self._s
+    def services(self, customer_ids=None):
+        return self._s if customer_ids is None else [s for s in self._s if int(s["customer_id"]) in set(map(int, customer_ids))]
 
     def partners(self):
         return self._p
@@ -333,7 +342,7 @@ class BillingEngine:
             try:
                 src = self.source(cfg)
                 customers = src.customers(set(map(int, cfg["partner_ids"])), set(map(int, cfg["location_ids"])))
-                services = src.services()
+                services = src.services([c["id"] for c in customers]) if cfg["partner_ids"] or cfg["location_ids"] else src.services()
             except BillingError as exc:
                 self.last.update(time=time.time(), error=str(exc))
                 raise
