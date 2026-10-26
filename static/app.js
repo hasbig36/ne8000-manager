@@ -146,7 +146,7 @@ const I = {
   ip: '<circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12"/>', route: '<path d="M3 13V8a3 3 0 013-3h7M10 2l3 3-3 3"/>', q: '<path d="M2 4h9M2 8h12M2 12h6"/>',
   sys: '<circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5L13 13M3 13l1.5-1.5M11.5 4.5L13 3"/>', tool: '<path d="M10 2a3 3 0 00-3 4L2 11l3 3 5-5a3 3 0 004-3l-2 1-2-2 1-2z"/>',
   graph: '<path d="M2 13l4-5 3 3 5-7"/>', log: '<path d="M3 2h10v12H3zM5 5h6M5 8h6M5 11h4"/>', hw: '<path d="M3 3h10v10H3zM6 6h4v4H6zM1 6h2M1 10h2M13 6h2M13 10h2"/>', user: '<circle cx="8" cy="5" r="3"/><path d="M2 14c1-3 3-4 6-4s5 1 6 4"/>',
-  term: '<path d="M2 3h12v10H2zM4 6l2 2-2 2M8 10h4"/>', plan: '<path d="M2 3l4-1 4 2 4-1v11l-4 1-4-2-4 1zM6 2v11M10 4v11"/>', bill: '<path d="M3 2h10v12l-2-1-2 1-2-1-2 1-2-1zM5.5 5h5M5.5 8h5M5.5 11h3"/>',
+  term: '<path d="M2 3h12v10H2zM4 6l2 2-2 2M8 10h4"/>', rtr: '<path d="M2 9h12v4H2zM5 11h.01M8 11h.01M4 9l2-5h4l2 5"/>', adopt: '<path d="M2 9h8v4H2zM12 3v6M9 6h6"/>', plan: '<path d="M2 3l4-1 4 2 4-1v11l-4 1-4-2-4 1zM6 2v11M10 4v11"/>', bill: '<path d="M3 2h10v12l-2-1-2 1-2-1-2 1-2-1zM5.5 5h5M5.5 8h5M5.5 11h3"/>',
 };
 const NAV = [
   [null, [['dashboard', 'Dashboard', I.dash]]],
@@ -156,7 +156,7 @@ const NAV = [
   ['Billing', [['billing', 'Splynx billing', I.bill]]],
   ['Routing', [['bgp', 'BGP', I.route], ['ospf', 'OSPF', I.route], ['isis', 'IS-IS', I.route], ['mpls', 'MPLS / LDP', I.route]]],
   ['System', [['resources', 'Resources', I.graph], ['hardware', 'Hardware', I.hw], ['users', 'Router users', I.user], ['settings', 'Settings', I.sys], ['logs', 'Logs & alarms', I.log]]],
-  ['Manager', [['account', 'My account', I.user], ['routers', 'Routers', I.rtr], ['appusers', 'App users', I.user], ['audit', 'Audit log', I.log]]],
+  ['Manager', [['account', 'My account', I.user], ['routers', 'Routers', I.rtr], ['adopt', 'Adopt devices', I.adopt], ['appusers', 'App users', I.user], ['audit', 'Audit log', I.log]]],
   ['Tools', [['traffic', 'Traffic monitor', I.graph], ['ping', 'Ping / Traceroute', I.tool], ['console', 'Console', I.term], ['config', 'Config editor', I.term], ['backup', 'Backup', I.tool]]],
 ];
 $('#side').innerHTML = NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>` : '') + items.map(([k, t, ic]) =>
@@ -880,16 +880,16 @@ async function start() {
   $('#appLogin').classList.add('hidden');
   document.querySelectorAll('.meName').forEach(e => e.textContent = `${ME.username} (${ME.role})`);
   document.body.classList.toggle('ro', ME.role === 'viewer');
-  document.querySelectorAll('#side a[data-p=appusers], #side a[data-p=audit], #side a[data-p=routers]').forEach(a => a.style.display = ME.role === 'admin' ? '' : 'none');
+  document.querySelectorAll('#side a[data-p=appusers], #side a[data-p=audit], #side a[data-p=routers], #side a[data-p=adopt]').forEach(a => a.style.display = ME.role === 'admin' ? '' : 'none');
   $('#demoBtn').style.display = AUTH.allow_demo ? '' : 'none';
   routerPicker();
   if (AUTH.default_host && !$('#host').value) { $('#host').value = AUTH.default_host; $('#port').value = AUTH.default_port || 22; }
   const s = await api('/api/status');
   document.querySelectorAll('.adminOnly').forEach(e => e.style.display = ME.role === 'admin' ? '' : 'none');
   const want = location.hash.slice(1);
-  if (!s.connected && !['account', 'routers', 'appusers', 'audit'].includes(want)) {
+  if (!s.connected && !['account', 'routers', 'adopt', 'appusers', 'audit'].includes(want)) {
     $('#login').classList.remove('hidden'); $('#shell').classList.add('hidden'); (ROUTER_LIST.length || $('#host').value ? $('#username') : $('#host')).focus();
-    window.onhashchange = () => { if (['account', 'routers', 'appusers', 'audit'].includes(location.hash.slice(1))) location.reload(); };
+    window.onhashchange = () => { if (['account', 'routers', 'adopt', 'appusers', 'audit'].includes(location.hash.slice(1))) location.reload(); };
     return;
   }
   if (!s.connected) { $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden'); $('#tHost').textContent = 'not connected'; $('#logoutBtn').textContent = 'Connect router'; $('#saveBtn').style.display = 'none';

@@ -19,6 +19,7 @@ from flask import Flask, Response, jsonify, render_template, request, session
 import actions
 import auth
 import billing
+import adopt
 import history
 import plans
 import routers
@@ -112,7 +113,7 @@ OPEN = {"index", "static", "auth_login", "auth_me", "healthz"}
 # endpoints a viewer may POST to; everything else that changes something needs operator or admin
 VIEWER_POST = {"connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password"}
 ADMIN_ONLY = {"users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
-              "routers_test_snmp"}
+              "routers_test_snmp", "adopt_discover", "adopt_scan", "adopt_build", "adopt_apply", "adopt_identify"}
 
 
 def current_user():
@@ -300,6 +301,135 @@ def routers_delete(rid):
     r = SAVED.delete(rid)
     AUDIT.log(me(), "router_deleted", name=r["name"], host=r["host"])
     return jsonify(routers=SAVED.list())
+
+
+# ---- adopt new devices ---------------------------------------------------------------
+def adopt_demo():
+    r = ROUTERS.get(session.get("sid"))
+    return bool(r and r.demo)
+
+
+@app.get("/api/adopt/discover")
+def adopt_discover():
+    """LLDP neighbours of every saved router with an SNMP login."""
+    known = set(SAVED.hosts())
+    if adopt_demo():
+        return jsonify(devices=adopt.demo_lldp(known), errors=[], demo=True)
+    from snmp import SnmpClient
+    rows, errors = [], []
+    for r in SAVED.list():
+        full = SAVED.get(r["id"])
+        s = full.get("snmp")
+        if not s:
+            continue
+        try:
+            c = SnmpClient(full["host"], s["user"], s["auth_proto"], s["auth_key"], s["priv_proto"], s["priv_key"], port=s["port"], timeout=5)
+            try:
+                rows += adopt.lldp_candidates(c, r["name"], known)
+            finally:
+                c.close()
+        except Exception as exc:
+            errors.append(f"{r['name']}: {str(exc)[:160]}")
+    return jsonify(devices=rows, errors=errors, demo=False)
+
+
+@app.post("/api/adopt/scan")
+def adopt_scan():
+    d = request.get_json(force=True)
+    try:
+        port = int(d.get("port") or 22)
+    except ValueError:
+        raise DeviceError("Invalid SSH port.")
+    demo = adopt_demo()
+    try:
+        rows = adopt.scan(d.get("subnet") or "", port, set(SAVED.hosts()), probe=adopt.demo_probe if demo else adopt.ssh_banner)
+    except adopt.AdoptError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "adopt_scan", subnet=str(d.get("subnet"))[:40], found=len(rows), ip=client_ip())
+    return jsonify(devices=rows, demo=demo)
+
+
+def adopt_target(d):
+    host = (d.get("host") or "").strip()
+    if not re.match(r"^[0-9.]{7,15}$", host):
+        raise DeviceError("Invalid device address.")
+    env = [x.strip() for x in os.environ.get("NE8000_ALLOWED_ROUTERS", "").split(",") if x.strip()]
+    if env:
+        import ipaddress
+        if not any(host == a or (re.match(r"^[0-9./]+$", a) and ipaddress.ip_address(host) in ipaddress.ip_network(a, strict=False)) for a in env):
+            raise DeviceError("That address is outside NE8000_ALLOWED_ROUTERS on this server.")
+    try:
+        port = int(d.get("port") or 22)
+    except ValueError:
+        raise DeviceError("Invalid SSH port.")
+    return host, port
+
+
+@app.post("/api/adopt/identify")
+def adopt_identify():
+    d = request.get_json(force=True)
+    host, port = adopt_target(d)
+    THROTTLE_ROUTER.check(me())
+    try:
+        res = adopt.identify(host, port, d.get("username") or "", d.get("password") or "",
+                             connect=adopt.demo_connect if adopt_demo() else adopt.ssh_connect)
+    except adopt.AdoptError as exc:
+        if "Could not log in" in str(exc):
+            THROTTLE_ROUTER.fail(me())
+        raise DeviceError(str(exc))
+    THROTTLE_ROUTER.ok(me())
+    return jsonify(res)
+
+
+@app.post("/api/adopt/build")
+def adopt_build():
+    d = request.get_json(force=True)
+    try:
+        lines = adopt.build(d.get("fields") or {}, d.get("platform") or "")
+    except (adopt.AdoptError, actions.ActionError) as exc:
+        raise DeviceError(str(exc))
+    return jsonify(text="\n".join(lines))
+
+
+@app.post("/api/adopt/apply")
+def adopt_apply():
+    d = request.get_json(force=True)
+    f = d.get("fields") or {}
+    host, port = adopt_target(d)
+    commit = bool(d.get("commit"))
+    demo = adopt_demo()
+    name = (f.get("hostname") or "").strip()
+    if commit and not demo and any(r["name"].lower() == name.lower() for r in SAVED.list()):
+        raise DeviceError(f"A saved router is already called {name}. Pick another hostname.")
+    THROTTLE_ROUTER.check(me())
+    try:
+        res = adopt.apply(host, port, d.get("username") or "", d.get("password") or "", d.get("text") or "", d.get("platform") or "",
+                          commit, ((f.get("admin_user") or "").strip(), f.get("admin_password") or ""),
+                          connect=adopt.demo_connect if demo else adopt.ssh_connect)
+    except adopt.AdoptError as exc:
+        if "Could not log in" in str(exc):
+            THROTTLE_ROUTER.fail(me())
+        AUDIT.log(me(), "adopt_failed", host=host, commit=commit, error=str(exc)[:200], ip=client_ip())
+        raise DeviceError(str(exc))
+    THROTTLE_ROUTER.ok(me())
+    if not commit:
+        AUDIT.log(me(), "adopt_checked", host=host, ok=res["ok"], ip=client_ip())
+        return jsonify(res)
+    AUDIT.log(me(), "adopt_applied", host=host, final=res["host"], name=name, platform=res["platform"], ip=client_ip())
+    saved = None
+    if demo:
+        res["warnings"].append("Demo mode: the device was not added to Manager > Routers.")
+    else:
+        try:
+            saved = SAVED.add({"name": name, "host": res["host"], "port": port, "username": (f.get("admin_user") or "").strip(),
+                               "notes": f"Adopted {time.strftime('%Y-%m-%d')} {res.get('model', '')}"[:200],
+                               "snmp_user": f.get("snmp_user") or "", "snmp_auth_proto": f.get("snmp_auth_proto"), "snmp_auth_key": f.get("snmp_auth_key"),
+                               "snmp_priv_proto": f.get("snmp_priv_proto"), "snmp_priv_key": f.get("snmp_priv_key")})
+            AUDIT.log(me(), "router_added", name=saved["name"], host=saved["host"], port=saved["port"])
+        except Exception as exc:
+            res["warnings"].append(f"Configured, but not added to Manager > Routers: {exc}")
+    res["saved"] = saved
+    return jsonify(res)
 
 
 @app.get("/api/audit")
