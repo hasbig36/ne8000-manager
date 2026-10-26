@@ -459,6 +459,114 @@ def parse_ospf_interfaces(text):
     return rows
 
 
+# ---- IS-IS -------------------------------------------------------------------
+# Every IS-IS display command prints nothing when IS-IS is not configured, so empty input gives empty results.
+ISIS_SHORT = (("GigabitEthernet", "GE"), ("XGigabitEthernet", "XGE"), ("Eth-Trunk", "Eth-Trunk"))
+
+
+def isis_key(name):
+    """Interface names as `display isis` prints them (GE0/1/0) and as the config does (GigabitEthernet0/1/0)."""
+    n = name.strip()
+    for long, short in ISIS_SHORT:
+        if n.startswith(long):
+            return (short + n[len(long):]).lower()
+    return n.lower()
+
+
+def parse_isis_config(text):
+    """`display current-configuration configuration isis` -> [{process, level, cost_style, nets, is_name, lines}]"""
+    out = []
+    for proc, lines in parse_config_blocks(text, "isis").items():
+        m = re.match(r"^(\d+)", proc)
+        if not m:
+            continue
+        p = {"process": m.group(1), "level": "level-1-2", "cost_style": "narrow", "nets": [], "is_name": "", "lines": lines}
+        for l in lines:
+            w = l.split()
+            if w[0] == "is-level" and len(w) > 1:
+                p["level"] = w[1]
+            elif w[0] == "cost-style" and len(w) > 1:
+                p["cost_style"] = " ".join(w[1:])
+            elif w[0] == "network-entity" and len(w) > 1:
+                p["nets"].append(w[1])
+            elif w[0] == "is-name" and len(w) > 1:
+                p["is_name"] = w[1]
+        out.append(p)
+    return out
+
+
+def parse_isis_if_config(blocks):
+    """From interface config blocks: {interface: {process, cost, cost_level, p2p, passive}} for IS-IS enabled interfaces."""
+    out = {}
+    for name, lines in blocks.items():
+        d = None
+        for l in lines:
+            w = l.split()
+            if w[:2] == ["isis", "enable"]:
+                d = d or {}
+                d["process"] = w[2] if len(w) > 2 else "1"
+        if d is None:
+            continue
+        d.update(cost=None, cost_level="", p2p=False, passive=False)
+        for l in lines:
+            w = l.split()
+            if w[:2] == ["isis", "cost"] and len(w) > 2 and w[2].isdigit():
+                d["cost"], d["cost_level"] = int(w[2]), (w[3] if len(w) > 3 else "")
+            elif w[:3] == ["isis", "circuit-type", "p2p"]:
+                d["p2p"] = True
+            elif w[:2] == ["isis", "silent"]:
+                d["passive"] = True
+        out[name] = d
+    return out
+
+
+def parse_isis_peers(text):
+    rows, process = [], ""
+    for line in text.splitlines():
+        pm = re.search(r"ISIS\((\d+)\)", line)
+        if pm:
+            process = pm.group(1)
+            continue
+        m = re.match(r"^\s*(\S+)\s+(\S+)\s+(\S+)\s+(Up|Down|Init|Initializing)\s+(\d+s?)\s+(\S+)\s*(\S*)\s*$", line, re.I)
+        if m and m.group(1) != "System":
+            rows.append({"process": process, "system_id": m.group(1), "interface": m.group(2), "circuit": m.group(3),
+                         "state": m.group(4), "hold": m.group(5), "type": m.group(6), "priority": m.group(7)})
+    return rows
+
+
+def parse_isis_interfaces(text):
+    rows, process = [], ""
+    for line in text.splitlines():
+        pm = re.search(r"ISIS\((\d+)\)", line)
+        if pm:
+            process = pm.group(1)
+            continue
+        m = re.match(r"^\s*(\S+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(L1/L2|L1|L2)\s*(\S*)", line)
+        if m:
+            rows.append({"process": process, "interface": m.group(1), "id": m.group(2), "ipv4": m.group(3), "ipv6": m.group(4),
+                         "mtu": int(m.group(5)), "type": m.group(6), "dis": m.group(7)})
+    return rows
+
+
+def parse_isis_routes(text):
+    rows, process, level = [], "", ""
+    for line in text.splitlines():
+        lm = re.search(r"ISIS\((\d+)\)\s+Level-(\d)", line)
+        if lm:
+            process, level = lm.group(1), "L" + lm.group(2)
+            continue
+        m = re.match(r"^\s*(" + IPV4 + r"/\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(" + IPV4 + r"|Direct|\S+)\s+(\S+)", line)
+        if m:
+            rows.append({"process": process, "level": level, "prefix": m.group(1), "cost": int(m.group(2)),
+                         "ext_cost": m.group(3), "interface": m.group(4), "next_hop": m.group(5), "flags": m.group(6)})
+            continue
+        c = re.match(r"^\s+(\S+)\s+(" + IPV4 + r")\s*$", line)   # extra equal-cost next hop
+        if c and rows:
+            rows[-1]["interface"] += ", " + c.group(1)
+            rows[-1]["next_hop"] += ", " + c.group(2)
+    return rows
+
+
 def parse_ldp_sessions(text):
     rows = []
     for line in text.splitlines():

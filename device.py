@@ -337,6 +337,27 @@ class Router:
                 "interfaces": P.parse_ospf_interfaces(self.cached("display ospf interface", 10)),
                 "lsdb": self.cached("display ospf lsdb", 10)}
 
+    def isis(self):
+        def show(cmd):
+            out = self.cached(cmd, 10)
+            return "" if "Error:" in out else out     # an older image may not know a command
+        processes = P.parse_isis_config(show("display current-configuration configuration isis"))
+        ifcfg = P.parse_isis_if_config(self.interface_config())
+        state = {P.isis_key(r["interface"]): r for r in P.parse_isis_interfaces(show("display isis interface"))}
+        interfaces = []
+        for name, c in ifcfg.items():
+            st = state.pop(P.isis_key(name), {})
+            interfaces.append({"interface": name, **c, "ipv4": st.get("ipv4", ""), "type": st.get("type", ""),
+                               "mtu": st.get("mtu"), "dis": st.get("dis", "")})
+        for st in state.values():                    # running but not found in the interface config
+            interfaces.append({"interface": st["interface"], "process": st["process"], "cost": None, "cost_level": "",
+                               "p2p": False, "passive": False, "ipv4": st["ipv4"], "type": st["type"], "mtu": st["mtu"], "dis": st["dis"]})
+        peers = P.parse_isis_peers(show("display isis peer"))
+        configured = bool(processes or interfaces or peers)
+        return {"configured": configured, "processes": processes, "interfaces": interfaces, "peers": peers,
+                "routes": P.parse_isis_routes(show("display isis route")) if configured else [],
+                "lsdb": show("display isis lsdb") if configured else ""}
+
     def mpls(self):
         return {"ldp": P.parse_ldp_sessions(self.cached("display mpls ldp session", 10)),
                 "lsp": self.cached("display mpls lsp", 10)}

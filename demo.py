@@ -2,6 +2,7 @@
 applies the same command lines the GUI sends to a real router, and prints
 VRP8-style output from that model, so every page (and every change) works
 without hardware."""
+import ipaddress
 import math
 import random
 import re
@@ -76,6 +77,9 @@ class DemoRouter(Router):
         }
         self.bgp_networks = ["10.10.0.0 16", "203.0.113.0 24"]
         self.ospf_networks = [("1", "0.0.0.0", "172.16.0.0 0.0.0.1"), ("1", "0.0.0.0", "172.16.0.2 0.0.0.1"), ("1", "0.0.0.0", "1.1.1.1 0.0.0.0")]
+        self.isis_procs = {"1": {"level": "level-2", "cost_style": "wide", "nets": ["49.0001.0010.0000.0001.00"], "is_name": ""}}
+        for n in ("100GE0/2/0", "100GE0/2/1", "LoopBack0"):
+            self.ifs[n].update(isis="1", isis_p2p=n != "LoopBack0", isis_cost=10 if n != "LoopBack0" else None)
         self.users = {"admin": 3, "noc": 2, "readonly": 1}
         self.ntp = ["192.168.0.1"]
         self.snmp = [("read", "public-ro")]
@@ -107,7 +111,8 @@ class DemoRouter(Router):
                           "base": base, "vlan": vlan, "encap": "vlan-type", "vpn": vpn, "mtu": None, "speed": speed,
                           "errors": errors, "l2": l2, "trunk": trunk, "pvid": "", "qos": list(qos),
                           "phase": random.random() * 6.28, "in_b": random.randint(10**12, 10**14),
-                          "out_b": random.randint(10**12, 10**14), "t": time.time(), "ospf_cost": None}
+                          "out_b": random.randint(10**12, 10**14), "t": time.time(), "ospf_cost": None,
+                          "isis": None, "isis_cost": None, "isis_p2p": False}
 
     # ---- traffic model ----------------------------------------------------
     def up(self, i):
@@ -192,6 +197,9 @@ class DemoRouter(Router):
                 peer["up"] = time.time()
             self.log("BGP/3/STATE_CHG_UPDOWN", f"The status of the peer {c.split()[2]} changed from ESTABLISHED to IDLE (manual reset).")
             return "Info: The BGP peer is reset."
+        if c.startswith("reset isis all"):
+            self.log("ISIS/6/ADJ_CHANGE", "The IS-IS adjacencies were reset by the GUI user.")
+            return "Warning: The ISIS process will be reset. Continue? [Y/N]:Y\nInfo: Reset the ISIS process successfully."
         if c.startswith("reset counters interface"):
             return "Info: Reset the statistics on the interface successfully."
         if c == "save":
@@ -221,7 +229,7 @@ class DemoRouter(Router):
     def _snapshot(self):
         import copy
         return copy.deepcopy({k: v for k, v in self.__dict__.items()
-                              if k in ("ifs", "vlan_db", "static", "arp_static", "bgp_peers", "bgp_networks", "ospf_networks",
+                              if k in ("ifs", "vlan_db", "static", "arp_static", "bgp_peers", "bgp_networks", "ospf_networks", "isis_procs",
                                        "users", "ntp", "snmp", "vpns", "policies", "queues", "profiles", "sysname_")})
 
     def _restore(self, snap):
@@ -305,6 +313,24 @@ class DemoRouter(Router):
             return ("bgp", "bgp")
         if view in ("bgp", "bgp-af"):
             return self._apply_bgp(line, w, view)
+        if w[0] == "isis" and len(w) == 2 and w[1].isdigit() and view == "system":
+            self.isis_procs.setdefault(w[1], {"level": "level-1-2", "cost_style": "narrow", "nets": [], "is_name": ""})
+            return ("isis", "isis-" + w[1])
+        if view == "isis":
+            d = self.isis_procs[ctx.split("-")[1]]
+            if w[0] == "is-level":
+                d["level"] = w[1]
+            elif w[0] == "cost-style":
+                d["cost_style"] = w[1]
+            elif w[0] == "network-entity":
+                if w[1] in d["nets"]:
+                    return "The network entity already exists."
+                if len(d["nets"]) >= 3:
+                    return "A maximum of 3 network entities can be configured."
+                d["nets"].append(w[1])
+            elif w[0] == "is-name":
+                d["is_name"] = w[1]
+            return None
         if w[0] == "ospf" and len(w) == 2:
             return ("ospf", "ospf-" + w[1])
         if view in ("ospf", "ospf-area"):
@@ -452,6 +478,19 @@ class DemoRouter(Router):
             i["qos"] = [q for q in i["qos"] if not (q.startswith("traffic-policy") and q.endswith(w[2]))]
         elif w[:2] == ["ospf", "cost"]:
             i["ospf_cost"] = int(w[2])
+        elif w[:2] == ["isis", "enable"]:
+            proc = w[2] if len(w) > 2 else "1"
+            if proc not in self.isis_procs:
+                return f"The IS-IS process {proc} does not exist."
+            i["isis"] = proc
+        elif line == "undo isis enable":
+            if not i["isis"]:
+                return "IS-IS is not enabled on the interface."
+            i["isis"] = None
+        elif line == "isis circuit-type p2p":
+            i["isis_p2p"] = True
+        elif w[:2] == ["isis", "cost"]:
+            i["isis_cost"] = int(w[2])
         return None
 
     def _apply_bgp(self, line, w, view):
@@ -640,6 +679,12 @@ Statistics last cleared:never
             lines.append(f" ip address {a} {plen}" + (" sub" if sub else ""))
         if i["ospf_cost"]:
             lines.append(f" ospf cost {i['ospf_cost']}")
+        if i["isis"]:
+            lines.append(f" isis enable {i['isis']}")
+            if i["isis_p2p"]:
+                lines.append(" isis circuit-type p2p")
+            if i["isis_cost"]:
+                lines.append(f" isis cost {i['isis_cost']}")
         lines += [" " + q for q in i["qos"]]
         return lines
 
@@ -651,6 +696,83 @@ Statistics last cleared:never
 
     def show_current_configuration_interface(self):
         return "\n".join("\n".join(self.if_config(n, i)) + "\n#" for n, i in self.ifs.items())
+
+    def show_current_configuration_configuration_isis(self):
+        out = []
+        for proc, d in self.isis_procs.items():
+            out += [f"isis {proc}", f" is-level {d['level']}", f" cost-style {d['cost_style']}"] + \
+                   [f" network-entity {n}" for n in d["nets"]] + ([f" is-name {d['is_name']}"] if d["is_name"] else []) + ["#"]
+        return "\n".join(out)
+
+    def _isis_ifs(self):
+        return [(n, i) for n, i in self.ifs.items() if i["isis"]]
+
+    def _isis_peers(self):
+        far = {"100GE0/2/0": ("0010.0000.0002", "2.2.2.2", "172.16.0.0"), "100GE0/2/1": ("0010.0000.0003", "3.3.3.3", "172.16.0.2")}
+        return [(n, i, far[n]) for n, i in self._isis_ifs() if n in far and self.up(i)]
+
+    def show_isis_peer(self):
+        if not self.isis_procs:
+            return ""
+        out = []
+        for proc in self.isis_procs:
+            out += [f"                          Peer information for ISIS({proc})", "                          ----------------------------", "",
+                    "  System Id     Interface          Circuit Id        State HoldTime Type     PRI",
+                    "--------------------------------------------------------------------------------"]
+            peers = [x for x in self._isis_peers() if x[1]["isis"] == proc]
+            for n, i, (sid, _, _) in peers:
+                out.append(f"{sid}  {n:<18} {'0000000' + str(len(out) % 9 + 1):<17} Up   {random.randint(22, 30)}s      L2       --")
+            out += ["", f"Total Peer(s): {len(peers)}"]
+        return "\n".join(out)
+
+    def show_isis_interface(self):
+        if not self.isis_procs:
+            return ""
+        out = []
+        for proc in self.isis_procs:
+            out += [f"                       Interface information for ISIS({proc})", "                       ---------------------------------",
+                    "  Interface       Id      IPV4.State          IPV6.State      MTU  Type  DIS"]
+            for k, (n, i) in enumerate([x for x in self._isis_ifs() if x[1]["isis"] == proc]):
+                st = "Up" if self.up(i) else "Down"
+                lvl = {"level-1": "L1", "level-2": "L2"}.get(self.isis_procs[proc]["level"], "L1/L2")
+                dis = "--" if i["isis_p2p"] or n.startswith("LoopBack") else "No"
+                out.append(f"  {n:<15} {k + 1:03d}         {st:<18} Down         {i['mtu'] or 1497} {lvl:<5} {dis}")
+        return "\n".join(out)
+
+    def show_isis_route(self):
+        if not self.isis_procs:
+            return ""
+        out = []
+        for proc in self.isis_procs:
+            out += [f"                         Route information for ISIS({proc})", "                         -----------------------------", "",
+                    f"                        ISIS({proc}) Level-2 Forwarding Table", "                        --------------------------------", "",
+                    "IPV4 Destination     IntCost    ExtCost ExitInterface     NextHop         Flags",
+                    "-------------------------------------------------------------------------------"]
+            for n, i in self._isis_ifs():
+                for a, plen, _ in i["ips"]:
+                    net = ipaddress.ip_network(f"{a}/{plen}", strict=False)
+                    out.append(f"{str(net):<20} {i['isis_cost'] or 10:<10} NULL    {n:<17} Direct          D/-/L/-")
+            for n, i, (_, rid, nh) in self._isis_peers():
+                out.append(f"{rid + '/32':<20} {(i['isis_cost'] or 10) + 10:<10} NULL    {n:<17} {nh:<15} A/-/-/-")
+            out += ["     Flags: D-Direct, A-Added to URT, L-Advertised in LSPs, S-IGP Shortcut,", "            U-Up/Down Bit Set, LP-Local Prefix-Sid"]
+        return "\n".join(out)
+
+    def show_isis_lsdb(self):
+        if not self.isis_procs:
+            return ""
+        out = []
+        for proc, d in self.isis_procs.items():
+            out += [f"                        Database information for ISIS({proc})", "                        --------------------------------", "",
+                    "                          Level-2 Link State Database", "",
+                    "LSPID                 Seq Num      Checksum      Holdtime      Length  ATT/P/OL",
+                    "-------------------------------------------------------------------------------"]
+            sid = ".".join(d["nets"][0].split(".")[-4:-1]) if d["nets"] else "0000.0000.0000"
+            out.append(f"{sid}.00-00*   0x0000a1f3   0x6c21        1102          {84 + 12 * len(self._isis_ifs())}      0/0/0")
+            for _, _, (psid, _, _) in self._isis_peers():
+                out.append(f"{psid}.00-00    0x00009e07   0x3b8a        987           96      0/0/0")
+            out += ["", "Total LSP(s): " + str(1 + len(self._isis_peers())), "    *(In TLV)-Leaking Route, *(By LSPID)-Self LSP, +-Self LSP(Extended),",
+                    "           ATT-Attached, P-Partition, OL-Overload"]
+        return "\n".join(out)
 
     def show_current_configuration_configuration_bgp(self):
         lines = [f"bgp {self.bgp_as}", " router-id 1.1.1.1"]
@@ -681,6 +803,7 @@ Statistics last cleared:never
         out += [self.show_current_configuration_configuration_qos_profile()]
         out += [self.show_current_configuration_interface()]
         out += [self.show_current_configuration_configuration_bgp()]
+        out += [self.show_current_configuration_configuration_isis()]
         out += [f"ospf {proc} router-id 1.1.1.1" if i == 0 else "" for i, (proc, a, n) in enumerate(self.ospf_networks[:1])]
         out += [" area 0.0.0.0"] + [f"  network {n}" for _, _, n in self.ospf_networks] + ["#"]
         out += self.static + ["#"] + self.arp_static + ["#"]

@@ -544,6 +544,79 @@ def ospf_reset(p):
     return [f"reset ospf {integer(p, 'process', 1, 65535, 'Process')} process"]
 
 
+# ---- IS-IS -------------------------------------------------------------------
+NET_RE = re.compile(r"^[0-9A-Fa-f]{2}(\.[0-9A-Fa-f]{4}){3,9}\.00$")
+ISIS_LEVELS = ("level-1", "level-2", "level-1-2")
+
+
+def isis_net(p):
+    v = need(p, "net", "Network entity (NET)")
+    if not NET_RE.match(v):
+        raise ActionError("NET must look like 49.0001.0010.0000.0001.00 (area, 6-byte system ID, then .00).")
+    return v
+
+
+def isis_level(p, key="level", allow_empty=False):
+    v = s(p, key)
+    if allow_empty and not v:
+        return ""
+    if v not in ISIS_LEVELS:
+        raise ActionError("Level must be level-1, level-2 or level-1-2.")
+    return v
+
+
+@action("isis.process_add")
+def isis_process_add(p):
+    proc = integer(p, "process", 1, 65535, "Process")
+    style = s(p, "cost_style") or "wide"
+    if style not in ("wide", "narrow", "compatible", "wide-compatible"):
+        raise ActionError("Cost style must be wide, narrow, compatible or wide-compatible.")
+    lines = [f"isis {proc}", f"is-level {isis_level(p)}", f"cost-style {style}", f"network-entity {isis_net(p)}"]
+    name = word(p, "is_name", "Hostname", required=False)
+    if name:
+        lines.append(f"is-name {name}")
+    return lines
+
+
+@action("isis.net_add")
+def isis_net_add(p):
+    return [f"isis {integer(p, 'process', 1, 65535, 'Process')}", f"network-entity {isis_net(p)}"]
+
+
+@action("isis.level")
+def isis_set_level(p):
+    return [f"isis {integer(p, 'process', 1, 65535, 'Process')}", f"is-level {isis_level(p)}"]
+
+
+@action("isis.interface_enable")
+def isis_interface_enable(p):
+    lines = [f"interface {iface(p)}", f"isis enable {integer(p, 'process', 1, 65535, 'Process')}"]
+    if p.get("p2p") in (True, "true", "on", "1"):
+        lines.append("isis circuit-type p2p")
+    cost = integer(p, "cost", 1, 16777215, "Cost", required=False, default=0)
+    if cost:
+        lines.append(f"isis cost {cost}")
+    return lines
+
+
+@action("isis.interface_disable")
+def isis_interface_disable(p):
+    return [f"interface {iface(p)}", "undo isis enable"]
+
+
+@action("isis.interface_cost")
+def isis_interface_cost(p):
+    lvl = isis_level(p, allow_empty=True)
+    if lvl == "level-1-2":
+        lvl = ""
+    return [f"interface {iface(p)}", f"isis cost {integer(p, 'cost', 1, 16777215, 'Cost')}" + (f" {lvl}" if lvl else "")]
+
+
+@action("isis.reset", mode="exec")
+def isis_reset(p):
+    return [f"reset isis all {integer(p, 'process', 1, 65535, 'Process')}"]
+
+
 # ---- system ------------------------------------------------------------------
 @action("system.sysname")
 def system_sysname(p):

@@ -8,3 +8,4 @@ secret_key
 audit.log
 .venv/
 __pycache__/
+history.db*

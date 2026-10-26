@@ -154,7 +154,7 @@ const NAV = [
   ['IP', [['addresses', 'Addresses', I.ip], ['routes', 'Routes', I.route], ['arp', 'ARP', I.ip], ['vpn', 'VPN instances', I.ip], ['neighbors', 'Neighbors (LLDP)', I.ip]]],
   ['Planning', [['plans', 'Network plans', I.plan]]],
   ['Billing', [['billing', 'Splynx billing', I.bill]]],
-  ['Routing', [['bgp', 'BGP', I.route], ['ospf', 'OSPF', I.route], ['mpls', 'MPLS / LDP', I.route]]],
+  ['Routing', [['bgp', 'BGP', I.route], ['ospf', 'OSPF', I.route], ['isis', 'IS-IS', I.route], ['mpls', 'MPLS / LDP', I.route]]],
   ['System', [['resources', 'Resources', I.graph], ['hardware', 'Hardware', I.hw], ['users', 'Router users', I.user], ['settings', 'Settings', I.sys], ['logs', 'Logs & alarms', I.log]]],
   ['Manager', [['account', 'My account', I.user], ['routers', 'Routers', I.rtr], ['appusers', 'App users', I.user], ['audit', 'Audit log', I.log]]],
   ['Tools', [['traffic', 'Traffic monitor', I.graph], ['ping', 'Ping / Traceroute', I.tool], ['console', 'Console', I.term], ['config', 'Config editor', I.term], ['backup', 'Backup', I.tool]]],
@@ -521,6 +521,50 @@ PAGES.ospf = async c => {
 };
 function ospfNet(action, title) { change({ title, action, fields: [{ k: 'process', label: 'Process', type: 'number', value: 1 }, { k: 'area', label: 'Area', value: '0.0.0.0' }, { k: 'prefix', label: 'Network', ph: '172.16.0.4/31' }] }); }
 
+PAGES.isis = async c => {
+  const o = await api('/api/view/isis');
+  let names = [];
+  try { const v = await api('/api/view/interfaces'); names = (Array.isArray(v) ? v : v.interfaces || []).map(i => i.name); } catch (e) { }
+  ISIS_IFS = names;
+  const proc = (o.processes[0] || {}).process || '1';
+  const btns = o.configured ? `<button class="btn" onclick="isisEnable(${attr(proc)})">Enable on interface</button><button class="btn" onclick='change({title:"Reset IS-IS adjacencies",action:"isis.reset",fields:[{k:"process",label:"Process",type:"number",value:${attr(proc)}}],intro:"All IS-IS adjacencies of the process restart. Traffic that depends on IS-IS routes is interrupted until they come back."})'>Reset process</button>` : '';
+  if (!o.configured) {
+    c.innerHTML = head('IS-IS', 'not configured', '') + `<div class="card"><h3>IS-IS is not running on this router</h3>
+      <p class="muted">No IS-IS process, interface or neighbor was found. To start IS-IS: create a process with a network entity title (NET), then enable it on the core links and the loopback.
+      Nothing is sent until you review the exact commands.</p>
+      <button class="btn primary" onclick="isisProcess()">Create IS-IS process</button></div>`;
+    return;
+  }
+  c.innerHTML = head('IS-IS', '', btns) +
+    `<div class="card"><h3>Processes <span class="sp"></span><button class="btn sm" onclick="isisProcess()">+ Process</button></h3><div id="iP"></div></div>
+    <div class="card"><h3>Neighbors</h3><div id="iN"></div></div>
+    <div class="card"><h3>Interfaces</h3><div id="iI"></div></div>
+    <div class="card"><h3>Routes learned</h3><div id="iR"></div></div>
+    <div class="card"><h3>Link-state database</h3><pre>${esc(o.lsdb || '(empty)')}</pre></div>`;
+  table($('#iP'), [{ t: 'Process', k: 'process', f: x => `<b>${esc(x.process)}</b>` }, { t: 'Level', k: 'level' }, { t: 'Cost style', k: 'cost_style' },
+    { t: 'Network entity (NET)', k: 'nets', cls: 'mono', f: x => esc(x.nets.join(', ') || '(none)') }, { t: 'Hostname', k: 'is_name' },
+    { t: '', sort: false, cls: 'acts', f: x => `<button class="btn sm" onclick='change({title:"IS-IS ${esc(x.process)} level",action:"isis.level",params:{process:${attr(x.process)}},fields:[{k:"level",label:"Level",type:"select",options:[["level-1","Level-1 (inside an area)"],["level-2","Level-2 (backbone)"],["level-1-2","Level-1-2 (both)"]],value:${attr(x.level)}}],intro:"Changing the level restarts adjacencies that no longer match."})'>Level</button><button class="btn sm" onclick='change({title:"Add NET to IS-IS ${esc(x.process)}",action:"isis.net_add",params:{process:${attr(x.process)}},fields:[{k:"net",label:"Network entity (NET)",ph:"49.0001.0010.0000.0001.00"}]})'>+ NET</button>` }], o.processes, { empty: 'No IS-IS process in the configuration' });
+  table($('#iN'), [{ t: 'System ID', k: 'system_id', f: x => `<b>${esc(x.system_id)}</b>` }, { t: 'Process', k: 'process' }, { t: 'Interface', k: 'interface' }, { t: 'State', k: 'state', f: x => pill(x.state) }, { t: 'Hold', k: 'hold' }, { t: 'Type', k: 'type' }, { t: 'Priority', k: 'priority' }], o.peers, { empty: 'No IS-IS neighbors' });
+  table($('#iI'), [{ t: 'Interface', k: 'interface', f: x => `<b>${esc(x.interface)}</b>` }, { t: 'Process', k: 'process' }, { t: 'IPv4 state', k: 'ipv4', f: x => x.ipv4 ? pill(x.ipv4) : '<span class="muted">not running</span>' },
+    { t: 'Level', k: 'type' }, { t: 'Network', k: 'p2p', f: x => x.p2p ? 'Point-to-point' : (x.interface.startsWith('LoopBack') ? 'Loopback' : 'Broadcast') }, { t: 'Cost', k: 'cost', num: true, f: x => x.cost == null ? '<span class="muted">default</span>' : esc(x.cost + (x.cost_level ? ' (' + x.cost_level + ')' : '')) }, { t: 'MTU', k: 'mtu', num: true }, { t: 'DIS', k: 'dis' },
+    { t: '', sort: false, cls: 'acts', f: x => `<button class="btn sm" onclick='change({title:"IS-IS cost on ${esc(x.interface)}",action:"isis.interface_cost",params:{interface:${attr(x.interface)}},fields:[{k:"cost",label:"Cost",type:"number",value:${x.cost || 10}},{k:"level",label:"Level",type:"select",options:[["","Both levels"],["level-1","Level-1 only"],["level-2","Level-2 only"]],value:${attr(x.cost_level)}}]})'>Cost</button><button class="btn sm danger" onclick='change({title:"Disable IS-IS on ${esc(x.interface)}",action:"isis.interface_disable",params:{interface:${attr(x.interface)}},intro:"The adjacency on this interface goes down and routes through it are withdrawn."})'>Disable</button>` }], o.interfaces, { empty: 'IS-IS is not enabled on any interface' });
+  table($('#iR'), [{ t: 'Prefix', k: 'prefix', f: x => `<b>${esc(x.prefix)}</b>` }, { t: 'Level', k: 'level' }, { t: 'Cost', k: 'cost', num: true }, { t: 'Exit interface', k: 'interface' }, { t: 'Next hop', k: 'next_hop', cls: 'mono' }, { t: 'Flags', k: 'flags', cls: 'mono' }], o.routes, { empty: 'No IS-IS routes' });
+  every(15000, async () => { if ($('#modalBg').classList.contains('hidden')) PAGES.isis(c); });
+};
+let ISIS_IFS = [];
+function isisProcess() {
+  change({ title: 'Create IS-IS process', action: 'isis.process_add', intro: 'The NET is the area followed by a 6-byte system ID, often built from the loopback address: 10.0.0.1 → 0100.0000.0001.',
+    fields: [{ k: 'process', label: 'Process', type: 'number', value: 1 }, { k: 'net', label: 'Network entity (NET)', ph: '49.0001.0100.0000.0001.00' },
+      { k: 'level', label: 'Level', type: 'select', options: [['level-2', 'Level-2 (backbone, usual for an ISP core)'], ['level-1', 'Level-1 (inside an area)'], ['level-1-2', 'Level-1-2 (both)']], value: 'level-2' },
+      { k: 'cost_style', label: 'Cost style', type: 'select', options: [['wide', 'Wide (recommended, needed for MPLS TE)'], ['narrow', 'Narrow'], ['compatible', 'Compatible'], ['wide-compatible', 'Wide-compatible']], value: 'wide' },
+      { k: 'is_name', label: 'Hostname shown to neighbors (optional)', ph: 'BNG-NDOVU1' }] });
+}
+function isisEnable(proc) {
+  change({ title: 'Enable IS-IS on an interface', action: 'isis.interface_enable',
+    fields: [{ k: 'interface', label: 'Interface', list: ISIS_IFS, ph: '100GE0/4/0' }, { k: 'process', label: 'Process', type: 'number', value: proc },
+      { k: 'p2p', label: 'Point-to-point link (usual for router-to-router links)', type: 'check', value: true }, { k: 'cost', label: 'Cost (optional)', type: 'number', ph: '10' }] });
+}
+
 PAGES.mpls = async c => {
   const m = await api('/api/view/mpls');
   c.innerHTML = head('MPLS / LDP') + `<div class="card"><h3>LDP sessions</h3><div id="mL"></div></div><div class="card"><h3>LSPs</h3><pre>${esc(m.lsp)}</pre></div>`;
@@ -725,7 +769,7 @@ PAGES.ping = async c => {
     try { o.textContent = (await post('/api/cli', { command: build() })).output; } catch (e) { o.textContent = 'Error: ' + e.message; } };
 };
 
-const QUICK = ['display interface brief', 'display ip interface brief', 'display ip routing-table', 'display bgp peer', 'display ospf peer brief', 'display mpls ldp session', 'display arp all', 'display lldp neighbor brief', 'display alarm active', 'display device', 'display cpu-usage', 'display memory-usage', 'display optical-module brief', 'display logbuffer', 'display current-configuration'];
+const QUICK = ['display interface brief', 'display ip interface brief', 'display ip routing-table', 'display bgp peer', 'display ospf peer brief', 'display isis peer', 'display mpls ldp session', 'display arp all', 'display lldp neighbor brief', 'display alarm active', 'display device', 'display cpu-usage', 'display memory-usage', 'display optical-module brief', 'display logbuffer', 'display current-configuration'];
 let cliHist = [];
 PAGES.console = async c => {
   c.innerHTML = head('Console', 'display, ping and tracert. Use Config editor for changes.') + `<div class="card"><div class="bar"><input id="cIn" class="mono" style="flex:1" placeholder="display interface GigabitEthernet0/1/0" list="cQ"><datalist id="cQ">${QUICK.map(q => `<option value="${q}">`).join('')}</datalist><button class="btn primary" id="cGo">Run</button></div>

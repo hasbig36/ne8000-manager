@@ -73,7 +73,7 @@ def check_router_allowed(host):
 ROUTERS = {}   # browser session id -> Router. Credentials are never stored.
 NAME_RE = re.compile(r"^[A-Za-z0-9/.:\-_]{1,64}$")
 
-VIEWS = ("overview", "interfaces", "vlans", "qos", "arp", "neighbors", "vpn_instances", "bgp", "ospf", "mpls",
+VIEWS = ("overview", "interfaces", "vlans", "qos", "arp", "neighbors", "vpn_instances", "bgp", "ospf", "isis", "mpls",
          "system", "hardware", "logs")
 
 
