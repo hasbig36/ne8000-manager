@@ -591,12 +591,13 @@ PAGES.billing = async c => {
     <div class="card"><h3>Customers and their router ports</h3><div id="bT"></div></div>
     <div class="grid g2"><div class="card"><h3>Settings</h3><div id="bS"></div></div><div class="card"><h3>Activity log</h3><div id="bL"></div></div></div>`;
   $('#bDry').onclick = () => billSync(false); $('#bApply').onclick = () => billSync(true);
+  billUsage();
   const rows = last.rows || [];
   table($('#bT'), [
     { t: 'ID', k: 'id', num: true }, { t: 'Customer', k: 'name', f: r => `<b>${esc(r.name)}</b>` },
     { t: 'Splynx status', k: 'status', f: r => `<span class="pill ${r.status === 'active' ? 'p-ok' : r.status === 'new' ? 'p-warn' : 'p-bad'}">${esc(r.status)}</span>` },
     { t: 'Plan', k: 'plans' }, { t: 'IP', k: 'ips', cls: 'mono' },
-    { t: 'Router port', k: 'interface', f: r => r.interface ? `<b>${esc(r.interface)}</b> <span class="faint">${esc(r.match)}</span>${r.shared ? ' <span class="pill p-warn">shared</span>' : ''}` : `<span class="faint">${r.match === 'excluded' ? 'excluded' : 'not matched'}</span>` },
+    { t: 'Router port and traffic', k: 'interface', f: r => r.interface ? `<b>${esc(r.interface)}</b> <span class="faint">${esc(r.match)}</span>${r.shared ? ' <span class="pill p-warn">shared</span>' : ''}<div data-use="${esc(r.interface)}" style="font-size:12px;line-height:1.5;margin-top:2px"></div>` : `<span class="faint">${r.match === 'excluded' ? 'excluded' : 'not matched'}</span>` },
     { t: 'Port', k: 'if_state', f: r => r.if_state ? pill(r.if_state) : '' },
     { t: 'Action', k: 'planned', cls: 'wrap', f: r => r.planned ? `<b style="color:${/shutdown$|shutdown \(/.test(r.planned) && !/undo/.test(r.planned) ? 'var(--bad)' : 'var(--ok)'}">${esc(r.planned)}</b>` : `<span class="faint">${esc(r.note || (r.interface ? 'in sync' : ''))}</span>` },
     { t: '', sort: false, cls: 'acts', f: r => (b.demo ? (r.status === 'active' ? `<button class="btn sm" onclick='billDemo(${r.id},"blocked")'>Simulate block</button>` : `<button class="btn sm" onclick='billDemo(${r.id},"active")'>Simulate payment</button>`) : '') +
@@ -633,6 +634,17 @@ PAGES.billing = async c => {
   $('#sTest').onclick = async () => { $('#sErr').textContent = ''; try { await post('/api/billing/config', { ...collect(), mode: cfg.mode }); billMeta = await api('/api/billing/meta'); toast(`Connected to Splynx: ${billMeta.partners.length} partners, ${billMeta.locations.length} locations, ${billMeta.routers.length} routers`); PAGES.billing(c); } catch (e) { $('#sErr').textContent = e.message; } };
   every(10000, async () => { if ($('#modalBg').classList.contains('hidden') && !c.contains(document.activeElement)) PAGES.billing(c); });
 };
+async function billUsage() {
+  // download = traffic the router sends out of the customer's port; upload = what comes in from them
+  const u = await api('/api/billing/usage').catch(() => null); if (!u) return;
+  document.querySelectorAll('[data-use]').forEach(el => {
+    const p = u.ports[el.dataset.use]; if (!p) { el.textContent = ''; return; }
+    if (p.tx_bps == null) { el.innerHTML = `↓ ${(+p.out_util || 0).toFixed(1)}% ↑ ${(+p.in_util || 0).toFixed(1)}% <span class="faint">of the port</span>`; return; }
+    const pct = p.plan_bps ? ` <span class="faint">(${Math.round(p.tx_bps / p.plan_bps * 100)}% of ${Fmt.bps(p.plan_bps)})</span>` : '';
+    el.innerHTML = `↓ <b>${Fmt.bps(p.tx_bps)}</b> ↑ ${Fmt.bps(p.rx_bps)}${pct}` +
+      (p.window ? ` <span class="faint" title="peak ↓ ${Fmt.bps(p.tx_peak)} ↑ ${Fmt.bps(p.rx_peak)}">· last ${Math.max(1, Math.round(p.window / 60))} min ↓ ${Fmt.bytes(p.tx_bytes)} ↑ ${Fmt.bytes(p.rx_bytes)}</span>` : '');
+  });
+}
 async function billSync(apply, quiet) {
   if (apply && !quiet && !confirm('Apply now: shut ports of blocked customers and re-enable ports of customers who paid?')) return;
   try { const r = await post('/api/billing/sync', { apply }); const p = r.last.planned || [];

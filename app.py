@@ -571,6 +571,39 @@ def billing_status():
                    shut_by_billing=st["shut_by_billing"], demo=router().demo)
 
 
+@app.get("/api/billing/usage")
+def billing_usage():
+    """Live state and traffic of each matched customer's port, for the billing page. Rates come
+    from SNMP counters (or the demo); over SSH only, the port's utilisation is used instead so
+    the router is not asked for every port's counters every few seconds."""
+    r = router()
+    rows = [x for x in ((r.billing.last or {}).get("rows") or []) if x.get("interface")]
+    names = sorted({x["interface"] for x in rows})
+    ifs = {i["name"]: i for i in r.interfaces()} if names else {}
+    plan = {}
+    try:   # the QoS profile speed on each port, when it has one
+        for q in r.qos()["rules"]:
+            if q.get("kind") == "profile" and q["direction"] == "outbound" and q.get("pir_kbps"):
+                plan[q["interface"]] = q["pir_kbps"] * 1000
+    except Exception:
+        pass
+    series = r.traffic(names) if names and (isinstance(r, SnmpRouter) or r.demo) else {}
+    out = {}
+    for n in names:
+        i, pts = ifs.get(n, {}), series.get(n) or []
+        u = {"phy": i.get("phy", ""), "protocol": i.get("protocol", ""), "admin_down": i.get("admin_down", False),
+             "plan_bps": plan.get(n), "in_util": i.get("in_util"), "out_util": i.get("out_util"), "window": 0}
+        if pts:
+            span = pts[-1][0] - pts[0][0]
+            gaps = [(b[0] - a[0]) for a, b in zip(pts, pts[1:])]
+            u.update(rx_bps=pts[-1][1], tx_bps=pts[-1][2], window=round(span),
+                     rx_avg=round(sum(p[1] for p in pts) / len(pts)), tx_avg=round(sum(p[2] for p in pts) / len(pts)),
+                     rx_peak=max(p[1] for p in pts), tx_peak=max(p[2] for p in pts),
+                     rx_bytes=round(sum(b[1] * g for b, g in zip(pts[1:], gaps)) / 8), tx_bytes=round(sum(b[2] * g for b, g in zip(pts[1:], gaps)) / 8))
+        out[n] = u
+    return jsonify(ports=out, rates=bool(series))
+
+
 @app.post("/api/billing/config")
 def billing_config():
     eng = router().billing
