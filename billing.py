@@ -275,11 +275,12 @@ class BillingEngine:
                 best = None
                 for name, ipif in ifnets:
                     for n in nets:
-                        if n.version == 4 and n.subnet_of(ipif.network) and n.network_address != ipif.ip:
+                        # Splynx sometimes holds the router side of a /30 or /31 (the port's own address): that counts too
+                        if n.version == 4 and n.subnet_of(ipif.network):
                             if best is None or ipif.network.prefixlen > best[1].network.prefixlen:
-                                best = (name, ipif)
+                                best = (name, ipif, n.num_addresses == 1 and n.network_address == ipif.ip)
                 if best:
-                    iface, how = best[0], f"IP in {best[1].network}"
+                    iface, how = best[0], (f"IP is the port address {best[1].ip}" if best[2] else f"IP in {best[1].network}")
             if not iface and how != "excluded" and cfg.get("match_description", True):
                 tokens = {str(cid), str(c.get("login") or "")} - {""}
                 for name, d in descs.items():
