@@ -41,6 +41,8 @@ def _cidr(line):
 
 class Router:
     demo = False
+    via = "SSH"
+    can_configure = True
 
     def __init__(self, host):
         self.host = host
@@ -164,7 +166,7 @@ class Router:
         temps = P.parse_temperature(self.cached("display temperature", 30))
         mem = P.parse_memory(self.cached("display memory-usage"))
         return {
-            "host": self.host, "demo": self.demo, **version,
+            "host": self.host, "demo": self.demo, "via": self.via, **version,
             "cpu": P.parse_cpu(self.cached("display cpu-usage")), "memory": mem,
             "sysname": self.sysname(),
             "interfaces": {"total": len(phys), "up": sum(1 for i in phys if i["phy"] == "up"),
@@ -353,7 +355,7 @@ class Router:
 
 
 class RealRouter(Router):
-    def __init__(self, host, username, password, port=22):
+    def __init__(self, host, username, password, port=22, poll=True):
         super().__init__(host)
         try:
             from netmiko import ConnectHandler
@@ -361,7 +363,8 @@ class RealRouter(Router):
                                        password=password, timeout=30, conn_timeout=15, fast_cli=False)
         except Exception as exc:
             raise DeviceError(f"Could not connect to {host}:{port}: {exc}") from exc
-        self.start_poller()
+        if poll:
+            self.start_poller()
 
     def _run(self, command, read_timeout):
         return self.conn.send_command(command, read_timeout=read_timeout)

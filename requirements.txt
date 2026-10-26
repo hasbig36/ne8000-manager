@@ -1,3 +1,4 @@
 flask>=3.0
 netmiko>=4.3
 waitress>=3.0
+pysnmp>=7.1

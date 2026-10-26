@@ -21,10 +21,11 @@
 <div id="login" class="hidden">
   <div class="card">
     <h2>NE8000 Manager</h2>
-    <div class="muted">Huawei NetEngine 8000 M8 &middot; SSH</div>
+    <div class="muted">Huawei NetEngine 8000 M8 &middot; SNMP / SSH</div>
     <div id="pickRouter" class="hidden"><label for="routerSel">Router</label><select id="routerSel"></select></div>
     <div id="hostFields"><label for="host">Management IP / hostname</label><input id="host" placeholder="192.168.0.10" autocomplete="off">
     <label for="port">SSH port</label><input id="port" type="number" value="22"></div>
+    <div class="faint" id="snmpTip" style="display:none;margin:8px 0 2px;font-size:12.5px">This router connects over <b>SNMP</b>: leave the login empty to monitor it. Enter your SSH login too for the console, configuration and changes, or sign in later when a page needs it.</div>
     <label for="username">Username</label><input id="username" autocomplete="username">
     <label for="password">Password</label><input id="password" type="password" autocomplete="current-password">
     <div class="actions" style="justify-content:flex-start"><button class="btn primary" id="connectBtn">Connect</button><button class="btn" id="demoBtn">Try demo mode</button></div>
@@ -39,7 +40,7 @@
     <button class="btn ghost" id="menuBtn" aria-label="Menu">&#9776;</button>
     <span class="brand">NE8000 Manager</span>
     <div class="meta"><span>Identity <b id="tName">-</b></span><span>Host <b id="tHost">-</b></span><span>CPU <b id="tCpu">-</b></span><span>Memory <b id="tMem">-</b></span><span>Uptime <b id="tUp">-</b></span></div>
-    <div class="right"><button class="btn sm" id="saveBtn" title="save running configuration to startup">Save config</button><button class="btn sm" id="logoutBtn" title="close the SSH session to the router">Disconnect</button><span class="who"><a href="#account" class="meName" title="my account"></a> <a href="#" class="signOut btn sm ghost">Sign out</a></span></div>
+    <div class="right"><button class="btn sm" id="saveBtn" title="save running configuration to startup">Save config</button><button class="btn sm" id="logoutBtn" title="close the session to the router">Disconnect</button><span class="who"><a href="#account" class="meName" title="my account"></a> <a href="#" class="signOut btn sm ghost">Sign out</a></span></div>
   </header>
   <nav id="side"></nav>
   <main id="content"></main>

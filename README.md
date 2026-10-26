@@ -133,7 +133,8 @@ Follow the steps at the top of `deploy/ne8000.service`: copy the app to `/opt/ne
 - Billing enforcement runs while at least one person is connected to that router, and only one billing loop runs per router however many people are connected.
 
 ## Notes
-- Router credentials are only used to open the SSH session and are never written to disk. Passwords and SNMP communities are masked in previews and results.
+- Router SSH credentials are only used to open the SSH session and are never written to disk. Passwords and SNMP communities are masked in previews and results.
+- **SNMP first.** An admin can give a saved router a read-only SNMPv3 login under Manager > Routers. Connect then uses SNMP with no password: dashboard, interfaces, traffic graphs, optics, BGP, ARP, LLDP neighbours, hardware and resources. Pages that need the router CLI (routes, QoS, VLANs, console, config, changes and billing enforcement) ask for an SSH login when opened. If SNMP fails and a password was typed, Connect falls back to SSH. The SNMP passwords are stored in `routers.json` (mode 600) in the data folder and are never sent to browsers.
 - Uses Netmiko's `huawei_vrpv8` driver.
 - Parsers follow standard VRP8 output. If a table is empty on your software release, the raw command output is shown instead (or run the command in Console), and the parser in `parsers.py` can be adjusted from a sample.
 - Some features depend on the line cards and licences in your chassis (for example bridge VLANs, port-queue). The router's own error message is shown if it rejects a command.

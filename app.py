@@ -22,6 +22,7 @@ import billing
 import plans
 import routers
 from device import DeviceError, RealRouter, is_read_only
+from snmp_router import SnmpRouter, SshRequired
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.abspath(os.environ.get("NE8000_DATA_DIR") or HERE)
@@ -86,7 +87,10 @@ def same_router(r):
 
 
 def start_billing(r):
-    """Only one billing loop per router, however many people are connected to it."""
+    """Only one billing loop per router, however many people are connected to it. It needs SSH
+    to change the router, so an SNMP-only session never runs it."""
+    if not r.can_configure:
+        return
     if not any(x.billing.thread and x.billing.thread.is_alive() and not x.billing.stop.is_set() for x in same_router(r)):
         r.billing.start()
 
@@ -96,7 +100,7 @@ def close_router(r):
     if getattr(r, "billing", None):
         r.billing.close()
     r.close()
-    others = same_router(r)
+    others = [x for x in same_router(r) if x.can_configure]
     if was_running and others:
         others[0].billing.start()
 
@@ -104,8 +108,9 @@ def close_router(r):
 # ---- app login ---------------------------------------------------------------------
 OPEN = {"index", "static", "auth_login", "auth_me", "healthz"}
 # endpoints a viewer may POST to; everything else that changes something needs operator or admin
-VIEWER_POST = {"connect", "disconnect", "cli", "run_action", "auth_logout", "auth_password"}
-ADMIN_ONLY = {"users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete"}
+VIEWER_POST = {"connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password"}
+ADMIN_ONLY = {"users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
+              "routers_test_snmp"}
 
 
 def current_user():
@@ -267,6 +272,27 @@ def routers_update(rid):
     return jsonify(routers=SAVED.list())
 
 
+@app.post("/api/routers/<rid>/test-snmp")
+def routers_test_snmp(rid):
+    saved = SAVED.get(rid)
+    if not saved or not saved.get("snmp"):
+        raise DeviceError("No SNMP login saved for this router.")
+    from snmp import SnmpClient, SnmpError, text
+    s = saved["snmp"]
+    try:
+        c = SnmpClient(saved["host"], s["user"], s["auth_proto"], s["auth_key"], s["priv_proto"], s["priv_key"], port=s["port"])
+        try:
+            got = c.get("1.3.6.1.2.1.1.5.0", "1.3.6.1.2.1.1.3.0")
+        finally:
+            c.close()
+    except SnmpError as exc:
+        raise DeviceError(f"SNMP failed: {exc}")
+    name = text(got.get("1.3.6.1.2.1.1.5.0"))
+    if not name:
+        raise DeviceError("SNMP answered, but without a system name.")
+    return jsonify(ok=True, sysname=name, uptime_days=(got.get("1.3.6.1.2.1.1.3.0") or 0) // 8640000)
+
+
 @app.delete("/api/routers/<rid>")
 def routers_delete(rid):
     r = SAVED.delete(rid)
@@ -291,6 +317,8 @@ def safe_name(value, label="name"):
 @app.errorhandler(plans.PlanError)
 @app.errorhandler(auth.AuthError)
 def handle_error(exc):
+    if getattr(exc, "ssh_required", False):
+        return jsonify(error=str(exc), ssh_required=True), 400
     return jsonify(error=str(exc)), 400
 
 
@@ -311,6 +339,7 @@ def index():
 @app.post("/api/connect")
 def connect():
     data = request.get_json(force=True)
+    warning = ""
     if data.get("demo"):
         if not ALLOW_DEMO:
             raise DeviceError("Demo mode is turned off on this server.")
@@ -322,6 +351,7 @@ def connect():
             raise DeviceError("That saved router no longer exists. Reload the page.")
         if saved:
             data["host"], data["port"] = saved["host"], saved["port"]
+        snmp_login = saved.get("snmp") if saved else None
         host = (data.get("host") or "").strip()
         if not host:
             raise DeviceError("Host is required.")
@@ -334,14 +364,32 @@ def connect():
         if not 1 <= port <= 65535:
             raise DeviceError("Invalid SSH port.")
         check_router_allowed(host)
-        THROTTLE_ROUTER.check(me())
-        try:
-            r = RealRouter(host, data.get("username", ""), data.get("password", ""), port)
-        except DeviceError:
-            THROTTLE_ROUTER.fail(me())
-            AUDIT.log(me(), "router_connect_failed", host=host, ip=client_ip())
-            raise
-        THROTTLE_ROUTER.ok(me())
+        username, password = data.get("username", ""), data.get("password", "")
+        r = None
+        if snmp_login and not data.get("ssh_only"):
+            # SNMP first: no router password needed for monitoring. SSH joins if a login was typed.
+            try:
+                r = SnmpRouter(host, snmp_login, port)
+            except DeviceError as exc:
+                AUDIT.log(me(), "router_snmp_failed", host=host, error=str(exc)[:200], ip=client_ip())
+                if not (username and password):
+                    raise SshRequired(f"{exc}. Enter your SSH login to connect over SSH instead.")
+                warning = f"{exc}. Connected over SSH instead."
+        if r is None or (username and password):
+            THROTTLE_ROUTER.check(me())
+            try:
+                if r is None:
+                    r = RealRouter(host, username, password, port)
+                else:
+                    r.attach_ssh(username, password)
+            except DeviceError as exc:
+                THROTTLE_ROUTER.fail(me())
+                AUDIT.log(me(), "router_connect_failed", host=host, ip=client_ip())
+                if r is None:
+                    raise
+                warning = f"Connected over SNMP, but the SSH login failed: {exc}"
+            else:
+                THROTTLE_ROUTER.ok(me())
     old = ROUTERS.pop(session.get("sid"), None)
     if old:
         close_router(old)
@@ -358,8 +406,30 @@ def connect():
     session["sid"] = uuid.uuid4().hex
     ROUTERS[session["sid"]] = r
     start_billing(r)
-    AUDIT.log(me(), "router_connect", host=r.host, demo=r.demo, ip=client_ip())
-    return jsonify(ok=True, host=r.host, demo=r.demo)
+    AUDIT.log(me(), "router_connect", host=r.host, demo=r.demo, via=r.via, ip=client_ip())
+    return jsonify(ok=True, host=r.host, demo=r.demo, via=r.via, warning=warning)
+
+
+@app.post("/api/connect/ssh")
+def connect_ssh():
+    """Add an SSH login to an SNMP session, for the console, configuration and changes."""
+    r = router()
+    if not isinstance(r, SnmpRouter):
+        return jsonify(ok=True, via=r.via)
+    data = request.get_json(force=True)
+    if not data.get("username") or not data.get("password"):
+        raise SshRequired("Enter your router username and password.")
+    THROTTLE_ROUTER.check(me())
+    try:
+        r.attach_ssh(data["username"], data["password"])
+    except DeviceError:
+        THROTTLE_ROUTER.fail(me())
+        AUDIT.log(me(), "router_connect_failed", host=r.host, ip=client_ip())
+        raise
+    THROTTLE_ROUTER.ok(me())
+    start_billing(r)
+    AUDIT.log(me(), "router_ssh_added", host=r.host, ip=client_ip())
+    return jsonify(ok=True, via=r.via)
 
 
 @app.post("/api/disconnect")
@@ -374,7 +444,8 @@ def disconnect():
 @app.get("/api/status")
 def status():
     r = ROUTERS.get(session.get("sid"))
-    return jsonify(connected=r is not None, host=r.host if r else None, demo=r.demo if r else False)
+    return jsonify(connected=r is not None, host=r.host if r else None, demo=r.demo if r else False,
+                   via=r.via if r else None, ssh=bool(r and r.can_configure))
 
 
 @app.get("/api/view/<name>")

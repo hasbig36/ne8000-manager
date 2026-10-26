@@ -3,12 +3,35 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const attr = s => esc(JSON.stringify(s));
 
-async function api(path, opts = {}) {
+async function api(path, opts = {}, retried = false) {
   const res = await fetch(path, { headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'ne8000' }, credentials: 'same-origin', ...opts });
   const data = await res.json().catch(() => ({ error: 'Bad response from server (' + res.status + ')' }));
   if (res.status === 401 && data.login && path !== '/api/auth/me') { showAppLogin(); }
+  // connected over SNMP and this needs the router CLI: ask for an SSH login once, then try again
+  if (!res.ok && data.ssh_required && !retried && !path.startsWith('/api/connect') && await sshLogin(data.error)) return api(path, opts, true);
   if (!res.ok) throw new Error(data.error || res.statusText);
   return data;
+}
+let sshAsk = null;
+function sshLogin(why) {
+  if (sshAsk) return sshAsk;   // several requests at once share one prompt
+  sshAsk = new Promise(done => {
+    let last = ''; try { last = localStorage.getItem('ne8000.router') || ''; } catch (e) {}
+    const m = $('#modal'), r = (ROUTER_LIST || []).find(x => x.id === last);
+    m.innerHTML = `<h2>SSH login needed</h2><p class="muted">${esc(why || 'This needs the router command line.')} Monitoring keeps working over SNMP without it.</p>
+      <div class="form"><label>Router username</label><input id="sshU" autocomplete="username" value="${esc(r && r.username || '')}">
+      <label>Password</label><input id="sshP" type="password" autocomplete="current-password"></div>
+      <div class="err"></div><div class="actions"><button class="btn" data-a="c">Not now</button><button class="btn primary" data-a="s">Sign in</button></div>`;
+    $('#modalBg').classList.remove('hidden'); ($('#sshU').value ? $('#sshP') : $('#sshU')).focus();
+    const finish = ok => { closeModal(); sshAsk = null; done(ok); };
+    const submit = async () => {
+      try { const x = await post('/api/connect/ssh', { username: $('#sshU').value, password: $('#sshP').value }); VIA = x.via; topbar().catch(() => {}); toast('SSH connected'); finish(true); }
+      catch (e) { m.querySelector('.err').textContent = e.message; }
+    };
+    $('#sshP').onkeydown = e => { if (e.key === 'Enter') submit(); };
+    m.querySelector('.actions').onclick = e => { if (e.target.dataset.a === 'c') finish(false); if (e.target.dataset.a === 's') submit(); };
+  });
+  return sshAsk;
 }
 const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body || {}) });
 
@@ -141,7 +164,7 @@ $('#side').innerHTML = NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>
 $('#side').onclick = e => { const a = e.target.closest('a[data-p]'); if (a) { location.hash = a.dataset.p; $('#side').classList.remove('open'); } };
 $('#menuBtn').onclick = () => $('#side').classList.toggle('open');
 
-let timers = [], charts = [], current = null, DEMO = false, ME = null, AUTH = {}, ROUTER_LIST = [];
+let timers = [], charts = [], current = null, DEMO = false, VIA = '', ME = null, AUTH = {}, ROUTER_LIST = [];
 function every(ms, fn) { timers.push(setInterval(() => { if (!document.hidden) fn().catch(e => console.warn(e)); }, ms)); }
 function cleanup() { timers.forEach(clearInterval); timers = []; charts.forEach(c => c.destroy()); charts = []; }
 function chart(host, opts) { const c = new TimeChart(host, opts); charts.push(c); return c; }
@@ -168,7 +191,7 @@ const legend = items => `<div class="legend">${items.map(([n, c, v]) => `<span><
 /* ---------- top bar ---------- */
 async function topbar() {
   const o = await api('/api/view/overview');
-  $('#tName').textContent = o.sysname; $('#tHost').textContent = o.host; $('#tCpu').textContent = Fmt.pct(o.cpu);
+  $('#tName').textContent = o.sysname; $('#tHost').textContent = o.host + (o.via ? ' · ' + o.via : ''); $('#tCpu').textContent = Fmt.pct(o.cpu);
   $('#tMem').textContent = Fmt.pct(o.memory.percent); $('#tUp').textContent = (o.uptime || '').replace(/ minutes?/, 'm').replace(/ hours?,/, 'h').replace(/ days?,/, 'd');
   document.title = `${o.sysname} · NE8000 Manager`;
   return o;
@@ -185,7 +208,7 @@ PAGES.dashboard = async c => {
     ${t('Uptime', esc(o.uptime.replace(/ days?,?/, 'd').replace(/ hours?,?/, 'h').replace(/ minutes?/, 'm')), esc(o.patch ? 'Patch ' + o.patch : ''))}${t('Max temperature', Fmt.temp(o.max_temp), 'hottest sensor')}
     ${t('Ports up', `${o.interfaces.up} / ${o.interfaces.total}`, `${o.interfaces.admin_down} admin down · ${o.interfaces.all} interfaces total`)}
     ${t('BGP established', `${o.bgp.established ?? 0} / ${o.bgp.total ?? 0}`, `AS ${esc(o.bgp.local_as || '-')} · RID ${esc(o.bgp.router_id || '-')}`)}
-    ${t('Active alarms', o.alarms.total, `${o.alarms.critical} major or critical`)}</div>
+    ${o.alarms.total == null ? t('Active alarms', '-', '<a href="#logs">sign in with SSH to read alarms</a>') : t('Active alarms', o.alarms.total, `${o.alarms.critical} major or critical`)}</div>
     <div class="grid g2"><div class="card"><h3>CPU <span class="sp"></span><a href="#resources" class="btn sm">Resources</a></h3><div id="cCpu"></div></div>
     <div class="card"><h3>Memory</h3><div id="cMem"></div></div></div>
     <div class="grid g2"><div class="card"><h3>Busiest interfaces<span class="sp"></span><a href="#interfaces" class="btn sm">All interfaces</a></h3><div id="dIf"></div></div>
@@ -286,8 +309,9 @@ async function interfaceDrawer(name) {
       ['Last up', info.last_up], ['Last down', info.last_down], ['Rx (300 s avg)', Fmt.bps(info.in_rate_bps)], ['Tx (300 s avg)', Fmt.bps(info.out_rate_bps)],
       ['Rx packets', Fmt.num(info.input_packets)], ['Tx packets', Fmt.num(info.output_packets)], ['Rx bytes', Fmt.bytes(info.input_bytes)], ['Tx bytes', Fmt.bytes(info.output_bytes)],
       ['CRC errors', info.crc_errors], ['Input discards', info.in_discards]];
+    const op = info.optics; if (op) kv.push(['Optic Rx', op.rx_dbm != null ? op.rx_dbm + ' dBm' : ''], ['Optic Tx', op.tx_dbm != null ? op.tx_dbm + ' dBm' : ''], ['Optic', [op.vendor, op.part].filter(Boolean).join(' ')]);
     $('#dKv').innerHTML = kv.filter(x => x[1] !== '' && x[1] != null).map(([k, v]) => `<div><span>${k}</span>${esc(v)}</div>`).join('');
-    $('#dCfg').textContent = info.config.length ? 'interface ' + name + '\n ' + info.config.join('\n ') : '(default configuration)';
+    $('#dCfg').textContent = info.config.length ? 'interface ' + name + '\n ' + info.config.join('\n ') : VIA && !VIA.includes('SSH') ? '(connected over SNMP: sign in with SSH to see the configuration)' : '(default configuration)';
     $('#dRaw').textContent = info.raw;
   };
   fill();
@@ -489,7 +513,14 @@ PAGES.mpls = async c => {
 PAGES.hardware = async c => {
   const h = await api('/api/view/hardware');
   c.innerHTML = head('Hardware') + `<div class="card"><h3>Boards</h3><div id="hB"></div></div><div class="grid g2"><div class="card"><h3>Temperature</h3><div id="hT"></div></div><div class="card"><h3>Serial numbers</h3><pre>${esc(h.elabel)}</pre></div>
-    <div class="card"><h3>Power supplies</h3><pre>${esc(h.power)}</pre></div><div class="card"><h3>Fans</h3><pre>${esc(h.fan)}</pre></div></div>`;
+    <div class="card"><h3>Power supplies</h3><pre>${esc(h.power)}</pre></div><div class="card"><h3>Fans</h3><pre>${esc(h.fan)}</pre></div></div>
+    ${h.optics && Object.keys(h.optics).length ? '<div class="card"><h3>Optics</h3><div id="hO"></div></div>' : ''}`;
+  if (h.optics && Object.keys(h.optics).length) {
+    const dbm = (v, lo, hi) => v == null ? '-' : `<span class="${(lo != null && v < lo) || (hi != null && v > hi) ? 'p-bad' : ''}">${v} dBm</span>`;
+    table($('#hO'), [{ t: 'Port', k: 'port', f: x => `<b>${esc(x.port)}</b>` }, { t: 'Rx', k: 'rx_dbm', num: true, f: x => dbm(x.rx_dbm, x.rx_low, x.rx_high) }, { t: 'Rx range', k: 'rx_low', f: x => x.rx_low != null ? `${x.rx_low} to ${x.rx_high}` : '' },
+      { t: 'Tx', k: 'tx_dbm', num: true, f: x => dbm(x.tx_dbm, x.tx_low, x.tx_high) }, { t: 'Temp', k: 'temp', num: true, f: x => Fmt.temp(x.temp) }, { t: 'Module', k: 'part', f: x => esc([x.vendor, x.part].filter(Boolean).join(' ')) }, { t: 'nm', k: 'wavelength', num: true }],
+      Object.entries(h.optics).map(([port, o]) => ({ port, ...o })), { filter: false });
+  }
   table($('#hB'), [{ t: 'Slot', k: 'slot', num: true, f: x => `<b>${esc(x.slot)}</b>` }, { t: 'Type', k: 'type' }, { t: 'Online', k: 'online', f: x => pill(x.online) }, { t: 'Register', k: 'register' }, { t: 'Status', k: 'status', f: x => x.status === 'NA' ? '' : pill(x.status) }, { t: 'Role', k: 'role' }], h.boards, { filter: false });
   table($('#hT'), [{ t: 'Slot', k: 'slot' }, { t: 'Board', k: 'board' }, { t: 'Status', k: 'status', f: x => pill(x.status) }, { t: 'Now', k: 'temp', num: true, f: x => Fmt.temp(x.temp) }, { t: 'Minor', k: 'minor', num: true, f: x => Fmt.temp(x.minor) }, { t: 'Major', k: 'major', num: true, f: x => Fmt.temp(x.major) }], h.temperature, { filter: false });
 };
@@ -675,7 +706,7 @@ async function connect(demo) {
   $('#loginError').textContent = ''; const b = $('#connectBtn'); b.disabled = true; b.textContent = 'Connecting…';
   const rid = !demo && ROUTER_LIST.length ? $('#routerSel').value : '';
   if (rid) try { localStorage.setItem('ne8000.router', rid); } catch (e) {}
-  try { await post('/api/connect', { demo, router_id: rid, host: $('#host').value, port: $('#port').value, username: $('#username').value, password: $('#password').value }); $('#password').value = ''; await start(); }
+  try { const x = await post('/api/connect', { demo, router_id: rid, host: $('#host').value, port: $('#port').value, username: $('#username').value, password: $('#password').value }); $('#password').value = ''; if (x.warning) toast(x.warning, true); await start(); }
   catch (e) { $('#loginError').textContent = e.message; } finally { b.disabled = false; b.textContent = 'Connect'; }
 }
 function routerPicker() {
@@ -686,7 +717,10 @@ function routerPicker() {
   if (!has) return;
   let last = ''; try { last = localStorage.getItem('ne8000.router') || ''; } catch (e) {}
   $('#routerSel').innerHTML = ROUTER_LIST.map(r => `<option value="${esc(r.id)}" ${r.id === last ? 'selected' : ''}>${esc(r.name)} (${esc(r.host)}:${r.port})</option>`).join('');
-  const fill = () => { const r = ROUTER_LIST.find(x => x.id === $('#routerSel').value); if (r && r.username && !$('#username').value) $('#username').value = r.username; };
+  const fill = () => {
+    const r = ROUTER_LIST.find(x => x.id === $('#routerSel').value); if (r && r.username && !$('#username').value) $('#username').value = r.username;
+    $('#snmpTip').style.display = r && r.snmp ? '' : 'none';
+  };
   $('#routerSel').onchange = () => { $('#username').value = ''; fill(); }; fill();
 }
 $('#connectBtn').onclick = () => connect(false); $('#demoBtn').onclick = () => connect(true);
@@ -726,7 +760,7 @@ async function start() {
   if (!s.connected) { $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden'); $('#tHost').textContent = 'not connected'; $('#logoutBtn').textContent = 'Connect router'; $('#saveBtn').style.display = 'none';
     $('#logoutBtn').onclick = () => { location.hash = ''; location.reload(); }; return go(want); }
   window.onhashchange = null;
-  DEMO = s.demo; $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden');
+  DEMO = s.demo; VIA = s.via || ''; $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden');
   topbar().catch(() => {}); setInterval(() => { if (!document.hidden) topbar().catch(() => {}); }, 30000);
   go(location.hash.slice(1) || 'dashboard');
 }
