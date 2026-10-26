@@ -29,6 +29,7 @@ class TimeChart {
   domain() {
     let t0 = Infinity, t1 = -Infinity, vmax = this.opts.max ?? 0, vmin = this.opts.min ?? 0;
     for (const s of this.series) for (const [t, v] of s.values) { t0 = Math.min(t0, t); t1 = Math.max(t1, t); if (this.opts.max == null && v > vmax) vmax = v; }
+    if (this.opts.span) { t1 = Date.now() / 1000; t0 = t1 - this.opts.span; }   // fixed window (1 day, 1 week, ...)
     if (!isFinite(t0)) { t1 = Date.now() / 1000; t0 = t1 - 300; }
     if (t1 - t0 < 60) t0 = t1 - 60;
     if (this.opts.max == null) vmax = niceMax(vmax || 1);
@@ -50,7 +51,7 @@ class TimeChart {
     }
     g.textAlign = 'center'; g.textBaseline = 'top';
     const ticks = Math.max(2, Math.floor(pw / 110));
-    for (let i = 0; i <= ticks; i++) { const t = t0 + (t1 - t0) * i / ticks; g.fillText(Fmt.time(t).slice(0, 5 + (t1 - t0 < 900 ? 3 : 0)), X(t), h - pad.b + 6); }
+    for (let i = 0; i <= ticks; i++) { const t = t0 + (t1 - t0) * i / ticks; g.fillText(tickLabel(t, t1 - t0), X(t), h - pad.b + 6); }
     for (const s of this.series) {
       if (!s.values.length) continue;
       const col = cssVar(s.color);
@@ -79,11 +80,18 @@ class TimeChart {
     for (const s of this.series) { const p = nearest(s.values, t); if (!p) continue; tt = p[0];
       html += `<div><i style="background:${cssVar(s.color)}"></i>${s.name}: <b>${fmt(p[1])}</b></div>`; }
     if (!html) return;
-    this.tip.innerHTML = `<div class="faint">${Fmt.time(tt)}</div>` + html; this.tip.classList.remove('hidden');
+    const span = this.d.t1 - this.d.t0, when = span > 86400 * 1.5 ? new Date(tt * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : Fmt.time(tt);
+    this.tip.innerHTML = `<div class="faint">${when}</div>` + html; this.tip.classList.remove('hidden');
     const tw = this.tip.offsetWidth; this.tip.style.left = (x + 14 + tw > r.width ? x - tw - 14 : x + 14) + 'px'; this.tip.style.top = '8px';
     this.draw();
   }
   destroy() { this.ro.disconnect(); }
+}
+function tickLabel(t, span) {
+  const d = new Date(t * 1000);
+  if (span > 86400 * 40) return d.toLocaleDateString([], { month: 'short', year: '2-digit' });
+  if (span > 86400 * 1.5) return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return Fmt.time(t).slice(0, 5 + (span < 900 ? 3 : 0));
 }
 function nearest(vals, t) { let best = null, bd = Infinity; for (const p of vals) { const d = Math.abs(p[0] - t); if (d < bd) { bd = d; best = p; } } return best; }
 function niceMax(v) { const e = Math.pow(10, Math.floor(Math.log10(v))); for (const m of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (m * e >= v * 1.05) return m * e; return 10 * e; }

@@ -9,7 +9,7 @@ async function api(path, opts = {}, retried = false) {
   if (res.status === 401 && data.login && path !== '/api/auth/me') { showAppLogin(); }
   // connected over SNMP and this needs the router CLI: ask for an SSH login once, then try again
   if (!res.ok && data.ssh_required && !retried && !path.startsWith('/api/connect') && await sshLogin(data.error)) return api(path, opts, true);
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) { const err = new Error(data.error || res.statusText); err.data = data; throw err; }
   return data;
 }
 let sshAsk = null;
@@ -150,7 +150,7 @@ const I = {
 };
 const NAV = [
   [null, [['dashboard', 'Dashboard', I.dash]]],
-  ['Network', [['interfaces', 'Interfaces', I.ifs], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
+  ['Network', [['interfaces', 'Interfaces', I.ifs], ['graphs', 'Graphs', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
   ['IP', [['addresses', 'Addresses', I.ip], ['routes', 'Routes', I.route], ['arp', 'ARP', I.ip], ['vpn', 'VPN instances', I.ip], ['neighbors', 'Neighbors (LLDP)', I.ip]]],
   ['Planning', [['plans', 'Network plans', I.plan]]],
   ['Billing', [['billing', 'Splynx billing', I.bill]]],
@@ -298,7 +298,7 @@ async function interfaceDrawer(name) {
     ${!isSub ? `<button class="btn" onclick='subifForm(${attr(name)})'>+ Sub-interface</button><button class="btn" onclick='location.hash="queues";setTimeout(()=>queueStats(${attr(name)}),300)'>Queues</button>` : ''}
     <button class="btn" onclick='change({title:"Reset counters on ${esc(name)}",action:"interface.reset_counters",params:{interface:${attr(name)}}})'>Reset counters</button>
     ${isSub ? `<button class="btn danger" onclick='change({title:"Delete ${esc(name)}",action:"interface.delete",params:{interface:${attr(name)}},after:()=>{closeDrawer();refresh()}})'>Delete</button>` : ''}</div>
-    <div class="card"><h3>Traffic</h3>${legend([['Rx', '--s1', '-'], ['Tx', '--s2', '-']])}<div id="dChart"></div></div>
+    <div class="card"><h3>Traffic<span class="sp"></span><button class="btn sm" onclick='showGraphs(${attr(name)})'>Day / week / month / year</button></h3>${legend([['Rx', '--s1', '-'], ['Tx', '--s2', '-']])}<div id="dChart"></div></div>
     <div class="card"><h3>Status</h3><div class="kv" id="dKv"></div></div>
     <div class="card"><h3>Configuration</h3><pre id="dCfg"></pre></div>
     <div class="card"><h3>Raw output <span class="muted" style="font-weight:400">display interface ${esc(name)}</span></h3><pre id="dRaw"></pre></div>`;
@@ -678,6 +678,37 @@ PAGES.traffic = async c => {
   await tick(); every(5000, tick);
 };
 
+/* ----- Graphs: pick an interface on the left, see now / 1 day / 1 week / 1 month / 1 year ----- */
+let graphSel = ''; try { graphSel = localStorage.getItem('ne8000.graph') || ''; } catch (e) {}
+function showGraphs(name) { graphSel = name; try { localStorage.setItem('ne8000.graph', name); } catch (e) {} closeDrawer(); location.hash = 'graphs'; if (current === 'graphs') refresh(); }
+PAGES.graphs = async c => {
+  ifCache = await api('/api/view/interfaces');
+  const list = ifCache.filter(i => !['null'].includes(i.type));
+  if (!list.find(i => i.name === graphSel)) graphSel = (list.filter(i => i.phy === 'up').sort((a, b) => (b.in_util + b.out_util) - (a.in_util + a.out_util))[0] || list[0] || {}).name || '';
+  const R = [['now', 'Now (live, 5 s)'], ['day', '1 day (5-minute average)'], ['week', '1 week (30-minute average)'], ['month', '1 month (hourly average)'], ['year', '1 year (daily average)']];
+  const sel = list.find(i => i.name === graphSel) || {};
+  c.innerHTML = head('Graphs', 'interface traffic history') + `<div class="glay">
+    <div class="card glist"><input id="gF" placeholder="Filter interfaces" autocomplete="off"><div id="gL">${list.map(i => `<a data-g="${esc(i.name)}" class="${i.name === graphSel ? 'on' : ''}" title="${esc(i.description || '')}"><span class="dot ${i.phy === 'up' ? 'ok' : 'off'}"></span><b>${esc(i.name)}</b><small>${esc(i.description || '')}</small></a>`).join('')}</div></div>
+    <div><div class="card"><h3>${esc(graphSel)} <span class="faint" style="font-weight:400">${esc(sel.description || '')}</span><span class="sp"></span><button class="btn sm" onclick='interfaceDrawer(${attr(graphSel)})'>Details</button></h3><div id="gNote" class="muted" style="font-size:12.5px"></div></div>
+    ${R.map(([k, l]) => `<div class="card"><h3>${l}<span class="sp"></span><span class="legend" id="gS_${k}"></span></h3><div id="gC_${k}"></div></div>`).join('')}</div></div>`;
+  $('#gL').onclick = e => { const a = e.target.closest('a[data-g]'); if (a) { graphSel = a.dataset.g; try { localStorage.setItem('ne8000.graph', graphSel); } catch (x) {} PAGES.graphs(c); } };
+  $('#gF').oninput = () => { const q = $('#gF').value.toLowerCase(); c.querySelectorAll('#gL a').forEach(a => a.style.display = a.textContent.toLowerCase().includes(q) ? '' : 'none'); };
+  c.querySelector('#gL a.on')?.scrollIntoView({ block: 'nearest' });
+  if (!graphSel) return;
+  const span = { day: 86400, week: 604800, month: 2592000, year: 31536000 };
+  const cs = Object.fromEntries(R.map(([k]) => [k, chart($('#gC_' + k), { fmt: Fmt.bps, span: span[k] })]));
+  const summary = (k, pts) => { if (!pts.length) { $('#gS_' + k).innerHTML = ''; return; }
+    const avg = j => pts.reduce((a, p) => a + p[j], 0) / pts.length, max = j => Math.max(...pts.map(p => p[j] ?? p[j - 2]));
+    $('#gS_' + k).innerHTML = `<span><i style="background:var(--s1)"></i>Rx avg <b>${Fmt.bps(avg(1))}</b> peak <b>${Fmt.bps(max(pts[0].length > 3 ? 3 : 1))}</b></span><span><i style="background:var(--s2)"></i>Tx avg <b>${Fmt.bps(avg(2))}</b> peak <b>${Fmt.bps(max(pts[0].length > 3 ? 4 : 2))}</b></span>`; };
+  const put = (k, pts) => { cs[k].set([{ name: 'Rx', color: '--s1', values: pts.map(x => [x[0], x[1]]) }, { name: 'Tx', color: '--s2', values: pts.map(x => [x[0], x[2]]) }]); summary(k, pts); };
+  const live = async () => { const t = await api('/api/traffic?names=' + encodeURIComponent(graphSel)); put('now', t[graphSel] || []); };
+  const hist = async () => { let note = '';
+    for (const k of ['day', 'week', 'month', 'year']) { const g = await api(`/api/graph?name=${encodeURIComponent(graphSel)}&range=${k}`); put(k, g.points);
+      note = g.note || (g.error ? 'History collector: ' + g.error : g.collecting && !g.points.length ? 'History is sampled every 5 minutes on the server; the first points appear about 10 minutes after it starts.' : ''); }
+    $('#gNote').textContent = note; };
+  await Promise.all([live(), hist()]); every(5000, live); every(300000, hist);
+};
+
 PAGES.ping = async c => {
   c.innerHTML = head('Ping / Traceroute') + `<div class="card"><div class="form" style="max-width:640px">
     <label>Target</label><input id="pT" placeholder="8.8.8.8"><label>Tool</label><select id="pK"><option value="ping">Ping</option><option value="tracert">Traceroute</option></select>
@@ -757,6 +788,36 @@ $('#connectBtn').onclick = () => connect(false); $('#demoBtn').onclick = () => c
 $('#password').onkeydown = e => { if (e.key === 'Enter') connect(false); };
 $('#logoutBtn').onclick = async () => { await post('/api/disconnect'); location.hash = ''; location.reload(); };
 
+/* ---------- switch between saved routers without disconnecting first ---------- */
+function routerSwitcher(s) {
+  const sel = $('#tSwitch'); if (!ROUTER_LIST.length) return;
+  const cur = s.router_id || (ROUTER_LIST.find(r => r.host === s.host && !s.demo) || {}).id || '';
+  sel.innerHTML = (cur ? '' : `<option value="">${esc(s.demo ? 'demo' : s.host)}</option>`) +
+    ROUTER_LIST.map(r => `<option value="${esc(r.id)}" ${r.id === cur ? 'selected' : ''}>${esc(r.name)}</option>`).join('');
+  $('#tSwitchW').style.display = '';
+  sel.onchange = () => switchRouter(sel.value, cur);
+}
+async function switchRouter(id, back) {
+  const r = ROUTER_LIST.find(x => x.id === id); if (!r) return;
+  const done = () => { try { localStorage.setItem('ne8000.router', id); } catch (e) {} location.hash = location.hash || '#dashboard'; location.reload(); };
+  const sel = $('#tSwitch'); sel.disabled = true; toast('Connecting to ' + r.name + '…');
+  if (r.snmp) try { const x = await post('/api/connect', { router_id: id }); if (x.warning) toast(x.warning, true); return done(); }
+  catch (e) {
+    sel.disabled = false;
+    if (!(e.data && e.data.ssh_required) && !/required|password|login/i.test(e.message)) { toast(e.message, true); sel.value = back; return; }
+  }
+  // no SNMP login saved for that router (or SNMP failed): ask for an SSH login
+  const m = $('#modal');
+  m.innerHTML = `<h2>Connect to ${esc(r.name)}</h2><p class="muted">${esc(r.host)}:${r.port} needs your SSH login.</p>
+    <div class="form"><label>Router username</label><input id="swU" autocomplete="username" value="${esc(r.username || '')}">
+    <label>Password</label><input id="swP" type="password" autocomplete="current-password"></div>
+    <div class="err"></div><div class="actions"><button class="btn" data-a="c">Cancel</button><button class="btn primary" data-a="s">Connect</button></div>`;
+  $('#modalBg').classList.remove('hidden'); ($('#swU').value ? $('#swP') : $('#swU')).focus();
+  const go = async () => { try { const x = await post('/api/connect', { router_id: id, username: $('#swU').value, password: $('#swP').value }); if (x.warning) toast(x.warning, true); done(); } catch (e) { m.querySelector('.err').textContent = e.message; } };
+  $('#swP').onkeydown = e => { if (e.key === 'Enter') go(); };
+  m.querySelector('.actions').onclick = e => { if (e.target.dataset.a === 'c') { closeModal(); $('#tSwitch').value = back; } if (e.target.dataset.a === 's') go(); };
+}
+
 /* ---------- app sign-in ---------- */
 function showAppLogin() {
   ['#login', '#shell'].forEach(s => $(s).classList.add('hidden')); $('#appLogin').classList.remove('hidden'); $('#auUser').focus();
@@ -791,6 +852,7 @@ async function start() {
     $('#logoutBtn').onclick = () => { location.hash = ''; location.reload(); }; return go(want); }
   window.onhashchange = null;
   DEMO = s.demo; VIA = s.via || ''; $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden');
+  routerSwitcher(s);
   topbar().catch(() => {}); setInterval(() => { if (!document.hidden) topbar().catch(() => {}); }, 30000);
   go(location.hash.slice(1) || 'dashboard');
 }

@@ -19,6 +19,7 @@ from flask import Flask, Response, jsonify, render_template, request, session
 import actions
 import auth
 import billing
+import history
 import plans
 import routers
 from device import DeviceError, RealRouter, is_read_only
@@ -41,6 +42,7 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", S
 USERS = auth.UserStore(DATA_DIR)
 AUDIT = auth.Audit(DATA_DIR)
 SAVED = routers.RouterStore(DATA_DIR)
+HIST = history.History(DATA_DIR, SAVED)
 THROTTLE_IP = auth.Throttle(limit=5)        # per client address
 THROTTLE_USER = auth.Throttle(limit=20)     # per username, high enough that strangers cannot easily lock out a real user
 THROTTLE_ROUTER = auth.Throttle(limit=5)    # failed router SSH logins per app user (slows password guessing on the router)
@@ -404,6 +406,7 @@ def connect():
         r.billing = billing.BillingEngine(r, config_file=os.path.join(DATA_DIR, "billing.json"),
                                           state_file=os.path.join(DATA_DIR, "billing_state.json"))
     session["sid"] = uuid.uuid4().hex
+    session["router_id"] = "" if r.demo else (data.get("router_id") or "")
     ROUTERS[session["sid"]] = r
     start_billing(r)
     AUDIT.log(me(), "router_connect", host=r.host, demo=r.demo, via=r.via, ip=client_ip())
@@ -445,7 +448,7 @@ def disconnect():
 def status():
     r = ROUTERS.get(session.get("sid"))
     return jsonify(connected=r is not None, host=r.host if r else None, demo=r.demo if r else False,
-                   via=r.via if r else None, ssh=bool(r and r.can_configure))
+                   via=r.via if r else None, ssh=bool(r and r.can_configure), router_id=session.get("router_id", "") if r else "")
 
 
 @app.get("/api/view/<name>")
@@ -602,6 +605,25 @@ def billing_usage():
                      rx_bytes=round(sum(b[1] * g for b, g in zip(pts[1:], gaps)) / 8), tx_bytes=round(sum(b[2] * g for b, g in zip(pts[1:], gaps)) / 8))
         out[n] = u
     return jsonify(ports=out, rates=bool(series))
+
+
+@app.get("/api/graph")
+def graph():
+    """Interface traffic history: range=day|week|month|year (the 'now' graph uses /api/traffic)."""
+    r, name, rng = router(), request.args.get("name", ""), request.args.get("range", "day")
+    if rng not in history.RANGES:
+        raise DeviceError("Unknown range.")
+    if r.demo:
+        base = (getattr(r, "ifs", {}).get(name) or {}).get("base") or 0
+        return jsonify(points=history.synthetic(base, rng, seed=len(name)), collecting=False)
+    rid = session.get("router_id", "")
+    if not rid:
+        return jsonify(points=[], collecting=False, note="History is kept for saved routers only (Manager > Routers).")
+    full = SAVED.get(rid) or {}
+    if not full.get("snmp"):
+        return jsonify(points=[], collecting=False, note="Add this router's SNMP login under Manager > Routers to keep history.")
+    st = HIST.status.get(rid) or {}
+    return jsonify(points=HIST.series(rid, name, rng), collecting=True, error=st.get("error", ""), last=st.get("time"))
 
 
 @app.post("/api/billing/config")
@@ -782,6 +804,8 @@ if __name__ == "__main__":
     if args.add_user:
         add_user_cli(args.add_user, args.role)
         raise SystemExit(0)
+    if env_on("NE8000_HISTORY", "1"):
+        HIST.start()   # 5-minute interface history for every saved router with an SNMP login
     print(f"Data folder: {DATA_DIR}")
     print(f"Open http://{'127.0.0.1' if args.host in ('0.0.0.0', '::') else args.host}:{args.port} in your browser", flush=True)
     try:
