@@ -115,17 +115,35 @@ class SplynxClient:
     def get(self, path, params=None):
         return self._request("GET", path, params=params)
 
+    def list_all(self, path, params=None, page=500):
+        """Every row of a Splynx list, page by page. Splynx refuses some lists without a search
+        filter, so a harmless one (id > 0) is added when none is given."""
+        params = dict(params or {"main_attributes[id][0]": ">", "main_attributes[id][1]": 0})
+        out, seen, offset = [], set(), 0
+        while True:
+            rows = self.get(path, dict(params, limit=page, offset=offset)) or []
+            if isinstance(rows, dict):
+                rows = list(rows.values())
+            new = [r for r in rows if r.get("id") not in seen]
+            if not new:
+                return out
+            seen.update(r.get("id") for r in new)
+            out += new
+            if len(rows) < page:
+                return out
+            offset += page
+
     def customers(self, partner_ids=(), location_ids=()):
         rows = []
         for pid in (sorted(partner_ids) or [None]):
             params = {"main_attributes[partner_id]": pid} if pid else None
-            rows += self.get("/api/2.0/admin/customers/customer", params) or []
+            rows += self.list_all("/api/2.0/admin/customers/customer", params)
         return [c for c in rows if c.get("category") != "lead"
                 and (not partner_ids or int(c.get("partner_id") or 0) in partner_ids)
                 and (not location_ids or int(c.get("location_id") or 0) in location_ids)]
 
     def services(self):
-        return self.get("/api/2.0/admin/customers/customer/0/internet-services") or []
+        return self.list_all("/api/2.0/admin/customers/customer/0/internet-services")   # customer 0 = every customer
 
     def partners(self):
         return self.get("/api/2.0/admin/administration/partners") or []
