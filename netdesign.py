@@ -122,18 +122,29 @@ def _kind(name, desc=""):
     return "router"
 
 
+def sid(prefix, key):
+    """Stable node ids, so a refreshed map keeps the same devices (and their saved positions)."""
+    key = re.sub(r"[^A-Za-z0-9/._:-]", "_", str(key))
+    if len(prefix) + len(key) > 38:
+        import hashlib
+        key = hashlib.sha1(key.encode()).hexdigest()[:14]
+    return prefix + key
+
+
 def discover(snap):
+    """Links carry iface (the router interface whose counters show the traffic on that line) and
+    down: 'tx' or 'rx', which of the router's counters flows from the upper node to the lower one."""
     m = _model(snap)
     nodes, links = [], []
     def node(nid, typ, label, x, y, **props):
         nodes.append({"id": nid, "type": typ, "label": label[:80], "x": x, "y": y, "props": {k: str(v) for k, v in props.items() if v not in ("", None)}})
     def link(a, b, **props):
-        links.append({"id": f"l{len(links) + 1}", "from": a, "to": b, "props": {k: str(v) for k, v in props.items() if v not in ("", None)}})
+        links.append({"id": sid("l:", f"{a}>{b}"), "from": a, "to": b, "props": {k: str(v) for k, v in props.items() if v not in ("", None)}})
     # layout: one block per port group, customers in rows of up to 4 under their group
     # groups with customers get a block below the router; ports with only an LLDP neighbour sit beside it
     blocks, side, x = [], [], 40
     for parent, cs in sorted(m["groups"].items(), key=lambda kv: (-len(kv[1]), kv[0])):
-        if not cs and len(m["lldp"].get(P.isis_key(parent), [])) == 1:
+        if not cs and len(m["lldp"].get(P.isis_key(parent), [])) == 1 and len(side) < 2:     # one each side of the router
             side.append(parent)
             continue
         cols = max(1, min(3, len(cs)))
@@ -151,13 +162,13 @@ def discover(snap):
     urow = lambda k: (k % ucols, k // ucols)      # wrap the upstream row when there are many peers
     for k, u in enumerate(ups):
         up = sum(1 for p in u["peers"] if p["state"] == "Established")
-        nid = f"u{k}"
+        nid = sid("u:", u["as"])
         node(nid, "upstream", f"AS{u['as']}", 20 + urow(k)[0] * step, 30 + urow(k)[1] * 80, bgp_as=u["as"], peer_ip=", ".join(p["peer"] for p in u["peers"])[:200],
              location=f"{up}/{len(u['peers'])} sessions up", existing="yes",
              prefixes=sum(p["prefixes"] or 0 for p in u["peers"]))
         ports = sorted(u["ports"])
         link(nid, "r", label=", ".join(ports)[:60] or "multihop", router_port=ports[0] if len(ports) == 1 else "", existing="yes",
-             state="up" if up else "down")
+             state="up" if up else "down", iface=ports[0] if len(ports) == 1 else "", down="rx", peers=",".join(p["peer"] for p in u["peers"])[:200])
     if m["ibgp"]:
         nid = "ibgp"
         node(nid, "router", f"iBGP peers (AS{m['local_as']})", 20 + urow(len(ups))[0] * step, 30 + urow(len(ups))[1] * 80, peer_ip=", ".join(p["peer"] for p in m["ibgp"])[:200],
@@ -166,37 +177,39 @@ def discover(snap):
     for k, parent in enumerate(side):
         nb = m["lldp"][P.isis_key(parent)][0]
         pi = m["by_name"].get(parent, {})
-        sx = rx + (1 if k % 2 else -1) * (COL + 30) * (k // 2 + 1)
-        node(f"s{k}", _kind(nb["neighbor"]), nb["neighbor"], max(0, sx), 210 + ((k // 2) % 2) * 0, location=f"LLDP on {parent} → {nb['neighbor_port']}", existing="yes")
-        link("r", f"s{k}", label=parent, router_port=parent, existing="yes", state=pi.get("phy", ""))
+        sx = rx + (1 if k % 2 else -1) * (NODE_W + 190)
+        node(sid("s:", parent), _kind(nb["neighbor"]), nb["neighbor"], sx, 210, location=f"LLDP on {parent} → {nb['neighbor_port']}", existing="yes")
+        link("r", sid("s:", parent), label=parent, router_port=parent, existing="yes", state=pi.get("phy", ""), iface=parent, down="tx")
     for g, (parent, cs, bx, cols) in enumerate(blocks):
         pi = m["by_name"].get(parent, {})
         nb = m["lldp"].get(P.isis_key(parent), [])
         gx = bx + (cols * COL - 25) / 2 - NODE_W / 2
-        gid = f"g{g}"
+        gid = sid("g:", parent)
         if len(nb) == 1:
             node(gid, _kind(nb[0]["neighbor"]), nb[0]["neighbor"], gx, 380, location=f"LLDP on {parent} → {nb[0]['neighbor_port']}", existing="yes")
         else:
             node(gid, "switch", pi.get("description") or parent, gx, 380,
                  location=f"{parent} · {len(cs)} links" + (f" · {len(nb)} LLDP" if nb else ""), existing="yes")
-        link("r", gid, label=parent, router_port=parent, existing="yes", state=pi.get("phy", ""),
-             notes=f"in {pi.get('in_util', '')}% / out {pi.get('out_util', '')}%" if pi.get("in_util") is not None else "")
+        link("r", gid, label=parent, router_port=parent, existing="yes", state=pi.get("phy", ""), iface=parent, down="tx")
         y = 380 + 120
         if len(nb) > 1:     # several neighbours on one port (an exchange or a shared segment): a row under the port
             ncols = max(cols, 1)
             for j, n in enumerate(nb):
-                nid = f"n{g}_{j}"
+                nid = sid("n:", parent + ":" + n["neighbor"])
                 node(nid, _kind(n["neighbor"]), n["neighbor"], bx + (j % ncols) * COL, y + (j // ncols) * ROW,
                      location=f"LLDP → {n['neighbor_port']}", existing="yes")
                 link(gid, nid, label="LLDP", existing="yes")
             y += ((len(nb) - 1) // ncols + 1) * ROW + 25
         for k, c in enumerate(sorted(cs, key=lambda c: c["label"].lower())):
-            cid = f"c{g}_{k}"
+            cid = sid("c:", c["interface"])
             node(cid, "reseller", c["label"], bx + (k % cols) * COL, y + (k // cols) * ROW, splynx_id=c["splynx_id"],
                  location=c["profile"] or c["ip"], status=c["splynx_status"], interface=c["interface"], existing="yes")
             link(gid, cid, label=f"VLAN {c['vlan']}" + (f" · {c['profile']}" if c["profile"] else ""), router_port=parent, vlan=c["vlan"],
-                 address=c["ip"], state=c["state"], existing="yes")
+                 address=c["ip"], state=c["state"], existing="yes", iface=c["interface"], down="tx", plan_kbps=c["kbps"] or "")
     extra = ((total - 1) // ucols) * 80 if total else 0
+    shift = max(0, 20 - min((n["x"] for n in nodes), default=20))     # side ports past the left edge: move everything right
+    for n in nodes:
+        n["x"] += shift
     for n in nodes:
         if n["type"] != "upstream" and n["id"] != "ibgp":
             n["y"] += extra
@@ -290,11 +303,10 @@ def design(snap):
     for k, n in enumerate([n for n in nodes if n["type"] == "upstream"]):
         links.append({"id": f"pu{k}", "from": n["id"], "to": "r2", "props": {"label": "second session", "status": "proposed"}})
     # customer groups move behind the aggregation pair
-    for l in links:
-        if l["from"] == "r" and re.match(r"^g\d+$", l["to"]):
-            l["from"] = "a1" if int(l["to"][1:]) % 2 == 0 else "a2"
-            l["props"]["label"] = "via AGG pair (was " + l["props"].get("label", "") + ")"
-            l["props"]["status"] = "proposed"
+    for k, l in enumerate([l for l in links if l["from"] == "r" and l["to"].startswith("g:")]):
+        l["from"] = "a1" if k % 2 == 0 else "a2"
+        l["props"]["label"] = "via AGG pair (was " + l["props"].get("label", "") + ")"
+        l["props"]["status"] = "proposed"
 
     # draft tasks for this router: preparation only, safe to check, nothing executes on its own
     lo = next((i for i in snap["interfaces"] if i["name"].lower() == "loopback0" and i.get("ip")), None)

@@ -46,7 +46,7 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 PAGES.plans = async c => {
   const { plans } = await api('/api/plans');
   const by = s => plans.filter(p => p.status === s).length;
-  c.innerHTML = head('Network plans', 'design, execute and keep a record of every change', `<button class="btn" id="pAuto" title="draw the live network: upstreams, ports, LLDP neighbours and customers">Auto-populate from network</button><button class="btn" id="pDesign" title="review the live network and propose a carrier-grade design as a draft plan">Suggest carrier-grade design</button><button class="btn primary" onclick="newPlan()">+ New plan</button>`) +
+  c.innerHTML = head('Network plans', 'design, execute and keep a record of every change', `<a class="btn" href="#netmap" title="the network as built, live from the router, with traffic on every line">Live network map</a><button class="btn" id="pAuto" title="draw the live network: upstreams, ports, LLDP neighbours and customers">Auto-populate from network</button><button class="btn" id="pDesign" title="review the live network and propose a carrier-grade design as a draft plan">Suggest carrier-grade design</button><button class="btn primary" onclick="newPlan()">+ New plan</button>`) +
     `<div class="tiles">${[['Plans', plans.length], ['Draft', by('draft')], ['Approved / checked', by('approved') + by('checked')], ['Executed', by('executed')], ['Failed', by('failed')]].map(([l, v]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('')}</div>
     <div class="card"><div id="pT"></div></div>`;
   table($('#pT'), [{ t: 'Plan', k: 'name', cls: 'wrap', f: p => `<b>${esc(p.name)}</b><div class="faint" style="font-size:12px">${esc(p.description.slice(0, 140))}</div>` },
@@ -118,8 +118,8 @@ function renderDesign(host, c) {
   host.innerHTML = `<div class="planwrap"><div>
     <div class="bar"><div class="palette">${Object.entries(NODE_META).map(([k, m]) => `<button class="btn" data-add="${k}">+ ${m.label}</button>`).join('')}</div></div>
     <div class="bar"><button class="btn ${PD.connect ? 'primary' : ''}" id="dConn">${PD.connect ? 'Connecting: click two devices' : 'Connect devices'}</button>
-      <button class="btn" id="dGen" title="create tasks from links on the NE8000">Generate tasks from design</button><span class="sp"></span><span class="faint" style="font-size:12px">Drag to move · click to edit · Delete key removes the selection</span></div>
-    <div class="canvas ${PD.connect ? 'connect' : ''}" id="dCanvas"></div></div>
+      <button class="btn" id="dGen" title="create tasks from links on the NE8000">Generate tasks from design</button><span class="sp"></span><span class="faint" style="font-size:12px">Drag to move · click to edit · Delete key removes the selection</span><button class="btn sm" onclick="toggleFull($('#dBox'))" title="full screen (Esc to leave)">⛶ Full screen</button></div>
+    <div class="fsbox" id="dBox"><button class="btn sm fsx" onclick="toggleFull($('#dBox'))">✕ Exit full screen</button><div class="canvas ${PD.connect ? 'connect' : ''}" id="dCanvas"></div></div></div>
     <div class="card" id="dProps"></div></div>`;
   host.querySelectorAll('[data-add]').forEach(b => b.onclick = () => {
     const n = { id: 'n' + uid(), type: b.dataset.add, label: NODE_META[b.dataset.add].label, ...freeSpot(), props: {} };
@@ -331,4 +331,114 @@ async function printRecord() {
     <h2>Version history</h2><table><tr><th>When</th><th>By</th><th>Change</th></tr>${[...P.revisions].reverse().map(r => `<tr><td>${fmtDate(r.at)}</td><td>${esc(r.by || '')}</td><td>${esc(r.note)}</td></tr>`).join('')}</table>
     <script>setTimeout(()=>print(),300)<\/script></body></html>`);
   w.document.close();
+}
+
+/* ---------- live network map: the router as built, rebuilt from the router, with traffic on every line ---------- */
+let NM = { data: null, ifs: {}, peers: {}, zoom: 1, sel: null };
+const nmPosKey = () => 'ne8000.nmpos.' + (NM.data ? NM.data.key : '');
+const nmLoadPos = () => { try { return JSON.parse(localStorage.getItem(nmPosKey()) || '{}'); } catch (e) { return {}; } };
+const nmSavePos = p => { try { localStorage.setItem(nmPosKey(), JSON.stringify(p)); } catch (e) { } };
+PAGES.netmap = async c => {
+  c.innerHTML = head('Network map', 'live, as built: rebuilt from the router every time it is opened',
+    `<button class="btn" id="nmRef">Refresh now</button><button class="btn" id="nmSave" title="copy this map into a new plan you can edit">Save a copy as plan</button>`) +
+    `<div class="card" style="padding:10px 14px"><div class="bar" style="margin:0"><span id="nmInfo" class="muted" style="font-size:12.5px">Reading the network from the router…</span><span class="sp"></span>
+      <span class="nmleg"><i class="nm-ok"></i>&lt;50% <i class="nm-warn"></i>50-80% <i class="nm-bad"></i>&gt;80% <i class="nm-down"></i>down</span>
+      <button class="btn sm" id="nmZo" title="zoom out">−</button><button class="btn sm" id="nmZi" title="zoom in">+</button><button class="btn sm" id="nmZr" title="reset layout to automatic">Reset layout</button>
+      <button class="btn sm" id="nmFs" title="full screen (Esc to leave)">⛶ Full screen</button></div></div>
+    <div class="fsbox" id="nmBox"><button class="btn sm fsx" onclick="toggleFull($('#nmBox'))" title="leave full screen">✕ Exit full screen</button><div class="canvas nmap" id="nmC"></div></div>
+    <div class="glay2"><div class="card"><h3>What changed</h3><div id="nmCh" class="faint">—</div></div><div class="card" id="nmSel"><h3>Selection</h3><div class="faint">Click a device or a line. Click a line again to open its graphs.</div></div></div>`;
+  const load = async refresh => {
+    try { NM.data = await api('/api/netmap' + (refresh ? '?refresh=1' : '')); } catch (e) { $('#nmInfo').innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
+    $('#nmInfo').textContent = `${NM.data.summary} Updated ${new Date(NM.data.at * 1000).toLocaleTimeString()}.` + (NM.data.rates ? ' Traffic refreshes every 15 s.' : ' Over SSH only, lines show port utilisation instead of rates.');
+    $('#nmCh').innerHTML = NM.data.changes.length ? `<table class="tbl"><tbody>${NM.data.changes.slice(0, 40).map(x => `<tr><td class="faint" style="white-space:nowrap">${fmtDate(x.at)}</td><td>${esc(x.text)}</td></tr>`).join('')}</tbody></table>` : 'No changes yet.';
+    await nmTraffic(); 
+  };
+  $('#nmRef').onclick = async e => { e.target.disabled = true; await load(true); e.target.disabled = false; toast('Map rebuilt from the router'); };
+  $('#nmSave').onclick = async () => {
+    const pos = nmLoadPos(), d = JSON.parse(JSON.stringify(NM.data.diagram)); d.nodes.forEach(n => { if (pos[n.id]) [n.x, n.y] = pos[n.id]; });
+    const p = await post('/api/plans', { name: 'Copy of the network as built (' + new Date().toLocaleString() + ')', description: NM.data.summary, author: editor(), diagram: d });
+    toast('Saved as a plan you can edit'); location.hash = 'plan/' + p.id;
+  };
+  $('#nmZi').onclick = () => { NM.zoom = Math.min(2, NM.zoom * 1.2); nmDraw(); };
+  $('#nmZo').onclick = () => { NM.zoom = Math.max(0.3, NM.zoom / 1.2); nmDraw(); };
+  $('#nmZr').onclick = () => { nmSavePos({}); nmDraw(); };
+  $('#nmFs').onclick = () => toggleFull($('#nmBox'));
+  await load(false);
+  every(15000, nmTraffic);
+  every(60000, () => load(false));
+};
+async function nmTraffic() {
+  try { const t = await api('/api/netmap/traffic'); NM.ifs = t.ifs; NM.peers = t.peers; } catch (e) { }
+  nmDraw();
+}
+const nmRate = b => b == null ? '' : Fmt.bps(b);
+function nmLinkState(l) {
+  const p = l.props, t = NM.ifs[p.iface] || {};
+  if (p.peers) {
+    const st = p.peers.split(',').map(ip => NM.peers[ip]).filter(Boolean);
+    if (st.length && !st.includes('Established')) return { cls: 'nm-bgpdown', text: 'BGP ' + st[0], down: 0, up: 0 };
+  }
+  if (p.iface && t.phy && t.phy !== 'up') return { cls: 'nm-down', text: p.iface + ' ' + t.phy, down: 0, up: 0 };
+  const down = p.down === 'rx' ? t.rx : t.tx, up = p.down === 'rx' ? t.tx : t.rx;
+  let pct = Math.max(t.in_util || 0, t.out_util || 0);
+  if (p.plan_kbps && down != null) pct = Math.max(down, up || 0) / (p.plan_kbps * 1000) * 100;
+  const cls = !p.iface ? '' : pct >= 80 ? 'nm-bad' : pct >= 50 ? 'nm-warn' : 'nm-ok';
+  const text = down != null ? `▼ ${nmRate(down)}  ▲ ${nmRate(up)}` : p.iface && t.in_util != null ? `in ${t.in_util}% · out ${t.out_util}%` : '';
+  return { cls, text, down: down || 0, up: up || 0, pct };
+}
+// a line between two boxes. A box well below its parent (customers in rows under a port) gets a tree-style line:
+// down the gap left of its column, in from above, with the label just over the box, so no line crosses a box.
+function nmRoute(a, b) {
+  const ax = a.x + NW / 2, ay = a.y + NH / 2, bx = b.x + NW / 2, by = b.y + NH / 2;
+  if (/^[cn]:/.test(b.id) && b.y >= a.y + NH + 40) {
+    const y0 = a.y + NH, yb = y0 + 18, tx = b.x - 12, yt = b.y - 34, sx = b.x + 22;
+    const pts = [[ax, y0], [ax, yb], [tx, yb], [tx, yt], [sx, yt], [sx, b.y]];
+    return { d: 'M' + pts.map(p => p.join(' ')).join(' L'), r: 'M' + pts.slice().reverse().map(p => p.join(' ')).join(' L'), lx: sx + 8, ly: b.y - 19, anchor: 'start' };
+  }
+  const edge = (cx, cy, dx, dy) => { const t = Math.min(dx ? NW / 2 / Math.abs(dx) : Infinity, dy ? NH / 2 / Math.abs(dy) : Infinity); return [cx + dx * t, cy + dy * t]; };
+  const [x1, y1] = edge(ax, ay, bx - ax, by - ay), [x2, y2] = edge(bx, by, ax - bx, ay - by);
+  return { d: `M${x1} ${y1} L${x2} ${y2}`, r: `M${x2} ${y2} L${x1} ${y1}`, lx: (x1 + x2) / 2, ly: (y1 + y2) / 2 - 6, anchor: 'middle' };
+}
+function nmDraw() {
+  const host = $('#nmC'); if (!host || !NM.data) return;
+  const pos = nmLoadPos(), z = NM.zoom;
+  const nodes = NM.data.diagram.nodes.map(n => ({ ...n, x: pos[n.id] ? pos[n.id][0] : n.x, y: pos[n.id] ? pos[n.id][1] : n.y }));
+  const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
+  const W = Math.max(1000, ...nodes.map(n => n.x + NW + 60)), H = Math.max(560, ...nodes.map(n => n.y + NH + 60));
+  const links = NM.data.diagram.links.filter(l => byId[l.from] && byId[l.to]).map(l => {
+    const a = byId[l.from], b = byId[l.to], s = nmLinkState(l), g = nmRoute(a, b);
+    const w = s.down ? Math.min(9, 2 + Math.max(0, Math.log10(s.down / 1e5))) : 2;
+    const sp = v => Math.max(0.4, 3.2 - Math.log10(Math.max(1, v / 1e6))).toFixed(2);
+    const label = [l.props.label, s.text].filter(Boolean);
+    return `<g class="link ${s.cls} ${NM.sel === l.id ? 'sel' : ''}" data-l="${l.id}"><path class="vis" d="${g.d}" style="stroke-width:${w}"/>
+      ${s.down ? `<path class="flow" d="${g.d}" style="animation-duration:${sp(s.down)}s"/>` : ''}
+      ${s.up > s.down * 0.05 && s.up ? `<path class="flow rev" d="${g.r}" style="animation-duration:${sp(s.up)}s"/>` : ''}
+      <path class="hit" d="${g.d}"/>
+      ${label.map((t, i) => `<text x="${g.lx}" y="${g.ly + i * 14}" text-anchor="${g.anchor}" class="${i ? 'rate' : ''}">${esc(t)}</text>`).join('')}</g>`;
+  }).join('');
+  const ns = nodes.map(n => { const m = NODE_META[n.type] || NODE_META.router; const sub = n.props.mgmt_ip || n.props.splynx_id && ('Splynx ' + n.props.splynx_id + (n.props.location ? ' · ' + n.props.location : '')) || n.props.location || '';
+    return `<g class="node ${NM.sel === n.id ? 'sel' : ''}" data-n="${n.id}" transform="translate(${n.x},${n.y})"><rect width="${NW}" height="${NH}" rx="8" style="stroke:var(${m.color})"/><rect width="5" height="${NH}" rx="2" style="fill:var(${m.color});stroke:none"/>
+      <text class="tag" x="14" y="17" style="fill:var(${m.color})">${m.tag}${n.props.status && n.type === 'reseller' && n.props.status !== 'active' ? ' · ' + esc(n.props.status.toUpperCase()) : ''}</text><text x="14" y="34">${esc(trunc(n.label, 22))}</text><text class="sub" x="14" y="50">${esc(trunc(sub, 26))}</text></g>`; }).join('');
+  const sl = host.scrollLeft, st = host.scrollTop;
+  host.innerHTML = `<svg width="${W * z}" height="${H * z}" viewBox="0 0 ${W} ${H}" id="nmSvg"><rect width="100%" height="100%" fill="transparent" data-bg="1"/>${links}${ns}</svg>`;
+  host.scrollLeft = sl; host.scrollTop = st;
+  const svg = $('#nmSvg'); let drag = null;
+  const pt = e => { const r = svg.getBoundingClientRect(); return { x: (e.clientX - r.left) / z, y: (e.clientY - r.top) / z }; };
+  svg.onpointerdown = e => {
+    const g = e.target.closest('[data-n]'), lk = e.target.closest('[data-l]');
+    if (g) { const n = byId[g.dataset.n], p = pt(e); drag = { n, dx: p.x - n.x, dy: p.y - n.y, moved: false }; svg.setPointerCapture(e.pointerId); return; }
+    if (lk) { const l = NM.data.diagram.links.find(x => x.id === lk.dataset.l); if (NM.sel === l.id && l.props.iface) return showGraphs(l.props.iface); NM.sel = l.id; nmShowSel(l, 'link'); nmDraw(); return; }
+    NM.sel = null; nmDraw();
+  };
+  svg.onpointermove = e => { if (!drag) return; const p = pt(e); drag.n.x = Math.max(0, Math.round((p.x - drag.dx) / 10) * 10); drag.n.y = Math.max(0, Math.round((p.y - drag.dy) / 10) * 10); drag.moved = true;
+    svg.querySelector(`[data-n="${CSS.escape(drag.n.id)}"]`).setAttribute('transform', `translate(${drag.n.x},${drag.n.y})`); };
+  svg.onpointerup = () => { if (!drag) return; if (drag.moved) { const p = nmLoadPos(); p[drag.n.id] = [drag.n.x, drag.n.y]; nmSavePos(p); } else { NM.sel = drag.n.id; nmShowSel(drag.n, 'node'); } drag = null; nmDraw(); };
+}
+function nmShowSel(x, kind) {
+  const rows = kind === 'node' ? [['Device', x.label], ['Type', (NODE_META[x.type] || {}).label], ...Object.entries(x.props).filter(([k]) => k !== 'existing')]
+    : (() => { const s = nmLinkState(x), t = NM.ifs[x.props.iface] || {}; return [['Line', x.props.label], ['Interface', x.props.iface], ['VLAN', x.props.vlan], ['Address', x.props.address], ['State', t.phy || x.props.state],
+      ['Download ▼', nmRate(x.props.down === 'rx' ? t.rx : t.tx)], ['Upload ▲', nmRate(x.props.down === 'rx' ? t.tx : t.rx)], ['Utilisation in / out', t.in_util != null ? `${t.in_util}% / ${t.out_util}%` : ''],
+      ['QoS plan', x.props.plan_kbps ? Fmt.bps(x.props.plan_kbps * 1000) : ''], ['Load vs plan', x.props.plan_kbps && s.pct != null ? Math.round(s.pct) + '%' : ''], ['BGP peers', x.props.peers ? x.props.peers.split(',').map(ip => `${ip} ${NM.peers[ip] || ''}`).join(', ') : '']]; })();
+  $('#nmSel').innerHTML = `<h3>Selection</h3><table class="tbl"><tbody>${rows.filter(([, v]) => v !== '' && v != null).map(([k, v]) => `<tr><td class="faint">${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</tbody></table>
+    ${kind === 'link' && x.props.iface ? `<button class="btn sm" onclick="showGraphs(${attr(x.props.iface)})">Graphs for ${esc(x.props.iface)}</button>` : ''}`;
 }

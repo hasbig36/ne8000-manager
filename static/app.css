@@ -124,3 +124,18 @@ details.run .body{padding:0 12px 12px}.task-res{margin:8px 0}.task-res .t{font-w
 #gL .dot{width:8px;height:8px;border-radius:50%;margin-top:5px;background:var(--faint)}#gL .dot.ok{background:var(--ok)}
 @media (max-width:900px){.glay{grid-template-columns:1fr}.glist{position:static;max-height:260px}}
 .node.proposed rect:first-child{stroke-dasharray:6 4}.link.proposed line.vis{stroke-dasharray:7 5;stroke:var(--accent)}
+.fsbox .fsx{display:none}.fsbox:fullscreen,.fsbox.fsfake{background:var(--bg);padding:12px;overflow:auto}
+.fsbox.fsfake{position:fixed;inset:0;z-index:50}.fsbox:fullscreen .fsx,.fsbox.fsfake .fsx{display:inline-block;margin-bottom:8px}
+.fsbox:fullscreen .canvas,.fsbox.fsfake .canvas{height:calc(100vh - 70px)}
+.canvas.nmap .link path{fill:none;stroke:var(--faint);stroke-width:2.5;stroke-linejoin:round}.canvas.nmap .link path.hit{stroke:transparent;stroke-width:14;cursor:pointer}
+.canvas.nmap .link path.flow{stroke:var(--text);stroke-opacity:.55;stroke-width:2;stroke-dasharray:3 13;animation:nmflow linear infinite;pointer-events:none}
+.canvas.nmap .link path.flow.rev{stroke-opacity:.3}
+@keyframes nmflow{from{stroke-dashoffset:16}to{stroke-dashoffset:0}}
+.canvas.nmap .link.nm-ok path.vis{stroke:var(--ok)}.canvas.nmap .link.nm-warn path.vis{stroke:var(--warn)}.canvas.nmap .link.nm-bad path.vis{stroke:var(--bad)}
+.canvas.nmap .link.nm-down path.vis{stroke:var(--faint);stroke-dasharray:6 5}.canvas.nmap .link.nm-bgpdown path.vis{stroke:var(--bad);stroke-dasharray:8 6}
+.canvas.nmap .link text.rate{fill:var(--text);font-weight:600}.canvas.nmap .link.sel path.vis{filter:drop-shadow(0 0 3px var(--accent))}
+.nmleg{font-size:12px;color:var(--muted);display:inline-flex;gap:6px;align-items:center;margin-right:10px}.nmleg i{display:inline-block;width:16px;height:4px;border-radius:2px;background:var(--ok)}
+.nmleg i.nm-warn{background:var(--warn)}.nmleg i.nm-bad{background:var(--bad)}.nmleg i.nm-down{background:var(--faint)}
+.glay2{display:grid;grid-template-columns:1fr 360px;gap:16px;align-items:start;margin-top:16px}@media (max-width:1000px){.glay2{grid-template-columns:1fr}}
+.tbl{width:100%;border-collapse:collapse;font-size:12.5px}.tbl td{padding:3px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+@media (prefers-reduced-motion:reduce){.canvas.nmap .link path.flow{animation:none}}

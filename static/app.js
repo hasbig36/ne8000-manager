@@ -152,7 +152,7 @@ const NAV = [
   [null, [['dashboard', 'Dashboard', I.dash]]],
   ['Network', [['interfaces', 'Interfaces', I.ifs], ['graphs', 'Graphs', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
   ['IP', [['addresses', 'Addresses', I.ip], ['routes', 'Routes', I.route], ['arp', 'ARP', I.ip], ['vpn', 'VPN instances', I.ip], ['neighbors', 'Neighbors (LLDP)', I.ip]]],
-  ['Planning', [['plans', 'Network plans', I.plan]]],
+  ['Planning', [['netmap', 'Network map', I.plan], ['plans', 'Network plans', I.plan]]],
   ['Billing', [['billing', 'Splynx billing', I.bill]]],
   ['Routing', [['bgp', 'BGP', I.route], ['ospf', 'OSPF', I.route], ['isis', 'IS-IS', I.route], ['mpls', 'MPLS / LDP', I.route]]],
   ['System', [['resources', 'Resources', I.graph], ['hardware', 'Hardware', I.hw], ['users', 'Router users', I.user], ['settings', 'Settings', I.sys], ['logs', 'Logs & alarms', I.log]]],
@@ -724,6 +724,12 @@ PAGES.traffic = async c => {
 
 /* ----- Graphs: pick an interface on the left, see now / 1 day / 1 week / 1 month / 1 year ----- */
 let graphSel = ''; try { graphSel = localStorage.getItem('ne8000.graph') || ''; } catch (e) {}
+/* full screen for any panel: Esc or the button again leaves it */
+function toggleFull(el) {
+  if (document.fullscreenElement) return document.exitFullscreen();
+  if (el.requestFullscreen) el.requestFullscreen().catch(() => el.classList.toggle('fsfake')); else el.classList.toggle('fsfake');
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') document.querySelectorAll('.fsfake').forEach(x => x.classList.remove('fsfake')); });
 function showGraphs(name) { graphSel = name; try { localStorage.setItem('ne8000.graph', name); } catch (e) {} closeDrawer(); location.hash = 'graphs'; if (current === 'graphs') refresh(); }
 PAGES.graphs = async c => {
   ifCache = await api('/api/view/interfaces');
@@ -733,7 +739,7 @@ PAGES.graphs = async c => {
   const sel = list.find(i => i.name === graphSel) || {};
   c.innerHTML = head('Graphs', 'interface traffic history') + `<div class="glay">
     <div class="card glist"><input id="gF" placeholder="Filter interfaces" autocomplete="off"><div id="gL">${list.map(i => `<a data-g="${esc(i.name)}" class="${i.name === graphSel ? 'on' : ''}" title="${esc(i.description || '')}"><span class="dot ${i.phy === 'up' ? 'ok' : 'off'}"></span><b>${esc(i.name)}</b><small>${esc(i.description || '')}</small></a>`).join('')}</div></div>
-    <div><div class="card"><h3>${esc(graphSel)} <span class="faint" style="font-weight:400">${esc(sel.description || '')}</span><span class="sp"></span><button class="btn sm" onclick='interfaceDrawer(${attr(graphSel)})'>Details</button></h3><div id="gNote" class="muted" style="font-size:12.5px"></div></div>
+    <div id="gRight" class="fsbox"><button class="btn sm fsx" onclick="toggleFull($('#gRight'))">✕ Exit full screen</button><div class="card"><h3>${esc(graphSel)} <span class="faint" style="font-weight:400">${esc(sel.description || '')}</span><span class="sp"></span><button class="btn sm" onclick='interfaceDrawer(${attr(graphSel)})'>Details</button><button class="btn sm" onclick="toggleFull($('#gRight'))" title="full screen (Esc to leave)">⛶ Full screen</button></h3><div id="gNote" class="muted" style="font-size:12.5px"></div></div>
     ${R.map(([k, l]) => `<div class="card"><h3>${l}<span class="sp"></span><span class="legend" id="gS_${k}"></span></h3><div id="gC_${k}"></div></div>`).join('')}</div></div>`;
   $('#gL').onclick = e => { const a = e.target.closest('a[data-g]'); if (a) { graphSel = a.dataset.g; try { localStorage.setItem('ne8000.graph', graphSel); } catch (x) {} PAGES.graphs(c); } };
   $('#gF').oninput = () => { const q = $('#gF').value.toLowerCase(); c.querySelectorAll('#gL a').forEach(a => a.style.display = a.textContent.toLowerCase().includes(q) ? '' : 'none'); };

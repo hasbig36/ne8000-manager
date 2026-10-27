@@ -22,6 +22,7 @@ import billing
 import adopt
 import history
 import netdesign
+import netmap
 import plans
 import routers
 from device import DeviceError, RealRouter, is_read_only
@@ -45,6 +46,8 @@ USERS = auth.UserStore(DATA_DIR)
 AUDIT = auth.Audit(DATA_DIR)
 SAVED = routers.RouterStore(DATA_DIR)
 HIST = history.History(DATA_DIR, SAVED)
+NETMAP = netmap.NetMapStore(DATA_DIR)
+NETMAP_CACHE = {}   # map key -> (time, response)
 THROTTLE_IP = auth.Throttle(limit=5)        # per client address
 THROTTLE_USER = auth.Throttle(limit=20)     # per username, high enough that strangers cannot easily lock out a real user
 THROTTLE_ROUTER = auth.Throttle(limit=5)    # failed router SSH logins per app user (slows password guessing on the router)
@@ -843,6 +846,51 @@ def plan_create():
     router()
     d = request.get_json(force=True)
     return jsonify(PLANS.create(d.get("name"), d.get("description", ""), me(), d.get("diagram"), d.get("tasks")))
+
+
+def netmap_key(r):
+    return "demo" if r.demo else (session.get("router_id") or "host-" + r.host)
+
+
+@app.get("/api/netmap")
+def netmap_view():
+    """The live as-built map of the connected router. Rebuilt at most once a minute unless refresh=1."""
+    r = router()
+    key = netmap_key(r)
+    hit = NETMAP_CACHE.get(key)
+    if hit and time.time() - hit[0] < 60 and request.args.get("refresh") != "1":
+        return jsonify({**hit[1], "changes": NETMAP.load(key)["changes"][-100:][::-1]})
+    eng = getattr(r, "billing", None)
+    snap = netdesign.snapshot(r, ((eng.last if eng else None) or {}).get("rows"))
+    diagram, summary, m = netdesign.discover(snap)
+    rec = NETMAP.update(key, netmap.inventory(snap, m))
+    out = {"key": key, "diagram": diagram, "summary": summary, "at": rec["at"], "warnings": snap["warnings"],
+           "rates": isinstance(r, SnmpRouter) or r.demo}
+    NETMAP_CACHE[key] = (time.time(), out)
+    return jsonify({**out, "changes": rec["changes"][-100:][::-1]})
+
+
+@app.get("/api/netmap/traffic")
+def netmap_traffic():
+    """Current rate (SNMP or demo) or utilisation of the interfaces on the map, and BGP session states."""
+    r = router()
+    hit = NETMAP_CACHE.get(netmap_key(r))
+    if not hit:
+        return jsonify(ifs={}, peers={})
+    names = sorted({l["props"]["iface"] for l in hit[1]["diagram"]["links"] if l["props"].get("iface")})
+    ifs = {i["name"]: i for i in r.interfaces()}
+    series = r.traffic(names) if r.demo else {n: r.series("bps:" + n) for n in names} if isinstance(r, SnmpRouter) else {}
+    out = {}
+    for n in names:
+        i, pts = ifs.get(n, {}), series.get(n) or []
+        out[n] = {"phy": i.get("phy", ""), "in_util": i.get("in_util"), "out_util": i.get("out_util"),
+                  "rx": pts[-1][1] if pts else None, "tx": pts[-1][2] if pts else None}
+    peers = {}
+    try:
+        peers = {p["peer"]: p["state"] for p in r.bgp()["peers"]}
+    except Exception:
+        pass
+    return jsonify(ifs=out, peers=peers, at=time.time())
 
 
 @app.post("/api/plans/auto")
