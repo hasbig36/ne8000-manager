@@ -46,7 +46,7 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 PAGES.plans = async c => {
   const { plans } = await api('/api/plans');
   const by = s => plans.filter(p => p.status === s).length;
-  c.innerHTML = head('Network plans', 'design, execute and keep a record of every change', `<button class="btn primary" onclick="newPlan()">+ New plan</button>`) +
+  c.innerHTML = head('Network plans', 'design, execute and keep a record of every change', `<button class="btn" id="pAuto" title="draw the live network: upstreams, ports, LLDP neighbours and customers">Auto-populate from network</button><button class="btn" id="pDesign" title="review the live network and propose a carrier-grade design as a draft plan">Suggest carrier-grade design</button><button class="btn primary" onclick="newPlan()">+ New plan</button>`) +
     `<div class="tiles">${[['Plans', plans.length], ['Draft', by('draft')], ['Approved / checked', by('approved') + by('checked')], ['Executed', by('executed')], ['Failed', by('failed')]].map(([l, v]) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div></div>`).join('')}</div>
     <div class="card"><div id="pT"></div></div>`;
   table($('#pT'), [{ t: 'Plan', k: 'name', cls: 'wrap', f: p => `<b>${esc(p.name)}</b><div class="faint" style="font-size:12px">${esc(p.description.slice(0, 140))}</div>` },
@@ -54,6 +54,12 @@ PAGES.plans = async c => {
     { t: 'Versions', k: 'revisions', num: true }, { t: 'Last execution', k: 'last_run', f: p => p.last_run ? `${p.last_run.commit ? 'commit' : 'check'} on ${esc(p.last_run.host)} · ${p.last_run.ok ? 'ok' : 'failed'}<div class="faint" style="font-size:12px">${fmtDate(p.last_run.at)}</div>` : '<span class="faint">never</span>' },
     { t: 'Updated', k: 'updated', f: p => fmtDate(p.updated) }, { t: 'By', k: 'author' }], plans,
     { sort: 'updated', dir: -1, onRow: p => location.hash = 'plan/' + p.id, empty: 'No plans yet' });
+  const auto = (btn, kind, busy) => btn.onclick = async () => {
+    btn.disabled = true; const t = btn.textContent; btn.textContent = busy;
+    try { const r = await post('/api/plans/auto', { kind, author: editor() }); toast(kind === 'design' ? 'Design drafted. Nothing was sent to the router.' : 'Network drawn from the router.'); location.hash = 'plan/' + r.id; }
+    catch (e) { toast(e.message, true); btn.disabled = false; btn.textContent = t; }
+  };
+  auto($('#pAuto'), 'discover', 'Reading the network…'); auto($('#pDesign'), 'design', 'Reviewing the network…');
 };
 function newPlan() {
   const m = $('#modal');
@@ -87,7 +93,7 @@ PAGES.plan = async (c, id) => {
       <button class="btn primary" id="plSave">Save</button><button class="btn" id="plDup">Duplicate</button><button class="btn" id="plPrint">Print / PDF record</button><button class="btn danger" id="plDel">Delete</button></div>
     <div class="card"><div class="form" style="grid-template-columns:110px 1fr 90px 160px"><label>Plan name</label><input id="plName" value="${esc(P.name)}"><label>Status</label>
       <select id="plStatus">${['draft', 'approved', 'checked', 'executed', 'failed', 'cancelled'].map(s => `<option ${s === P.status ? 'selected' : ''}>${s}</option>`).join('')}</select>
-      <label>Description</label><input id="plDesc" value="${esc(P.description)}" style="grid-column:2/5"></div>
+      <label>Description</label><textarea id="plDesc" spellcheck="false" style="grid-column:2/5;min-height:${P.description.includes('\n') ? 220 : 38}px;font-family:inherit;font-size:13px">${esc(P.description)}</textarea></div>
       <div class="faint" style="font-size:12px;margin-top:8px">Created ${fmtDate(P.created)}${P.author ? ' by ' + esc(P.author) : ''} · last saved ${fmtDate(P.updated)} · ${P.revisions.length} versions · ${P.runs.length} executions</div></div>
     <div class="tabs" id="plTabs">${[['design', 'Design'], ['tasks', `Tasks (${P.tasks.length})`], ['record', 'Record']].map(([k, l]) => `<button data-t="${k}" class="${PD.tab === k ? 'on' : ''}">${l}</button>`).join('')}</div>
     <div id="plBody"></div>`;
@@ -146,11 +152,11 @@ function drawCanvas() {
   const links = P.diagram.links.filter(l => byId[l.from] && byId[l.to]).map(l => {
     const a = byId[l.from], b = byId[l.to], x1 = a.x + NW / 2, y1 = a.y + NH / 2, x2 = b.x + NW / 2, y2 = b.y + NH / 2;
     const lab = [l.props.label, l.props.vlan && !String(l.props.label || '').includes(l.props.vlan) ? 'VLAN ' + l.props.vlan : '', l.props.rate_kbps ? Fmt.bps(l.props.rate_kbps * 1000) : ''].filter(Boolean).join(' · ');
-    return `<g class="link ${PD.sel && PD.sel.id === l.id ? 'sel' : ''}" data-l="${l.id}"><line class="vis" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/><line class="hit" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>
+    return `<g class="link ${PD.sel && PD.sel.id === l.id ? 'sel' : ''} ${l.props.status === 'proposed' ? 'proposed' : ''}" data-l="${l.id}"><line class="vis" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/><line class="hit" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>
       ${lab ? `<text x="${(x1 + x2) / 2}" y="${(y1 + y2) / 2 - 6}" text-anchor="middle">${esc(lab)}</text>` : ''}</g>`;
   }).join('');
-  const ns = nodes.map(n => { const m = NODE_META[n.type] || NODE_META.router; const sub = n.props.mgmt_ip || n.props.splynx_id && ('Splynx ' + n.props.splynx_id) || n.props.location || '';
-    return `<g class="node ${PD.sel && PD.sel.id === n.id ? 'sel' : ''} ${PD.from === n.id ? 'sel' : ''}" data-n="${n.id}" transform="translate(${n.x},${n.y})">
+  const ns = nodes.map(n => { const m = NODE_META[n.type] || NODE_META.router; const sub = n.props.mgmt_ip || n.props.splynx_id && ('Splynx ' + n.props.splynx_id + (n.props.location ? ' · ' + n.props.location : '')) || n.props.location || '';
+    return `<g class="node ${PD.sel && PD.sel.id === n.id ? 'sel' : ''} ${PD.from === n.id ? 'sel' : ''} ${n.props.status === 'proposed' ? 'proposed' : ''}" data-n="${n.id}" transform="translate(${n.x},${n.y})">
       <rect width="${NW}" height="${NH}" rx="8" style="stroke:var(${m.color})"/><rect width="5" height="${NH}" rx="2" style="fill:var(${m.color});stroke:none"/>
       <text class="tag" x="14" y="17" style="fill:var(${m.color})">${m.tag}</text><text x="14" y="34">${esc(trunc(n.label, 22))}</text><text class="sub" x="14" y="50">${esc(trunc(sub, 26))}</text></g>`; }).join('');
   host.innerHTML = `<svg width="${W}" height="${H}" id="dSvg"><defs><pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse"><circle cx="1" cy="1" r="1" style="fill:var(--grid)"/></pattern></defs>
@@ -211,7 +217,7 @@ function generateTasks() {
   for (const l of P.diagram.links) {
     const a = byId[l.from], b = byId[l.to]; if (!a || !b) continue;
     const pr = l.props; const other = a.type === 'ne8000' ? b : a;
-    if (!pr.router_port || !pr.vlan) continue;
+    if (!pr.router_port || !pr.vlan || pr.existing === 'yes' || pr.status === 'proposed') continue;
     const sub = `${pr.router_port}.${pr.vlan}`; const desc = other.label + (other.props.splynx_id ? ' ' + other.props.splynx_id : '');
     if (!has('subif:' + l.id)) { P.tasks.push({ id: 't' + uid(), source: 'subif:' + l.id, action: 'subif.create', title: `Sub-interface ${sub} for ${other.label}`,
       params: clean({ parent: pr.router_port, vlan: pr.vlan, encap: 'vlan-type', address: pr.address, vpn: pr.vpn, description: desc }) }); added++; }
@@ -219,7 +225,7 @@ function generateTasks() {
       P.tasks.push({ id: 't' + uid(), source: `car-${dir}:` + l.id, action: 'qos.car', title: `Limit ${other.label} to ${Fmt.bps(pr.rate_kbps * 1000)} (${dir === 'outbound' ? 'download' : 'upload'})`,
         params: { interface: sub, direction: dir, cir: pr.rate_kbps } }); added++; }
   }
-  for (const n of P.diagram.nodes) if (n.props.bgp_as && n.props.peer_ip && !has('bgp:' + n.id)) {
+  for (const n of P.diagram.nodes) if (n.props.bgp_as && n.props.peer_ip && n.props.existing !== 'yes' && !has('bgp:' + n.id)) {
     P.tasks.push({ id: 't' + uid(), source: 'bgp:' + n.id, action: 'bgp.peer_add', title: `BGP peer ${n.label}`,
       params: clean({ local_as: router && router.props.local_as || '', peer: n.props.peer_ip, remote_as: n.props.bgp_as, description: n.label }) }); added++; }
   if (added) { markDirty(); PD.preview = null; toast(`${added} task${added === 1 ? '' : 's'} added from the design. Review them on the Tasks tab.`); }

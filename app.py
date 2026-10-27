@@ -21,6 +21,7 @@ import auth
 import billing
 import adopt
 import history
+import netdesign
 import plans
 import routers
 from device import DeviceError, RealRouter, is_read_only
@@ -842,6 +843,27 @@ def plan_create():
     router()
     d = request.get_json(force=True)
     return jsonify(PLANS.create(d.get("name"), d.get("description", ""), me(), d.get("diagram"), d.get("tasks")))
+
+
+@app.post("/api/plans/auto")
+def plan_auto():
+    """Create a plan from the live network: kind 'discover' (draw what is there) or 'design'
+    (carrier-grade review with proposed devices and draft tasks). Reads only."""
+    r = router()
+    kind = request.get_json(force=True).get("kind")
+    eng = getattr(r, "billing", None)
+    snap = netdesign.snapshot(r, ((eng.last if eng else None) or {}).get("rows"))
+    stamp = time.strftime("%Y-%m-%d %H:%M")
+    if kind == "discover":
+        diagram, summary, _ = netdesign.discover(snap)
+        p = PLANS.create(f"Network as built: {snap['sysname']} ({stamp})", summary, me(), diagram, [])
+    elif kind == "design":
+        diagram, desc, tasks, _ = netdesign.design(snap)
+        p = PLANS.create(f"Carrier-grade design: {snap['sysname']} ({stamp})", desc, me(), diagram, tasks)
+    else:
+        raise DeviceError("Unknown kind.")
+    AUDIT.log(me(), "plan_auto", kind=kind, plan=p["id"])
+    return jsonify(id=p["id"])
 
 
 @app.get("/api/plans/<pid>")
