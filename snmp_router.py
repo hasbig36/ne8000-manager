@@ -141,13 +141,13 @@ class SnmpRouter(Router):
         self._close_snmp()
 
     # ---- SNMP reads ---------------------------------------------------------
-    def walk(self, oid, ttl=4):
+    def walk(self, oid, ttl=4, reps=40):
         key = "snmp:" + oid
         hit = self.cache.get(key)
         if hit and time.time() - hit[0] < ttl:
             return hit[1]
         try:
-            out = self.snmp.walk(oid)
+            out = self.snmp.walk(oid, reps=reps)
         except SnmpError as exc:
             raise DeviceError(f"SNMP: {exc}") from exc
         self.cache[key] = (time.time(), out)
@@ -390,7 +390,7 @@ class SnmpRouter(Router):
 
     def neighbors(self):
         loc = {i: text(v) for i, v in self.walk(LLDP_LOC_PORT, 300).items()}
-        port, desc, sysn = self.walk(LLDP_REM + ".7", 10), self.walk(LLDP_REM + ".8", 10), self.walk(LLDP_REM + ".9", 10)
+        port, desc, sysn = (self.walk(LLDP_REM + c, 10, reps=10) for c in (".7", ".8", ".9"))
         rows = []
         for idx, p in port.items():
             parts = idx.split(".")

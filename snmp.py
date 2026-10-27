@@ -98,12 +98,12 @@ class SnmpClient:
         self._check(*res[:3])
         return {str(n): _value(v) for n, v in res[3]}
 
-    async def _walk(self, oid, max_rows):
+    async def _walk(self, oid, max_rows, reps=40):
         await self._ensure()
         out = {}
         prefix = oid.rstrip(".") + "."
         async for err_ind, err_stat, err_idx, binds in S.bulk_walk_cmd(
-                self.engine, self.auth, self.target, S.ContextData(), 0, 40,
+                self.engine, self.auth, self.target, S.ContextData(), 0, reps,
                 S.ObjectType(S.ObjectIdentity(oid)), lexicographicMode=False):
             self._check(err_ind, err_stat, err_idx)
             for n, v in binds:
@@ -119,9 +119,15 @@ class SnmpClient:
         """{oid: value} for scalar OIDs (missing ones are None)."""
         return self._call(self._get(list(oids)), timeout=self.timeout * (self.retries + 1) + 5)
 
-    def walk(self, oid, max_rows=20000):
-        """{index-suffix: value} for every row under oid."""
-        return self._call(self._walk(oid, max_rows))
+    def walk(self, oid, max_rows=20000, reps=40):
+        """{index-suffix: value} for every row under oid. reps is the GETBULK size: tables with long
+        rows (LLDP descriptions) need a small one, or the response gets too big and the router drops it."""
+        try:
+            return self._call(self._walk(oid, max_rows, reps))
+        except SnmpError as exc:
+            if reps <= 10 or "timeout" not in str(exc).lower():
+                raise
+            return self._call(self._walk(oid, max_rows, 10))    # retry once with small requests
 
     def table(self, base, columns, max_rows=20000):
         """{index: {column-name: value}} for the given columns {name: column-number} of an SNMP table."""

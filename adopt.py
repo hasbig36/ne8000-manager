@@ -95,10 +95,11 @@ def _addr_from_index(idx):
 
 
 def lldp_candidates(client, router_name, known):
-    loc = {i: _txt(v) for i, v in client.walk(LLDP_LOC_PORT, 500).items()}
-    names, descs, ports = client.walk(LLDP_REM + ".9", 500), client.walk(LLDP_REM + ".10", 500), client.walk(LLDP_REM + ".7", 500)
+    # small GETBULK requests: LLDP rows carry long descriptions and big responses are dropped
+    loc = {i: _txt(v) for i, v in client.walk(LLDP_LOC_PORT, 500, reps=10).items()}
+    names, descs, ports = (client.walk(LLDP_REM + c, 500, reps=10) for c in (".9", ".10", ".7"))
     addrs = {}
-    for idx in client.walk(LLDP_MAN, 1000):
+    for idx in client.walk(LLDP_MAN, 1000, reps=10):
         a, key = _addr_from_index(idx)
         if a:
             addrs.setdefault(key, a)
