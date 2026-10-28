@@ -8,7 +8,7 @@ import re
 import time
 
 import parsers as P
-from device import POLL_SECONDS, DeviceError, RealRouter, Router
+from device import POLL_SECONDS, DeviceError, RealRouter, Router, _cidr, ipv6_addrs
 from snmp import SnmpClient, SnmpError, mac, text
 
 SYS = "1.3.6.1.2.1.1"
@@ -295,7 +295,11 @@ class SnmpRouter(Router):
             idx, r = row.pop("_idx"), row.pop("_r")
             addrs = ips.get(idx, [])
             lines = cfg.get(row["name"], [])
-            row.update(ip=addrs[0] if addrs else "", vpn="", description=text(r["alias"]),
+            conf = sorted((l for l in lines if l.startswith("ip address ") and len(l.split()) >= 4), key=lambda l: l.endswith(" sub"))
+            conf = [_cidr(l) for l in conf]
+            if conf:    # the configuration says which address is primary and which are "sub"; SNMP does not
+                addrs = conf
+            row.update(ip=addrs[0] if addrs else "", ipv6=ipv6_addrs(lines), vpn="", description=text(r["alias"]),
                        vlan=P.vlan_from_config(lines) if lines else "", mtu=str(r["mtu"] or ""),
                        l2="portswitch" in lines, secondary=addrs[1:],
                        util_history=[[x[1], x[2]] for x in list(self.history.get("util:" + row["name"], ()))[-30:]])

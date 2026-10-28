@@ -39,6 +39,16 @@ def _cidr(line):
     return f"{parts[2]}/{plen}"
 
 
+def ipv6_addrs(lines):
+    """'ipv6 address 2001:DB8::1/64' (and 'ipv6 address 2001:DB8::1 64') -> ['2001:DB8::1/64']; link-local skipped."""
+    out = []
+    for l in lines:
+        w = l.split()
+        if len(w) >= 3 and w[0] == "ipv6" and w[1] == "address" and ":" in w[2] and "link-local" not in w:
+            out.append(w[2] if "/" in w[2] else f"{w[2]}/{w[3]}" if len(w) > 3 and w[3].isdigit() else w[2])
+    return out
+
+
 class Router:
     demo = False
     via = "SSH"
@@ -205,6 +215,7 @@ class Router:
             row["mtu"] = next((l.split()[1] for l in lines if l.startswith("mtu ")), "")
             row["l2"] = "portswitch" in lines
             row["secondary"] = [_cidr(l) for l in lines if l.startswith("ip address ") and l.endswith(" sub")]
+            row["ipv6"] = ipv6_addrs(lines)
             row["util_history"] = [[x[1], x[2]] for x in list(self.history.get("util:" + row["name"], ()))[-30:]]
         return rows
 

@@ -162,6 +162,20 @@ def interface_ip_remove(p):
     return [f"interface {name}", f"undo ip address {ip} {plen}" + (" sub" if p.get("secondary") in (True, "true", "1") else "")]
 
 
+@action("interface.ip_change")
+def interface_ip_change(p):
+    """Change one address. A new primary simply replaces the old one (the router keeps the secondaries);
+    a secondary is removed and the new one added."""
+    name = iface(p)
+    old_ip, old_plen = ip_iface(p, "old")
+    ip, plen = ip_iface(p)
+    if (ip, plen) == (old_ip, old_plen):
+        raise ActionError("Nothing to change.")
+    if p.get("secondary") in (True, "true", "1"):
+        return [f"interface {name}", f"undo ip address {old_ip} {old_plen} sub", f"ip address {ip} {plen} sub"]
+    return [f"interface {name}", f"ip address {ip} {plen}"]
+
+
 @action("interface.reset_counters", mode="exec")
 def interface_reset_counters(p):
     return [f"reset counters interface {iface(p)}"]

@@ -128,6 +128,7 @@ function change(o) {
       try { const r = await post('/api/action', { action: o.action, params: params(), preview: true });
         m.querySelector('.cli').textContent = r.lines.join('\n') + (r.mode === 'config' ? '\ncommit' : '');
         pv.classList.remove('hidden'); reviewed = true; setPrimary(r.mode === 'exec' ? 'Run' : 'Apply & commit');
+        const w = o.warn && o.warn(params()); if (w) err.textContent = '⚠ ' + w;
       } catch (e2) { err.textContent = e2.message; }
       return;
     }
@@ -256,7 +257,7 @@ PAGES.interfaces = async c => {
   const draw = rows => table($('#ifTable'), [
     { t: 'Name', k: 'name', f: r => `<b>${esc(r.name)}</b>` }, { t: 'Type', k: 'type', f: r => `<span class="muted">${esc(r.type)}</span>` },
     { t: 'Physical', k: 'phy', f: r => pill(r.phy) }, { t: 'Protocol', k: 'protocol', f: r => pill(r.protocol) },
-    { t: 'IP address', k: 'ip', cls: 'mono' }, { t: 'VPN', k: 'vpn', f: r => `<span class="muted">${esc(r.vpn)}</span>` }, { t: 'VLAN', k: 'vlan' },
+    { t: 'IP address', k: 'ip', f: ipCell }, { t: 'VPN', k: 'vpn', f: r => `<span class="muted">${esc(r.vpn)}</span>` }, { t: 'VLAN', k: 'vlan' },
     { t: 'In', k: 'in_util', f: r => ubar(r.in_util) }, { t: 'Out', k: 'out_util', f: r => ubar(r.out_util) },
     { t: 'Errors', k: 'in_errors', num: true, f: r => r.in_errors + r.out_errors ? `<span style="color:var(--bad)">${r.in_errors}/${r.out_errors}</span>` : '0' },
     { t: 'Description', k: 'description' },
@@ -271,7 +272,70 @@ function ifEdit(name) {
   change({ title: `Edit ${name}`, action: 'interface.set', params: { interface: name }, fields: [{ k: 'description', label: 'Description', value: r.description }, { k: 'mtu', label: 'MTU', type: 'number', value: r.mtu, ph: '1500', help: 'Leave empty to keep the current MTU.' }] });
 }
 function ifIpForm(name) {
-  change({ title: `Add IP address to ${name}`, action: 'interface.ip_add', params: { interface: name }, fields: [{ k: 'address', label: 'Address/prefix', ph: '10.0.0.1/30' }, { k: 'secondary', label: 'Secondary (sub)', type: 'check' }, { k: 'vpn', label: 'Bind VPN instance', ph: 'optional', help: 'Binding a VPN instance removes existing IP addresses on the interface.' }] });
+  const r = ifCache.find(x => x.name === name) || {};
+  change({ title: `Add IP address to ${name}`, action: 'interface.ip_add', params: { interface: name }, warn: p => ipWarn(p.address, name),
+    intro: r.ip ? `${name} already has ${r.ip} as its primary address, so the new one is added as secondary (sub). Untick it only to replace the primary.` : '',
+    fields: [{ k: 'address', label: 'Address/prefix', ph: '10.0.0.1/30' }, { k: 'secondary', label: 'Secondary (sub)', type: 'check', value: !!r.ip }, { k: 'vpn', label: 'Bind VPN instance', ph: 'optional', help: 'Binding a VPN instance removes existing IP addresses on the interface.' }] });
+}
+/* ----- every address on one interface, in a dropdown: change, remove, add ----- */
+function ipsOf(r) { return [...(r.ip ? [{ ip: r.ip, sub: false }] : []), ...(r.secondary || []).map(ip => ({ ip, sub: true })), ...(r.ipv6 || []).map(ip => ({ ip, v6: true }))]; }
+function ipCell(r) {
+  const n = ipsOf(r).length;
+  if (n < 2) return `<span class="mono">${esc(r.ip || (r.ipv6 || [])[0] || '')}</span>`;
+  return `<button class="ipdd" title="all ${n} addresses on ${esc(r.name)}" onclick='event.stopPropagation();ipMenu(this,${attr(r.name)})'><span class="mono">${esc(r.ip || r.ipv6[0])}</span><span class="ipn">${n} IPs</span>▾</button>`;
+}
+function ip4(s) {
+  const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)(?:\/(\d+))?$/.exec(String(s || '').trim()); if (!m) return null;
+  const a = ((+m[1] << 24) >>> 0) + (+m[2] << 16) + (+m[3] << 8) + +m[4], p = m[5] == null ? 32 : +m[5], mask = p ? (0xffffffff << (32 - p)) >>> 0 : 0;
+  return { a, p, mask, net: (a & mask) >>> 0 };
+}
+function ipNet(cidr) { const x = ip4(cidr); if (!x) return ''; const n = x.net; return `${n >>> 24}.${n >> 16 & 255}.${n >> 8 & 255}.${n & 255}/${x.p}`; }
+/* the new address overlaps one already on the router (on another interface, or another address on this one) */
+function ipWarn(addr, name, except) {
+  const x = ip4(addr); if (!x) return '';
+  const hits = [];
+  for (const r of ifCache) for (const { ip, v6 } of ipsOf(r)) {
+    if (v6 || (r.name === name && ip === except)) continue;
+    const y = ip4(ip); if (!y) continue;
+    const m = x.p < y.p ? x.mask : y.mask; if (((x.a & m) >>> 0) === ((y.a & m) >>> 0)) hits.push(`${ip} on ${r.name}`);
+  }
+  return hits.length ? `Overlaps ${hits.slice(0, 4).join(', ')}${hits.length > 4 ? '…' : ''}. The router refuses overlapping subnets unless they are in different VPN instances.` : '';
+}
+async function ipMenu(btn, name) {
+  ipMenuClose(); await ensureIfs();
+  const r = ifCache.find(x => x.name === name); if (!r) return;
+  if (!(bgpState || {}).peers) try { bgpState = await api('/api/view/bgp'); } catch (e) { }
+  const peers = ((bgpState || {}).peers || []).map(p => p.peer);
+  const used = ip => { const x = ip4(ip); if (!x || x.p > 30 && x.p !== 31) return ''; const ps = peers.filter(p => ipNet(p + '/' + x.p) === ipNet(ip) && p !== ip.split('/')[0]); return ps.length ? 'BGP peer ' + ps.join(', ') : ''; };
+  const pop = document.createElement('div'); pop.id = 'ipPop'; pop.className = 'ippop';
+  pop.innerHTML = `<div class="iph"><b>${esc(name)}</b><span class="muted">${ipsOf(r).length} address${ipsOf(r).length === 1 ? '' : 'es'}</span></div>
+    <table class="tbl"><tbody>${ipsOf(r).map(x => `<tr><td class="mono">${esc(x.ip)}</td><td><span class="pill ${x.v6 || x.sub ? '' : 'p-ok'}">${x.v6 ? 'IPv6' : x.sub ? 'secondary' : 'primary'}</span></td>
+      <td class="muted">${esc(x.v6 ? '' : 'net ' + ipNet(x.ip))}${used(x.ip) ? ` · ${esc(used(x.ip))}` : ''}</td>
+      <td class="acts">${x.v6 ? '<span class="faint">use the Config editor</span>' : `<button class="btn sm" data-ch="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}">Change</button><button class="btn sm danger" data-rm="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}" data-use="${esc(used(x.ip))}">Remove</button>`}</td></tr>`).join('')}</tbody></table>
+    <div class="ipf"><button class="btn sm primary" data-add="1">+ Add address</button></div>`;
+  document.body.appendChild(pop);
+  const b = btn.getBoundingClientRect();
+  pop.style.top = (b.bottom + window.scrollY + 4) + 'px'; pop.style.left = Math.max(8, Math.min(b.left + window.scrollX, window.innerWidth - pop.offsetWidth - 12)) + 'px';
+  pop.onclick = e => {
+    e.stopPropagation(); const t = e.target.closest('button'); if (!t) return; ipMenuClose();
+    if (t.dataset.add) return ifIpForm(name);
+    if (t.dataset.ch) return ipChangeForm(name, t.dataset.ch, t.dataset.sub === '1');
+    if (t.dataset.rm) return ipRemoveForm(name, t.dataset.rm, t.dataset.sub === '1', t.dataset.use);
+  };
+  setTimeout(() => document.addEventListener('click', ipMenuClose, { once: true }), 0);
+}
+function ipMenuClose() { const p = $('#ipPop'); if (p) p.remove(); }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') ipMenuClose(); });
+function ipChangeForm(name, old, sub) {
+  change({ title: `Change ${old} on ${name}`, action: 'interface.ip_change', params: { interface: name, old, secondary: sub }, warn: p => ipWarn(p.address, name, old),
+    intro: sub ? 'The old secondary address is removed and the new one added in the same commit.' : 'The new primary address replaces the old one; the secondary addresses stay.',
+    fields: [{ k: 'address', label: 'New address/prefix', value: old }] });
+}
+function ipRemoveForm(name, ip, sub, use) {
+  const r = ifCache.find(x => x.name === name) || {}, subs = (r.secondary || []).length;
+  const notes = [use ? `${use} is in this subnet; that session will go down.` : '',
+    !sub && subs ? `${name} still has ${subs} secondary address${subs > 1 ? 'es' : ''}. The router refuses to remove the primary until they are removed.` : ''].filter(Boolean);
+  change({ title: `Remove ${ip} from ${name}`, action: 'interface.ip_remove', params: { interface: name, address: ip, secondary: sub }, intro: notes.join(' ') });
 }
 function parentList() { return ifCache.filter(i => ['ethernet', 'eth-trunk'].includes(i.type)).map(i => i.name); }
 async function ensureIfs() { if (!ifCache.length) ifCache = await api('/api/view/interfaces'); }
@@ -294,7 +358,7 @@ async function interfaceDrawer(name) {
   d.innerHTML = `<h1>${esc(name)} <span class="sub" id="dState"></span><span style="flex:1"></span><button class="btn" onclick="closeDrawer()">Close ✕</button></h1>
     <div class="bar"><button class="btn" onclick='ifToggle(${attr(name)},${/down/i.test(info.state) && /admin/i.test(info.state)})'>${/admin/i.test(info.state) ? 'Enable' : 'Disable'}</button>
     <button class="btn" onclick='ifEdit(${attr(name)})'>Description / MTU</button><button class="btn" onclick='ifIpForm(${attr(name)})'>+ IP address</button>
-    ${info.ip ? `<button class="btn" onclick='change({title:"Remove IP ${esc(info.ip)}",action:"interface.ip_remove",params:{interface:${attr(name)},address:${attr(info.ip)}}})'>Remove IP</button>` : ''}
+    ${info.ip ? `<button class="btn" id="dIps" onclick='event.stopPropagation();ipMenu(this,${attr(name)})'>IP addresses ▾</button>` : ''}
     ${!isSub ? `<button class="btn" onclick='subifForm(${attr(name)})'>+ Sub-interface</button><button class="btn" onclick='location.hash="queues";setTimeout(()=>queueStats(${attr(name)}),300)'>Queues</button>` : ''}
     <button class="btn" onclick='change({title:"Reset counters on ${esc(name)}",action:"interface.reset_counters",params:{interface:${attr(name)}}})'>Reset counters</button>
     ${isSub ? `<button class="btn danger" onclick='change({title:"Delete ${esc(name)}",action:"interface.delete",params:{interface:${attr(name)}},after:()=>{closeDrawer();refresh()}})'>Delete</button>` : ''}</div>
@@ -415,8 +479,9 @@ PAGES.addresses = async c => {
   const rows = ifCache = await api('/api/view/interfaces');
   c.innerHTML = head('IP addresses') + '<div class="card"><div id="aT"></div></div>';
   table($('#aT'), [{ t: 'Address', k: 'ip', cls: 'mono', f: r => `<b>${esc(r.ip)}</b>` }, { t: 'Interface', k: 'name' }, { t: 'VPN', k: 'vpn' }, { t: 'State', k: 'protocol', f: r => pill(r.protocol) }, { t: 'Description', k: 'description' },
-    { t: '', sort: false, cls: 'acts', f: r => `<button class="btn sm danger" onclick='change({title:"Remove ${esc(r.ip)}",action:"interface.ip_remove",params:{interface:${attr(r.name)},address:${attr(r.ip)},secondary:${r.sub ? 'true' : 'false'}}})'>Remove</button>` }],
-    rows.filter(r => r.ip).flatMap(r => [r, ...(r.secondary || []).map(ip => ({ ...r, ip, sub: true, description: (r.description ? r.description + ' · ' : '') + 'secondary' }))]), { toolbar: `<button class="btn" onclick="addrForm()">+ Address</button>` });
+    { t: '', sort: false, cls: 'acts', f: r => r.v6 ? '' : `<button class="btn sm" onclick='ipChangeForm(${attr(r.name)},${attr(r.ip)},${!!r.sub})'>Change</button><button class="btn sm danger" onclick='ipRemoveForm(${attr(r.name)},${attr(r.ip)},${!!r.sub},"")'>Remove</button>` }],
+    rows.filter(r => r.ip || (r.ipv6 || []).length).flatMap(r => [...(r.ip ? [r] : []), ...(r.secondary || []).map(ip => ({ ...r, ip, sub: true, description: (r.description ? r.description + ' · ' : '') + 'secondary' })),
+      ...(r.ipv6 || []).map(ip => ({ ...r, ip, v6: true, description: (r.description ? r.description + ' · ' : '') + 'IPv6' }))]), { toolbar: `<button class="btn" onclick="addrForm()">+ Address</button>` });
 };
 function addrForm() { change({ title: 'Add IP address', action: 'interface.ip_add', fields: [{ k: 'interface', label: 'Interface', type: 'select', options: ifCache.filter(i => i.type !== 'null' && !i.l2).map(i => i.name) }, { k: 'address', label: 'Address/prefix', ph: '10.0.0.1/30' }, { k: 'secondary', label: 'Secondary (sub)', type: 'check' }] }); }
 

@@ -63,7 +63,7 @@ def _model(snap):
     ifs = snap["interfaces"]
     by_name = {i["name"]: i for i in ifs}
     local_as = str(snap["bgp"].get("local_as") or "")
-    nets = [(i["name"], _net(i["ip"])) for i in ifs if i.get("ip")]
+    nets = [(i["name"], _net(a)) for i in ifs for a in [i.get("ip")] + list(i.get("secondary") or []) + list(i.get("ipv6") or []) if a]     # secondaries too: exchange peers often sit on a "sub" address
     def port_of(peer):
         try:
             a = ipaddress.ip_address(peer)
