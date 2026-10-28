@@ -821,7 +821,8 @@ def flows():
     rid = session.get("router_id", "")
     if not rid:
         return jsonify(subnets=[], status=FLOWS.status(None), configured=False, note="Per-address traffic is kept for saved routers only (Manager > Routers).")
-    if not FLOWS.routers.get(rid):
+    known = FLOWS.routers.get(rid) or {}
+    if not known.get("subnets") and time.time() - known.get("time", 0) > 20:     # not read yet, or the last read failed
         try:
             FLOWS.refresh(rid)
         except Exception:

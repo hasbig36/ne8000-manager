@@ -883,7 +883,7 @@ PAGES.netflow = async c => {
 };
 function netstreamForm(ov) {
   const host = /^\d+\.\d+\.\d+\.\d+$/.test(location.hostname) ? location.hostname : '';
-  const ifs = ifCache.filter(i => i.ip && !/^(loopback|null)/i.test(i.name) && !/OAM|MGMT/i.test(i.vpn || '') && i.type !== 'management').map(i => i.name);
+  const ifs = ifCache.filter(i => i.ip && !/^(loopback|inloopback|null|virtual-template)/i.test(i.name) && !/OAM|MGMT/i.test(i.vpn || '') && i.type !== 'management').map(i => i.name);
   change({ title: 'Send NetStream to the manager', action: 'netstream.enable',
     intro: 'Samples 1 in N packets inbound on each interface (so each flow is counted once) and exports NetFlow v9 to this server every minute. It only counts; it does not block or limit traffic. Press Check only first: the router checks the lines and nothing is committed.',
     fields: [{ k: 'collector', label: 'This server\'s address (as the router reaches it)', value: host, ph: '102.216.116.66' },

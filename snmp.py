@@ -80,9 +80,12 @@ class SnmpClient:
             raise SnmpError(str(exc) or exc.__class__.__name__) from exc
 
     async def _ensure(self):
-        if self.engine is None:
-            self.engine = S.SnmpEngine()
-            self.target = await S.UdpTransportTarget.create((self.host, self.port), timeout=self.timeout, retries=self.retries)
+        # two callers can be here at once (history poller, flow collector, a page): publish the engine
+        # only together with its transport, never one without the other
+        if self.engine is None or self.target is None:
+            target = await S.UdpTransportTarget.create((self.host, self.port), timeout=self.timeout, retries=self.retries)
+            if self.engine is None or self.target is None:
+                self.target, self.engine = target, S.SnmpEngine()
 
     @staticmethod
     def _check(err_ind, err_stat, err_idx):
