@@ -113,10 +113,10 @@ function change(o) {
   const run = async (commit) => {
     err.textContent = '';
     try {
-      const r = await post('/api/action', { action: o.action, params: params(), commit });
+      const r = await post(o.url || '/api/action', { action: o.action, params: params(), commit });
       closeModal(); toast((commit ? 'Applied: ' : 'Syntax checked (not committed): ') + o.title);
       if (!commit) showOutput('Check result: ' + o.title, r.output);
-      if (o.after) o.after(); else refresh();
+      if (o.after) o.after(commit); else refresh();
     } catch (e) { err.textContent = e.message; }
   };
   m.querySelector('.actions').onclick = async e => {
@@ -248,6 +248,7 @@ PAGES.resources = async c => {
 let ifCache = [];
 PAGES.interfaces = async c => {
   const rows = ifCache = await api('/api/view/interfaces');
+  await ipOffLoad();
   const kind = c._kind || 'all';
   c.innerHTML = head('Interfaces', '', `<button class="btn" onclick="subifForm()">+ Sub-interface</button><button class="btn" onclick="loopbackForm()">+ Loopback</button>`) +
     `<div class="card"><div class="bar"><div class="seg" id="ifKind">${[['all', 'All'], ['ethernet', 'Physical'], ['sub-interface', 'Sub-interfaces'], ['logical', 'Logical']].map(([k, l]) => `<button data-k="${k}" class="${k === kind ? 'on' : ''}">${l}</button>`).join('')}</div>
@@ -278,11 +279,17 @@ function ifIpForm(name) {
     fields: [{ k: 'address', label: 'Address/prefix', ph: '10.0.0.1/30' }, { k: 'secondary', label: 'Secondary (sub)', type: 'check', value: !!r.ip }, { k: 'vpn', label: 'Bind VPN instance', ph: 'optional', help: 'Binding a VPN instance removes existing IP addresses on the interface.' }] });
 }
 /* ----- every address on one interface, in a dropdown: change, remove, add ----- */
-function ipsOf(r) { return [...(r.ip ? [{ ip: r.ip, sub: false }] : []), ...(r.secondary || []).map(ip => ({ ip, sub: true })), ...(r.ipv6 || []).map(ip => ({ ip, v6: true }))]; }
+let ipOff = {};    // addresses taken off with Disable, by interface: [{ip, sub, by, at, reason}]
+async function ipOffLoad() { try { ipOff = await api('/api/ip/disabled'); } catch (e) { ipOff = {}; } }
+function ipsOf(r, withOff) {
+  const on = [...(r.ip ? [{ ip: r.ip, sub: false }] : []), ...(r.secondary || []).map(ip => ({ ip, sub: true })), ...(r.ipv6 || []).map(ip => ({ ip, v6: true }))];
+  const off = withOff ? (ipOff[r.name] || []).filter(x => !on.some(y => y.ip === x.ip)).map(x => ({ ...x, off: true })) : [];
+  return [...on, ...off];
+}
 function ipCell(r) {
-  const n = ipsOf(r).length;
-  if (n < 2) return `<span class="mono">${esc(r.ip || (r.ipv6 || [])[0] || '')}</span>`;
-  return `<button class="ipdd" title="all ${n} addresses on ${esc(r.name)}" onclick='event.stopPropagation();ipMenu(this,${attr(r.name)})'><span class="mono">${esc(r.ip || r.ipv6[0])}</span><span class="ipn">${n} IPs</span>▾</button>`;
+  const n = ipsOf(r, true).length, off = ipsOf(r, true).filter(x => x.off).length;
+  if (n < 2 && !off) return `<span class="mono">${esc(r.ip || (r.ipv6 || [])[0] || '')}</span>`;
+  return `<button class="ipdd" title="all ${n} addresses on ${esc(r.name)}" onclick='event.stopPropagation();ipMenu(this,${attr(r.name)})'><span class="mono">${esc(r.ip || (r.ipv6 || [])[0] || 'none active')}</span><span class="ipn">${n - off} IP${n - off === 1 ? '' : 's'}${off ? ` · ${off} off` : ''}</span>▾</button>`;
 }
 function ip4(s) {
   const m = /^(\d+)\.(\d+)\.(\d+)\.(\d+)(?:\/(\d+))?$/.exec(String(s || '').trim()); if (!m) return null;
@@ -302,23 +309,30 @@ function ipWarn(addr, name, except) {
   return hits.length ? `Overlaps ${hits.slice(0, 4).join(', ')}${hits.length > 4 ? '…' : ''}. The router refuses overlapping subnets unless they are in different VPN instances.` : '';
 }
 async function ipMenu(btn, name) {
-  ipMenuClose(); await ensureIfs();
+  ipMenuClose(); await ensureIfs(); await ipOffLoad();
   const r = ifCache.find(x => x.name === name); if (!r) return;
   if (!(bgpState || {}).peers) try { bgpState = await api('/api/view/bgp'); } catch (e) { }
   const peers = ((bgpState || {}).peers || []).map(p => p.peer);
   const used = ip => { const x = ip4(ip); if (!x || x.p > 30 && x.p !== 31) return ''; const ps = peers.filter(p => ipNet(p + '/' + x.p) === ipNet(ip) && p !== ip.split('/')[0]); return ps.length ? 'BGP peer ' + ps.join(', ') : ''; };
   const pop = document.createElement('div'); pop.id = 'ipPop'; pop.className = 'ippop';
-  pop.innerHTML = `<div class="iph"><b>${esc(name)}</b><span class="muted">${ipsOf(r).length} address${ipsOf(r).length === 1 ? '' : 'es'}</span></div>
-    <table class="tbl"><tbody>${ipsOf(r).map(x => `<tr><td class="mono">${esc(x.ip)}</td><td><span class="pill ${x.v6 || x.sub ? '' : 'p-ok'}">${x.v6 ? 'IPv6' : x.sub ? 'secondary' : 'primary'}</span></td>
-      <td class="muted">${esc(x.v6 ? '' : 'net ' + ipNet(x.ip))}${used(x.ip) ? ` · ${esc(used(x.ip))}` : ''}</td>
-      <td class="acts">${x.v6 ? '<span class="faint">use the Config editor</span>' : `<button class="btn sm" data-ch="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}">Change</button><button class="btn sm danger" data-rm="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}" data-use="${esc(used(x.ip))}">Remove</button>`}</td></tr>`).join('')}</tbody></table>
-    <div class="ipf"><button class="btn sm primary" data-add="1">+ Add address</button></div>`;
+  const all = ipsOf(r, true), offN = all.filter(x => x.off).length;
+  const acts = x => x.v6 ? '<span class="faint">use the Config editor</span>'
+    : x.off ? `<button class="btn sm primary" data-en="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}">Enable</button>`
+    : `<button class="btn sm" data-ch="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}">Change</button><button class="btn sm" data-dis="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}" data-use="${esc(used(x.ip))}">Disable</button><button class="btn sm danger" data-rm="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}" data-use="${esc(used(x.ip))}">Remove</button>`;
+  pop.innerHTML = `<div class="iph"><b>${esc(name)}</b><span class="muted">${all.length - offN} active${offN ? ` · ${offN} disabled` : ''}</span><button class="ipx" data-close="1" title="Close">✕</button></div>
+    <table class="tbl"><tbody>${all.map(x => `<tr class="${x.off ? 'ipoff' : ''}"><td class="mono">${esc(x.ip)}</td><td><span class="pill ${x.v6 || x.sub || x.off ? '' : 'p-ok'}">${x.v6 ? 'IPv6' : (x.sub ? 'secondary' : 'primary') + (x.off ? ' · disabled' : '')}</span></td>
+      <td class="muted">${x.off ? esc(`off since ${new Date(x.at * 1000).toLocaleDateString()} by ${x.by}${x.reason ? ' · ' + x.reason : ''}`) : esc(x.v6 ? '' : 'net ' + ipNet(x.ip)) + (used(x.ip) ? ` · ${esc(used(x.ip))}` : '')}</td>
+      <td class="acts">${acts(x)}</td></tr>`).join('')}</tbody></table>
+    <div class="ipf"><button class="btn sm" data-close="1">Close</button><button class="btn sm primary" data-add="1">+ Add address</button></div>`;
   document.body.appendChild(pop);
   const b = btn.getBoundingClientRect();
   pop.style.top = (b.bottom + window.scrollY + 4) + 'px'; pop.style.left = Math.max(8, Math.min(b.left + window.scrollX, window.innerWidth - pop.offsetWidth - 12)) + 'px';
   pop.onclick = e => {
     e.stopPropagation(); const t = e.target.closest('button'); if (!t) return; ipMenuClose();
+    if (t.dataset.close) return;
     if (t.dataset.add) return ifIpForm(name);
+    if (t.dataset.dis) return ipDisableForm(name, t.dataset.dis, t.dataset.sub === '1', t.dataset.use);
+    if (t.dataset.en) return ipEnableForm(name, t.dataset.en, t.dataset.sub === '1');
     if (t.dataset.ch) return ipChangeForm(name, t.dataset.ch, t.dataset.sub === '1');
     if (t.dataset.rm) return ipRemoveForm(name, t.dataset.rm, t.dataset.sub === '1', t.dataset.use);
   };
@@ -331,6 +345,20 @@ function ipChangeForm(name, old, sub) {
     intro: sub ? 'The old secondary address is removed and the new one added in the same commit.' : 'The new primary address replaces the old one; the secondary addresses stay.',
     fields: [{ k: 'address', label: 'New address/prefix', value: old }] });
 }
+function ipDisableForm(name, ip, sub, use) {
+  const r = ifCache.find(x => x.name === name) || {}, subs = (r.secondary || []).length;
+  const notes = ['The router has no off switch for one address, so Disable takes it off the router and the manager keeps it listed here, so Enable can put it back.',
+    use ? `${use} is in this subnet; that session will go down.` : '',
+    !sub && subs ? `${name} still has ${subs} secondary address${subs > 1 ? 'es' : ''}. The router refuses to take off the primary until they are disabled or removed.` : ''].filter(Boolean);
+  change({ title: `Disable ${ip} on ${name}`, action: 'interface.ip_remove', url: '/api/ip/toggle', params: { interface: name, address: ip, secondary: sub }, intro: notes.join(' '),
+    fields: [{ k: 'reason', label: 'Reason (optional)', ph: 'e.g. unpaid, migrated' }], after: ipAfter });
+}
+function ipEnableForm(name, ip, sub) {
+  const r = ifCache.find(x => x.name === name) || {};
+  change({ title: `Enable ${ip} on ${name}`, action: 'interface.ip_add', url: '/api/ip/toggle', params: { interface: name, address: ip, secondary: sub },
+    intro: !sub && r.ip ? `This was the primary address. ${name} now has ${r.ip} as primary, which this replaces.` : `Puts ${ip} back on ${name} as ${sub ? 'a secondary' : 'the primary'} address.`, after: ipAfter });
+}
+function ipAfter() { ifCache = []; refresh(); }
 function ipRemoveForm(name, ip, sub, use) {
   const r = ifCache.find(x => x.name === name) || {}, subs = (r.secondary || []).length;
   const notes = [use ? `${use} is in this subnet; that session will go down.` : '',

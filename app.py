@@ -21,6 +21,7 @@ import auth
 import billing
 import adopt
 import history
+import ipdisabled
 import netdesign
 import netmap
 import plans
@@ -48,6 +49,7 @@ SAVED = routers.RouterStore(DATA_DIR)
 HIST = history.History(DATA_DIR, SAVED)
 NETMAP = netmap.NetMapStore(DATA_DIR)
 NETMAP_CACHE = {}   # map key -> (time, response)
+DISABLED_IPS = ipdisabled.DisabledIPs(DATA_DIR)
 THROTTLE_IP = auth.Throttle(limit=5)        # per client address
 THROTTLE_USER = auth.Throttle(limit=20)     # per username, high enough that strangers cannot easily lock out a real user
 THROTTLE_ROUTER = auth.Throttle(limit=5)    # failed router SSH logins per app user (slows password guessing on the router)
@@ -639,10 +641,13 @@ def bgp_routes():
 
 @app.post("/api/action")
 def run_action():
-    data = request.get_json(force=True)
+    return jsonify(do_action(request.get_json(force=True)))
+
+
+def do_action(data):
     built = actions.build(data.get("action", ""), data.get("params") or {})
     if data.get("preview"):
-        return jsonify(lines=built["preview"], mode=built["mode"])
+        return dict(lines=built["preview"], mode=built["mode"])
     if current_user()["role"] == "viewer":
         raise auth.AuthError("Your account is read-only.")
     r = router()
@@ -654,7 +659,34 @@ def run_action():
         out = r.configure(built["lines"], commit=data.get("commit", True))
     for secret in [str(v) for k, v in (data.get("params") or {}).items() if k in actions.SECRET_KEYS and v]:
         out = out.replace(secret, "********")
-    return jsonify(output=out, lines=built["preview"])
+    return dict(output=out, lines=built["preview"])
+
+
+@app.get("/api/ip/disabled")
+def ip_disabled():
+    return jsonify(DISABLED_IPS.get(netmap_key(router())))
+
+
+@app.post("/api/ip/toggle")
+def ip_toggle():
+    """Disable (remove from the router, remember here) or Enable (add back) one address."""
+    data = request.get_json(force=True)
+    p = data.get("params") or {}
+    if data.get("action") not in ("interface.ip_remove", "interface.ip_add"):
+        raise actions.ActionError("Only add or remove an address here.")
+    if data.get("preview"):
+        return jsonify(do_action(data))
+    res = do_action(data)
+    if data.get("commit", True):
+        r = router()
+        name, ip = p.get("interface", ""), str(p.get("address", ""))
+        if data["action"] == "interface.ip_remove":
+            DISABLED_IPS.disable(netmap_key(r), name, ip, p.get("secondary") in (True, "true", "1"), me(), str(p.get("reason") or ""))
+        else:
+            DISABLED_IPS.enable(netmap_key(r), name, ip)
+        AUDIT.log(me(), "ip_disable" if data["action"] == "interface.ip_remove" else "ip_enable", host=r.host, demo=r.demo,
+                  interface=name, address=ip, reason=str(p.get("reason") or ""))
+    return jsonify(res)
 
 
 @app.post("/api/cli")

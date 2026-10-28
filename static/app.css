@@ -143,5 +143,8 @@ details.run .body{padding:0 12px 12px}.task-res{margin:8px 0}.task-res .t{font-w
 /* IP addresses dropdown */
 .ipdd{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:6px;padding:2px 6px;cursor:pointer;font:inherit}
 .ipdd:hover{border-color:var(--accent)}.ipdd .ipn{font-size:11px;background:var(--accent);color:#fff;border-radius:9px;padding:0 6px}
-.ippop{position:absolute;z-index:80;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:10px 12px;min-width:340px;max-width:min(680px,calc(100vw - 24px));max-height:60vh;overflow:auto}
+.ippop{position:absolute;z-index:80;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:10px 12px;min-width:340px;max-width:min(900px,calc(100vw - 24px));max-height:60vh;overflow:auto}
 .ippop .iph{display:flex;justify-content:space-between;gap:12px;margin-bottom:6px}.ippop td{padding:5px 8px;white-space:nowrap}.ippop .ipf{margin-top:8px;text-align:right}
+.ippop .iph{align-items:center}.ippop .ipx{margin-left:auto;border:0;background:none;color:var(--muted);font-size:15px;cursor:pointer;padding:2px 6px;border-radius:4px}.ippop .ipx:hover{background:var(--line);color:var(--text)}
+.ippop .ipf{display:flex;justify-content:space-between;gap:8px}.ippop tr.ipoff td.mono{color:var(--faint);text-decoration:line-through}
+.ippop td.muted{white-space:normal;min-width:150px;max-width:260px}
