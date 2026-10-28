@@ -148,3 +148,5 @@ details.run .body{padding:0 12px 12px}.task-res{margin:8px 0}.task-res .t{font-w
 .ippop .iph{align-items:center}.ippop .ipx{margin-left:auto;border:0;background:none;color:var(--muted);font-size:15px;cursor:pointer;padding:2px 6px;border-radius:4px}.ippop .ipx:hover{background:var(--line);color:var(--text)}
 .ippop .ipf{display:flex;justify-content:space-between;gap:8px}.ippop tr.ipoff td.mono{color:var(--faint);text-decoration:line-through}
 .ippop td.muted{white-space:normal;min-width:150px;max-width:260px}
+.ippop .ipf .sp{flex:1}
+.glist .glh{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:10px 4px 4px}

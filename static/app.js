@@ -151,7 +151,7 @@ const I = {
 };
 const NAV = [
   [null, [['dashboard', 'Dashboard', I.dash]]],
-  ['Network', [['interfaces', 'Interfaces', I.ifs], ['graphs', 'Graphs', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
+  ['Network', [['interfaces', 'Interfaces', I.ifs], ['graphs', 'Graphs', I.graph], ['netflow', 'Traffic per address', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
   ['IP', [['addresses', 'Addresses', I.ip], ['routes', 'Routes', I.route], ['arp', 'ARP', I.ip], ['vpn', 'VPN instances', I.ip], ['neighbors', 'Neighbors (LLDP)', I.ip]]],
   ['Planning', [['netmap', 'Network map', I.plan], ['plans', 'Network plans', I.plan]]],
   ['Billing', [['billing', 'Splynx billing', I.bill]]],
@@ -318,18 +318,20 @@ async function ipMenu(btn, name) {
   const all = ipsOf(r, true), offN = all.filter(x => x.off).length;
   const acts = x => x.v6 ? '<span class="faint">use the Config editor</span>'
     : x.off ? `<button class="btn sm primary" data-en="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}">Enable</button>`
-    : `<button class="btn sm" data-ch="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}">Change</button><button class="btn sm" data-dis="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}" data-use="${esc(used(x.ip))}">Disable</button><button class="btn sm danger" data-rm="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}" data-use="${esc(used(x.ip))}">Remove</button>`;
+    : `<button class="btn sm" data-fg="${esc(ipNet(x.ip))}" title="traffic of ${esc(ipNet(x.ip))} from NetFlow">Graph</button><button class="btn sm" data-ch="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}">Change</button><button class="btn sm" data-dis="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}" data-use="${esc(used(x.ip))}">Disable</button><button class="btn sm danger" data-rm="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}" data-use="${esc(used(x.ip))}">Remove</button>`;
   pop.innerHTML = `<div class="iph"><b>${esc(name)}</b><span class="muted">${all.length - offN} active${offN ? ` · ${offN} disabled` : ''}</span><button class="ipx" data-close="1" title="Close">✕</button></div>
     <table class="tbl"><tbody>${all.map(x => `<tr class="${x.off ? 'ipoff' : ''}"><td class="mono">${esc(x.ip)}</td><td><span class="pill ${x.v6 || x.sub || x.off ? '' : 'p-ok'}">${x.v6 ? 'IPv6' : (x.sub ? 'secondary' : 'primary') + (x.off ? ' · disabled' : '')}</span></td>
       <td class="muted">${x.off ? esc(`off since ${new Date(x.at * 1000).toLocaleDateString()} by ${x.by}${x.reason ? ' · ' + x.reason : ''}`) : esc(x.v6 ? '' : 'net ' + ipNet(x.ip)) + (used(x.ip) ? ` · ${esc(used(x.ip))}` : '')}</td>
       <td class="acts">${acts(x)}</td></tr>`).join('')}</tbody></table>
-    <div class="ipf"><button class="btn sm" data-close="1">Close</button><button class="btn sm primary" data-add="1">+ Add address</button></div>`;
+    <div class="ipf"><button class="btn sm" data-close="1">Close</button><span class="sp"></span><button class="btn sm" data-graph="1" title="the router counts traffic per interface, so this graph is shared by all the addresses above">Graph (whole interface)</button><button class="btn sm primary" data-add="1">+ Add address</button></div>`;
   document.body.appendChild(pop);
   const b = btn.getBoundingClientRect();
   pop.style.top = (b.bottom + window.scrollY + 4) + 'px'; pop.style.left = Math.max(8, Math.min(b.left + window.scrollX, window.innerWidth - pop.offsetWidth - 12)) + 'px';
   pop.onclick = e => {
     e.stopPropagation(); const t = e.target.closest('button'); if (!t) return; ipMenuClose();
     if (t.dataset.close) return;
+    if (t.dataset.graph) { closeDrawer(); return showGraphs(name); }
+    if (t.dataset.fg) { closeDrawer(); return showGraphs('flow:' + t.dataset.fg); }
     if (t.dataset.add) return ifIpForm(name);
     if (t.dataset.dis) return ipDisableForm(name, t.dataset.dis, t.dataset.sub === '1', t.dataset.use);
     if (t.dataset.en) return ipEnableForm(name, t.dataset.en, t.dataset.sub === '1');
@@ -826,13 +828,16 @@ document.addEventListener('keydown', e => { if (e.key === 'Escape') document.que
 function showGraphs(name) { graphSel = name; try { localStorage.setItem('ne8000.graph', name); } catch (e) {} closeDrawer(); location.hash = 'graphs'; if (current === 'graphs') refresh(); }
 PAGES.graphs = async c => {
   ifCache = await api('/api/view/interfaces');
-  const list = ifCache.filter(i => !['null'].includes(i.type));
+  let flows = []; try { flows = (await api('/api/flows')).subnets || []; } catch (e) { }
+  const list = [...ifCache.filter(i => !['null'].includes(i.type)), ...flows.map(f => ({ name: 'flow:' + f.subnet, description: 'on ' + f.interface, iface: f.interface, phy: f.tx_bps || f.rx_bps ? 'up' : 'down', flow: true }))];
   if (!list.find(i => i.name === graphSel)) graphSel = (list.filter(i => i.phy === 'up').sort((a, b) => (b.in_util + b.out_util) - (a.in_util + a.out_util))[0] || list[0] || {}).name || '';
-  const R = [['now', 'Now (live, 5 s)'], ['day', '1 day (5-minute average)'], ['week', '1 week (30-minute average)'], ['month', '1 month (hourly average)'], ['year', '1 year (daily average)']];
+  const isFlow = graphSel.startsWith('flow:'), subnet = graphSel.slice(5);
+  const R = [['now', isFlow ? 'Last hour (1-minute, NetFlow)' : 'Now (live, 5 s)'], ['day', '1 day (5-minute average)'], ['week', '1 week (30-minute average)'], ['month', '1 month (hourly average)'], ['year', '1 year (daily average)']];
   const sel = list.find(i => i.name === graphSel) || {};
   c.innerHTML = head('Graphs', 'interface traffic history') + `<div class="glay">
-    <div class="card glist"><input id="gF" placeholder="Filter interfaces" autocomplete="off"><div id="gL">${list.map(i => `<a data-g="${esc(i.name)}" class="${i.name === graphSel ? 'on' : ''}" title="${esc(i.description || '')}"><span class="dot ${i.phy === 'up' ? 'ok' : 'off'}"></span><b>${esc(i.name)}</b><small>${esc(i.description || '')}</small></a>`).join('')}</div></div>
-    <div id="gRight" class="fsbox"><button class="btn sm fsx" onclick="toggleFull($('#gRight'))">✕ Exit full screen</button><div class="card"><h3>${esc(graphSel)} <span class="faint" style="font-weight:400">${esc(sel.description || '')}</span><span class="sp"></span><button class="btn sm" onclick='interfaceDrawer(${attr(graphSel)})'>Details</button><button class="btn sm" onclick="toggleFull($('#gRight'))" title="full screen (Esc to leave)">⛶ Full screen</button></h3><div id="gNote" class="muted" style="font-size:12.5px"></div></div>
+    <div class="card glist"><input id="gF" placeholder="Filter interfaces" autocomplete="off"><div id="gL">${list.map((i, k) => (i.flow && !list[k - 1]?.flow ? '<div class="glh">Addresses (NetFlow)</div>' : '') + `<a data-g="${esc(i.name)}" class="${i.name === graphSel ? 'on' : ''}" title="${esc(i.description || '')}"><span class="dot ${i.phy === 'up' ? 'ok' : 'off'}"></span><b>${esc(i.name)}</b><small>${esc(i.description || '')}</small></a>`).join('')}</div></div>
+    <div id="gRight" class="fsbox"><button class="btn sm fsx" onclick="toggleFull($('#gRight'))">✕ Exit full screen</button><div class="card"><h3>${esc(graphSel)} <span class="faint" style="font-weight:400">${esc(sel.description || '')}</span><span class="sp"></span><button class="btn sm" onclick='interfaceDrawer(${attr(isFlow ? sel.iface : graphSel)})'>${isFlow ? 'Interface' : 'Details'}</button><button class="btn sm" onclick="toggleFull($('#gRight'))" title="full screen (Esc to leave)">⛶ Full screen</button></h3><div id="gNote" class="muted" style="font-size:12.5px">${isFlow ? 'Rx = from this subnet (upload), Tx = to it (download), from the router\'s sampled NetStream export.' : ''}</div></div>
+    ${isFlow ? '<div class="card"><h3>Busiest addresses <span class="faint" style="font-weight:400">last 5-10 minutes</span></h3><div id="gHosts"></div></div>' : ''}
     ${R.map(([k, l]) => `<div class="card"><h3>${l}<span class="sp"></span><span class="legend" id="gS_${k}"></span></h3><div id="gC_${k}"></div></div>`).join('')}</div></div>`;
   $('#gL').onclick = e => { const a = e.target.closest('a[data-g]'); if (a) { graphSel = a.dataset.g; try { localStorage.setItem('ne8000.graph', graphSel); } catch (x) {} PAGES.graphs(c); } };
   $('#gF').oninput = () => { const q = $('#gF').value.toLowerCase(); c.querySelectorAll('#gL a').forEach(a => a.style.display = a.textContent.toLowerCase().includes(q) ? '' : 'none'); };
@@ -844,13 +849,51 @@ PAGES.graphs = async c => {
     const avg = j => pts.reduce((a, p) => a + p[j], 0) / pts.length, max = j => Math.max(...pts.map(p => p[j] ?? p[j - 2]));
     $('#gS_' + k).innerHTML = `<span><i style="background:var(--s1)"></i>Rx avg <b>${Fmt.bps(avg(1))}</b> peak <b>${Fmt.bps(max(pts[0].length > 3 ? 3 : 1))}</b></span><span><i style="background:var(--s2)"></i>Tx avg <b>${Fmt.bps(avg(2))}</b> peak <b>${Fmt.bps(max(pts[0].length > 3 ? 4 : 2))}</b></span>`; };
   const put = (k, pts) => { cs[k].set([{ name: 'Rx', color: '--s1', values: pts.map(x => [x[0], x[1]]) }, { name: 'Tx', color: '--s2', values: pts.map(x => [x[0], x[2]]) }]); summary(k, pts); };
-  const live = async () => { const t = await api('/api/traffic?names=' + encodeURIComponent(graphSel)); put('now', t[graphSel] || []); };
+  const live = isFlow ? async () => { const t = await api('/api/flows/live?subnet=' + encodeURIComponent(subnet)); put('now', t.points);
+      table($('#gHosts'), [{ t: 'Address', k: 'address', cls: 'mono' }, { t: 'Rx (from)', k: 'rx_bytes', num: true, f: h => Fmt.bytes(h.rx_bytes) }, { t: 'Tx (to)', k: 'tx_bytes', num: true, f: h => Fmt.bytes(h.tx_bytes) }], t.hosts, { filter: false }); }
+    : async () => { const t = await api('/api/traffic?names=' + encodeURIComponent(graphSel)); put('now', t[graphSel] || []); };
   const hist = async () => { let note = '';
     for (const k of ['day', 'week', 'month', 'year']) { const g = await api(`/api/graph?name=${encodeURIComponent(graphSel)}&range=${k}`); put(k, g.points);
       note = g.note || (g.error ? 'History collector: ' + g.error : g.collecting && !g.points.length ? 'History is sampled every 5 minutes on the server; the first points appear about 10 minutes after it starts.' : ''); }
     $('#gNote').textContent = note; };
-  await Promise.all([live(), hist()]); every(5000, live); every(300000, hist);
+  await Promise.all([live(), hist()]); every(isFlow ? 60000 : 5000, live); every(300000, hist);
 };
+
+/* ----- traffic per address (NetStream / NetFlow) ----- */
+PAGES.netflow = async c => {
+  const [f, ov] = await Promise.all([api('/api/flows'), api('/api/view/overview').catch(() => ({}))]);
+  ifCache = await api('/api/view/interfaces');
+  const st = f.status || {}, ex = Object.entries(st.exporters || {});
+  const ago = t => t ? Math.round(Date.now() / 1000 - t) + ' s ago' : 'never';
+  c.innerHTML = head('Traffic per address', 'per subnet and per address, from the router\'s NetStream (NetFlow) export',
+    `<button class="btn" id="nfSetup">Router setup…</button>`) +
+    `<div class="card"><h3>Collector</h3><div class="kv">${st.demo ? '<div><span>Mode</span>demo: made-up traffic</div>' : `
+      <div><span>Listening</span>${st.running ? `UDP ${esc(st.port)}` : 'off (set NE8000_NETFLOW_PORT)'}</div>
+      <div><span>Flow packets</span>${Fmt.num(st.packets)} · last ${ago(st.last)}</div>
+      <div><span>From this router</span>${ex.length ? ex.map(([ip, e]) => `${esc(ip)} (v${e.version}, 1:${Math.round(e.sampling)} sampling, ${Fmt.num(e.packets)} packets)`).join(', ') : 'nothing yet'}</div>
+      <div><span>Not matched / dropped</span>${Fmt.num(st.unmatched)} flows / ${Fmt.num(st.dropped)} packets from unknown senders</div>`}</div>
+      ${f.note ? `<p class="muted">${esc(f.note)}</p>` : !st.demo && !ex.length ? '<p class="muted">No flows from this router yet. Use <b>Router setup</b> to send its NetStream export here; graphs fill in about 5 minutes after the first flows arrive.</p>' : ''}</div>
+    <div class="card"><div id="nfT"></div></div>`;
+  table($('#nfT'), [{ t: 'Subnet', k: 'subnet', cls: 'mono', f: x => `<b>${esc(x.subnet)}</b>` }, { t: 'Interface', k: 'interface' },
+    { t: 'Rx (from)', k: 'rx_bps', num: true, f: x => x.rx_bps == null ? '<span class="faint">-</span>' : Fmt.bps(x.rx_bps) },
+    { t: 'Tx (to)', k: 'tx_bps', num: true, f: x => x.tx_bps == null ? '<span class="faint">-</span>' : Fmt.bps(x.tx_bps) },
+    { t: '', sort: false, cls: 'acts', f: x => `<button class="btn sm" onclick='showGraphs(${attr('flow:' + x.subnet)})'>Graph</button>` }],
+    f.subnets || [], { onRow: x => showGraphs('flow:' + x.subnet) });
+  $('#nfSetup').onclick = () => netstreamForm(ov);
+};
+function netstreamForm(ov) {
+  const host = /^\d+\.\d+\.\d+\.\d+$/.test(location.hostname) ? location.hostname : '';
+  const ifs = ifCache.filter(i => i.ip && !/^(loopback|null)/i.test(i.name) && !/OAM|MGMT/i.test(i.vpn || '') && i.type !== 'management').map(i => i.name);
+  change({ title: 'Send NetStream to the manager', action: 'netstream.enable',
+    intro: 'Samples 1 in N packets inbound on each interface (so each flow is counted once) and exports NetFlow v9 to this server every minute. It only counts; it does not block or limit traffic. Press Check only first: the router checks the lines and nothing is committed.',
+    fields: [{ k: 'collector', label: 'This server\'s address (as the router reaches it)', value: host, ph: '102.216.116.66' },
+      { k: 'port', label: 'UDP port', type: 'number', value: 2055 },
+      { k: 'source', label: 'Export source (an address on the router)', value: ((ifCache.find(i => /^loopback0$/i.test(i.name)) || {}).ip || '').split('/')[0] || (ov && ov.host) || '', ph: 'e.g. the LoopBack0 address' },
+      { k: 'sampling', label: 'Sampling, 1 in N packets', type: 'number', value: 1000, help: 'The manager multiplies by N. 1000 is light on the router and accurate for busy links.' },
+      { k: 'slots', label: 'Slots for distributed sampling (optional)', ph: 'e.g. 1 3', help: 'Only if the router asks for "ip netstream sampler to slot self".' },
+      { k: 'interfaces', label: `Interfaces (${ifs.length})`, type: 'textarea', value: ifs.join('\n'), help: 'Every interface that carries traffic: uplinks and customer ports. Remove any you want left out.' }],
+    after: () => refresh() });
+}
 
 PAGES.ping = async c => {
   c.innerHTML = head('Ping / Traceroute') + `<div class="card"><div class="form" style="max-width:640px">

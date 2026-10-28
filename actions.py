@@ -176,6 +176,46 @@ def interface_ip_change(p):
     return [f"interface {name}", f"ip address {ip} {plen}"]
 
 
+def _netstream_ifaces(p):
+    names = [x.strip() for x in re.split(r"[,\s]+", s(p, "interfaces")) if x.strip()]
+    if not names:
+        raise ActionError("Pick at least one interface.")
+    for n in names:
+        if not NAME_RE.match(n):
+            raise ActionError(f"Invalid interface name: {n}")
+    return names
+
+
+@action("netstream.enable")
+def netstream_enable(p):
+    """Sampled NetStream (NetFlow v9) export to the manager's collector, inbound on the given interfaces.
+    Inbound only on every interface that carries the traffic, so each flow is counted once."""
+    collector = ip_addr(p, "collector", "Collector address")
+    source = ip_addr(p, "source", "Export source address")
+    port = integer(p, "port", 1, 65535, "Collector port", default=2055)
+    rate = integer(p, "sampling", 1, 65535, "Sampling (1 in N packets)", default=1000)
+    lines = [f"ip netstream sampler fix-packets {rate} inbound", "ip netstream export version 9",
+             f"ip netstream export source {source}", f"ip netstream export host {collector} {port}",
+             "ip netstream timeout active 1", "ip netstream timeout inactive 15"]
+    for slot in [x for x in re.split(r"[,\s]+", s(p, "slots")) if x]:
+        if not slot.isdigit():
+            raise ActionError(f"Invalid slot: {slot}")
+        lines += [f"slot {slot}", "ip netstream sampler to slot self", "quit"]
+    for n in _netstream_ifaces(p):
+        lines += [f"interface {n}", "ip netstream inbound", "quit"]
+    return lines
+
+
+@action("netstream.disable")
+def netstream_disable(p):
+    collector = ip_addr(p, "collector", "Collector address")
+    port = integer(p, "port", 1, 65535, "Collector port", default=2055)
+    lines = []
+    for n in _netstream_ifaces(p):
+        lines += [f"interface {n}", "undo ip netstream inbound", "quit"]
+    return lines + [f"undo ip netstream export host {collector} {port}"]
+
+
 @action("interface.reset_counters", mode="exec")
 def interface_reset_counters(p):
     return [f"reset counters interface {iface(p)}"]

@@ -9,6 +9,7 @@ Settings for hosting come from environment variables (see README, "Hosting").
 import argparse
 import os
 import datetime
+import ipaddress
 import re
 import sys
 import time
@@ -23,6 +24,7 @@ import adopt
 import history
 import ipdisabled
 import netdesign
+import netflow
 import netmap
 import plans
 import routers
@@ -47,6 +49,7 @@ USERS = auth.UserStore(DATA_DIR)
 AUDIT = auth.Audit(DATA_DIR)
 SAVED = routers.RouterStore(DATA_DIR)
 HIST = history.History(DATA_DIR, SAVED)
+FLOWS = netflow.FlowCollector(SAVED, HIST, default_sampling=os.environ.get("NE8000_NETFLOW_SAMPLING", "1000"))
 NETMAP = netmap.NetMapStore(DATA_DIR)
 NETMAP_CACHE = {}   # map key -> (time, response)
 DISABLED_IPS = ipdisabled.DisabledIPs(DATA_DIR)
@@ -780,7 +783,7 @@ def graph():
     if rng not in history.RANGES:
         raise DeviceError("Unknown range.")
     if r.demo:
-        base = (getattr(r, "ifs", {}).get(name) or {}).get("base") or 0
+        base = (getattr(r, "ifs", {}).get(name) or {}).get("base") or (demo_flow_base(name) if name.startswith("flow:") else 0)
         return jsonify(points=history.synthetic(base, rng, seed=len(name)), collecting=False)
     rid = session.get("router_id", "")
     if not rid:
@@ -790,6 +793,64 @@ def graph():
         return jsonify(points=[], collecting=False, note="Add this router's SNMP login under Manager > Routers to keep history.")
     st = HIST.status.get(rid) or {}
     return jsonify(points=HIST.series(rid, name, rng), collecting=True, error=st.get("error", ""), last=st.get("time"))
+
+
+def demo_flow_base(name):
+    return 2e6 + (sum(map(ord, name)) % 40) * 3e6
+
+
+def demo_flow_subnets(r):
+    out = []
+    for i in r.interfaces():
+        for a in [i.get("ip")] + list(i.get("secondary") or []):
+            if a and not i["name"].lower().startswith(("loopback", "null")) and not a.endswith("/32"):
+                out.append({"subnet": str(ipaddress.ip_interface(a).network), "interface": i["name"]})
+    return out
+
+
+@app.get("/api/flows")
+def flows():
+    """Per-subnet traffic from NetStream for the connected router: collector status and every subnet with its last rates."""
+    r = router()
+    if r.demo:
+        subs = demo_flow_subnets(r)
+        for x in subs:
+            pts = history.synthetic(demo_flow_base("flow:" + x["subnet"]), "day", seed=len("flow:" + x["subnet"]))
+            x["rx_bps"], x["tx_bps"] = pts[-1][1], pts[-1][2]
+        return jsonify(subnets=subs, status={"running": True, "demo": True, "packets": 0, "exporters": {}}, configured=True)
+    rid = session.get("router_id", "")
+    if not rid:
+        return jsonify(subnets=[], status=FLOWS.status(None), configured=False, note="Per-address traffic is kept for saved routers only (Manager > Routers).")
+    if not FLOWS.routers.get(rid):
+        try:
+            FLOWS.refresh(rid)
+        except Exception:
+            pass
+    subs = FLOWS.subnets(rid)
+    for x in subs:
+        pts = FLOWS.live_series(rid, x["subnet"])[-5:]
+        x["rx_bps"] = sum(p[1] for p in pts) / len(pts) if pts else None
+        x["tx_bps"] = sum(p[2] for p in pts) / len(pts) if pts else None
+    st = FLOWS.status(rid)
+    return jsonify(subnets=subs, status=st, configured=bool(st["exporters"]))
+
+
+@app.get("/api/flows/live")
+def flows_live():
+    """The last hour per minute for one subnet, and its busiest addresses over the last 5-10 minutes."""
+    r, key = router(), request.args.get("subnet", "")
+    try:
+        key = str(ipaddress.ip_network(key, strict=False))
+    except ValueError:
+        raise DeviceError("Unknown subnet.")
+    if r.demo:
+        base, now = demo_flow_base("flow:" + key), time.time()
+        pts = [[int(now - now % 60 - 60 * k), base * (0.9 + 0.2 * ((k * 7) % 5) / 5), base * 0.25 * (0.9 + 0.2 * ((k * 3) % 5) / 5)] for k in range(60, 0, -1)]
+        net = ipaddress.ip_network(key)
+        hosts = [{"address": str(h), "rx_bytes": int(base * 30 / (j + 1)), "tx_bytes": int(base * 30 / (j + 1) * 0.25)} for j, h in enumerate(list(net.hosts())[:5])]
+        return jsonify(points=pts, hosts=hosts, demo=True)
+    rid = session.get("router_id", "")
+    return jsonify(points=FLOWS.live_series(rid, key), hosts=FLOWS.top_hosts(rid, key))
 
 
 @app.post("/api/billing/config")
@@ -1038,6 +1099,11 @@ if __name__ == "__main__":
         raise SystemExit(0)
     if env_on("NE8000_HISTORY", "1"):
         HIST.start()   # 5-minute interface history for every saved router with an SNMP login
+    if int(os.environ.get("NE8000_NETFLOW_PORT", "2055") or 0):
+        try:            # per-address traffic from the routers' NetStream export (UDP)
+            FLOWS.start(int(os.environ.get("NE8000_NETFLOW_PORT", "2055")), os.environ.get("NE8000_NETFLOW_BIND", "0.0.0.0"))
+        except OSError as exc:
+            print(f"NetFlow collector not started: {exc}", flush=True)
     print(f"Data folder: {DATA_DIR}")
     print(f"Open http://{'127.0.0.1' if args.host in ('0.0.0.0', '::') else args.host}:{args.port} in your browser", flush=True)
     try:

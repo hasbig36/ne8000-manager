@@ -13,6 +13,9 @@ services:
       # 127.0.0.1 = only a reverse proxy on this host can reach it (HTTPS setup). install.sh sets
       # NE8000_BIND=0.0.0.0 for LAN / VPN use without a domain; firewall port 8080 to your network.
       - "${NE8000_BIND:-127.0.0.1}:8080:8080"
+      # NetFlow / NetStream from the routers (Traffic per address). Packets from anything that is not a
+      # saved router are dropped; still, firewall UDP 2055 to your routers' addresses.
+      - "${NE8000_NETFLOW_BIND:-0.0.0.0}:${NE8000_NETFLOW_HOST_PORT:-2055}:2055/udp"
     # If the router's management network is only reachable from the host itself
     # (VPN, policy routing), use the host network instead of ports:
     # network_mode: host

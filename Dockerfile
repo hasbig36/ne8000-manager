@@ -13,6 +13,6 @@ COPY --chown=ne8000 . .
 
 USER ne8000
 VOLUME ["/data"]
-EXPOSE 8080
+EXPOSE 8080 2055/udp
 HEALTHCHECK --interval=30s --timeout=5s CMD python -c "import urllib.request,os;urllib.request.urlopen('http://127.0.0.1:%s/healthz' % os.environ['NE8000_PORT'])"
 CMD ["python", "app.py"]

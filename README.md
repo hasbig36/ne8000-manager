@@ -53,6 +53,11 @@ Nothing is saved to startup until you press **Save config**.
 ### Graphs
 While you are connected, the app polls CPU and memory every 5 s, temperature every 30 s, and interface utilisation every 10 s, and keeps one hour of history. Rx/Tx graphs are calculated from interface byte counters for the interfaces you are looking at.
 
+### Traffic per address (NetFlow)
+The router counts traffic per interface only, so the primary and "sub" addresses on one port share one counter. With the router's NetStream export sent to the manager (UDP 2055), **Traffic per address** graphs every subnet on the router, and the IP dropdown on an interface has a Graph for each address: last hour per minute, then day, week, month and year like the interface graphs, plus the busiest addresses. A flow counts for a subnet when its source or destination is in it, or its next hop is (a block routed to a customer behind the link).
+
+**Router setup** on that page builds the NetStream lines (1-in-1000 sampling, inbound on each interface so a flow is counted once, NetFlow v9, 1-minute export) for you to review; press **Check only** first. Only routers saved under Manager > Routers with an SNMP login are accepted; other senders are dropped. Settings: `NE8000_NETFLOW_PORT` (2055, 0 = off), `NE8000_NETFLOW_SAMPLING` (1000, used when the router does not report its sampling rate).
+
 ## Requirements on the router
 SSH must be enabled for a user with level 3 rights, for example:
 ```
@@ -148,5 +153,6 @@ Follow the steps at the top of `deploy/ne8000.service`: copy the app to `/opt/ne
 - `demo.py`: simulated NE8000 M8 for demo mode
 - `billing.py`: Splynx billing sync
 - `plans.py`: network plans, versions and execution
+- `netflow.py`: NetFlow v5/v9/IPFIX collector for traffic per address
 - `templates/`, `static/`: the browser UI
 - `Dockerfile`, `docker-compose.yml`, `.env.example`, `deploy/`: hosting (Caddy, nginx, systemd)
