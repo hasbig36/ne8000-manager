@@ -883,14 +883,14 @@ PAGES.netflow = async c => {
 };
 function netstreamForm(ov) {
   const host = /^\d+\.\d+\.\d+\.\d+$/.test(location.hostname) ? location.hostname : '';
-  const ifs = ifCache.filter(i => i.ip && !/^(loopback|inloopback|null|virtual-template)/i.test(i.name) && !/OAM|MGMT/i.test(i.vpn || '') && i.type !== 'management').map(i => i.name);
+  const ifs = ifCache.filter(i => i.ip && !/^(loopback|inloopback|null|virtual-template|meth|ethernet0\/0\/0$)/i.test(i.name) && !/OAM|MGMT/i.test(i.vpn || '') && i.type !== 'management').map(i => i.name);
   change({ title: 'Send NetStream to the manager', action: 'netstream.enable',
     intro: 'Samples 1 in N packets inbound on each interface (so each flow is counted once) and exports NetFlow v9 to this server every minute. It only counts; it does not block or limit traffic. Press Check only first: the router checks the lines and nothing is committed.',
     fields: [{ k: 'collector', label: 'This server\'s address (as the router reaches it)', value: host, ph: '102.216.116.66' },
       { k: 'port', label: 'UDP port', type: 'number', value: 2055 },
       { k: 'source', label: 'Export source (an address on the router)', value: ((ifCache.find(i => /^loopback0$/i.test(i.name)) || {}).ip || '').split('/')[0] || (ov && ov.host) || '', ph: 'e.g. the LoopBack0 address' },
       { k: 'sampling', label: 'Sampling, 1 in N packets', type: 'number', value: 1000, help: 'The manager multiplies by N. 1000 is light on the router and accurate for busy links.' },
-      { k: 'slots', label: 'Slots for distributed sampling (optional)', ph: 'e.g. 1 3', help: 'Only if the router asks for "ip netstream sampler to slot self".' },
+      { k: 'slots', label: 'Slots that sample (self sampling)', ph: 'e.g. 9', help: 'The slot of the board that forwards (on an NE8000 M8 the IPU, usually 9). "display ip netstream statistics slot N" says "not self sampling" until this is set.' },
       { k: 'interfaces', label: `Interfaces (${ifs.length})`, type: 'textarea', value: ifs.join('\n'), help: 'Every interface that carries traffic: uplinks and customer ports. Remove any you want left out.' }],
     after: () => refresh() });
 }
