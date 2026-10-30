@@ -414,7 +414,8 @@ class RealRouter(Router):
         out = self.conn.send_config_set(lines, exit_config_mode=False, read_timeout=90, cmd_verify=False)
         if commit and "Error:" in out:
             # a rejected line: abort, so a half-done change is never committed
-            out += self._discard() + "\nInfo: Nothing was committed because a line was rejected."
+            self._discard()
+            out += "\nInfo: Nothing was committed because a line was rejected."
         elif commit:
             out += self.conn.commit()
             self.conn.exit_config_mode()
@@ -423,21 +424,18 @@ class RealRouter(Router):
         return out
 
     def _discard(self):
-        """Throw away the candidate and get back to user view. VRP may ask
-        "Uncommitted configurations found, commit them before exiting? [Y(yes)/N(no)/C(cancel)]",
-        which netmiko's exit_config_mode cannot answer: the answer is always N."""
+        """Throw away the candidate and get back to user view. This VRP has no usable "abort"
+        ("Incomplete command"), so leave with "return" and answer N to
+        "Uncommitted configurations found, commit them before exiting? [Y(yes)/N(no)/C(cancel)]".
+        The router's chatter is not returned, so it is never mistaken for a rejected line."""
         ask = lambda o: "[Y(yes)/N(no)" in o or "commit them before exiting" in o
-        out = self.conn.send_command_timing("abort")
-        if ask(out):
-            out += self.conn.send_command_timing("N")
         for _ in range(3):
             if self.conn.find_prompt().rstrip().endswith(">"):
                 break
             o = self.conn.send_command_timing("return")
-            out += o
             if ask(o):
-                out += self.conn.send_command_timing("N")
-        return out
+                self.conn.send_command_timing("N")
+        return "\nInfo: The configuration was not committed (check only)."
 
     def _exec(self, command):
         out = self.conn.send_command_timing(command, read_timeout=60)
