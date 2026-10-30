@@ -284,8 +284,14 @@ async function arpLoad() { if (Date.now() - arpCache.at < 30000) return arpCache
 /* ARP entries in this address's subnet, other than the router's own address: the client side of the link */
 function ipNeighbours(cidr, ifname) {
   const x = ip4(cidr); if (!x) return [];
-  const own = cidr.split('/')[0];
-  return arpCache.rows.filter(a => { const y = ip4(a.ip); return y && a.ip !== own && !/^I/.test(a.type || '') && ((y.a & x.mask) >>> 0) === x.net && (!ifname || !a.interface || a.interface === '--' || a.interface === ifname || a.interface.split('.')[0] === ifname.split('.')[0]); });
+  // the router's own addresses (CLI type I, SNMP type O) and the subnet's network/broadcast addresses are not clients
+  const own = new Set(ifCache.flatMap(r => [r.ip, ...(r.secondary || [])]).filter(Boolean).map(c => c.split('/')[0]));
+  own.add(cidr.split('/')[0]);
+  const bcast = (x.net | (~x.mask >>> 0)) >>> 0;
+  const list = arpCache.rows.filter(a => { const y = ip4(a.ip); return y && !own.has(a.ip) && a.type !== 'O' && !(x.p < 31 && (y.a === x.net || y.a === bcast)) &&
+    ((y.a & x.mask) >>> 0) === x.net && (!ifname || !a.interface || a.interface === '--' || a.interface === ifname || a.interface.split('.')[0] === ifname.split('.')[0]); });
+  const dead = a => /incomplete/i.test(a.mac || '') || !a.mac;
+  return list.map(a => dead(a) ? { ...a, mac: 'no answer (Incomplete)' } : a).sort((p, q) => dead(p) - dead(q));
 }
 function nbText(list) { return list.map(a => `${a.ip} ${a.mac}`).join(', '); }
 let ipOff = {};    // addresses taken off with Disable, by interface: [{ip, sub, by, at, reason}]
