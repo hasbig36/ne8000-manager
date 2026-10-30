@@ -902,7 +902,8 @@ Statistics last cleared:never
         dyn = [("10.10.1.2", "00e0-fc11-2201", "GigabitEthernet0/1/0"), ("10.10.2.2", "00e0-fc11-2202", "GigabitEthernet0/1/1"),
                ("172.16.0.0", "00e0-fc22-0001", "100GE0/2/0"), ("172.16.0.2", "00e0-fc22-0002", "100GE0/2/1"),
                ("10.20.100.11", "a4c6-4f00-1011", "GigabitEthernet0/1/4.100"), ("10.20.100.12", "a4c6-4f00-1012", "GigabitEthernet0/1/4.100"),
-               ("192.168.0.1", "0050-56aa-0001", "GigabitEthernet0/0/0")]
+               ("192.168.0.1", "0050-56aa-0001", "GigabitEthernet0/0/0"),
+               ("102.216.117.2", "4c5e-0c11-0301", "GigabitEthernet0/1/6.301"), ("102.216.117.34", "4c5e-0c11-0304", "GigabitEthernet0/1/6.304")]
         for n, i in self.ifs.items():
             for a, _, _ in i["ips"]:
                 out.append(f"{a:<16}00e0-fc12-3456            I           {n}")

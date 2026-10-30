@@ -279,6 +279,15 @@ function ifIpForm(name) {
     fields: [{ k: 'address', label: 'Address/prefix', ph: '10.0.0.1/30' }, { k: 'secondary', label: 'Secondary (sub)', type: 'check', value: !!r.ip }, { k: 'vpn', label: 'Bind VPN instance', ph: 'optional', help: 'Binding a VPN instance removes existing IP addresses on the interface.' }] });
 }
 /* ----- every address on one interface, in a dropdown: change, remove, add ----- */
+let arpCache = { at: 0, rows: [] };    // the router's ARP table, to show the client (neighbour) behind each address
+async function arpLoad() { if (Date.now() - arpCache.at < 30000) return arpCache.rows; try { arpCache = { at: Date.now(), rows: (await api('/api/view/arp')).entries || [] }; } catch (e) { } return arpCache.rows; }
+/* ARP entries in this address's subnet, other than the router's own address: the client side of the link */
+function ipNeighbours(cidr, ifname) {
+  const x = ip4(cidr); if (!x) return [];
+  const own = cidr.split('/')[0];
+  return arpCache.rows.filter(a => { const y = ip4(a.ip); return y && a.ip !== own && !/^I/.test(a.type || '') && ((y.a & x.mask) >>> 0) === x.net && (!ifname || !a.interface || a.interface === '--' || a.interface === ifname || a.interface.split('.')[0] === ifname.split('.')[0]); });
+}
+function nbText(list) { return list.map(a => `${a.ip} ${a.mac}`).join(', '); }
 let ipOff = {};    // addresses taken off with Disable, by interface: [{ip, sub, by, at, reason}]
 async function ipOffLoad() { try { ipOff = await api('/api/ip/disabled'); } catch (e) { ipOff = {}; } }
 function ipsOf(r, withOff) {
@@ -309,7 +318,7 @@ function ipWarn(addr, name, except) {
   return hits.length ? `Overlaps ${hits.slice(0, 4).join(', ')}${hits.length > 4 ? '…' : ''}. The router refuses overlapping subnets unless they are in different VPN instances.` : '';
 }
 async function ipMenu(btn, name) {
-  ipMenuClose(); await ensureIfs(); await ipOffLoad();
+  ipMenuClose(); await ensureIfs(); await Promise.all([ipOffLoad(), arpLoad()]);
   const r = ifCache.find(x => x.name === name); if (!r) return;
   if (!(bgpState || {}).peers) try { bgpState = await api('/api/view/bgp'); } catch (e) { }
   const peers = ((bgpState || {}).peers || []).map(p => p.peer);
@@ -320,8 +329,8 @@ async function ipMenu(btn, name) {
     : x.off ? `<button class="btn sm primary" data-en="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}">Enable</button>`
     : `<button class="btn sm" data-fg="${esc(ipNet(x.ip))}" title="traffic of ${esc(ipNet(x.ip))} from NetFlow">Graph</button><button class="btn sm" data-ch="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}">Change</button><button class="btn sm" data-dis="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}" data-use="${esc(used(x.ip))}">Disable</button><button class="btn sm danger" data-rm="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}" data-use="${esc(used(x.ip))}">Remove</button>`;
   pop.innerHTML = `<div class="iph"><b>${esc(name)}</b><span class="muted">${all.length - offN} active${offN ? ` · ${offN} disabled` : ''}</span><button class="ipx" data-close="1" title="Close">✕</button></div>
-    <table class="tbl"><tbody>${all.map(x => `<tr class="${x.off ? 'ipoff' : ''}"><td class="mono">${esc(x.ip)}</td><td><span class="pill ${x.v6 || x.sub || x.off ? '' : 'p-ok'}">${x.v6 ? 'IPv6' : (x.sub ? 'secondary' : 'primary') + (x.off ? ' · disabled' : '')}</span></td>
-      <td class="muted">${x.off ? esc(`off since ${new Date(x.at * 1000).toLocaleDateString()} by ${x.by}${x.reason ? ' · ' + x.reason : ''}`) : esc(x.v6 ? '' : 'net ' + ipNet(x.ip)) + (used(x.ip) ? ` · ${esc(used(x.ip))}` : '')}</td>
+    <table class="tbl"><tbody>${all.map(x => `<tr class="${x.off ? 'ipoff' : ''}"><td><div class="mono ipa">${esc(x.ip)}</div><div class="muted ips">${x.off ? esc(`off since ${new Date(x.at * 1000).toLocaleDateString()} by ${x.by}${x.reason ? ' · ' + x.reason : ''}`) : esc(x.v6 ? '' : 'net ' + ipNet(x.ip)) + (used(x.ip) ? ` · ${esc(used(x.ip))}` : '')}</div></td><td><span class="pill ${x.v6 || x.sub || x.off ? '' : 'p-ok'}">${x.v6 ? 'IPv6' : (x.sub ? 'secondary' : 'primary') + (x.off ? ' · disabled' : '')}</span></td>
+      <td class="mono nb">${x.off || x.v6 ? '' : (n => n.length ? `<span title="${esc(nbText(n))}">${esc(n[0].ip)} · <b>${esc(n[0].mac)}</b>${n.length > 1 ? ` <span class="faint">+${n.length - 1}</span>` : ''}</span>` : '<span class="faint">no neighbour in ARP</span>')(ipNeighbours(x.ip, name))}</td>
       <td class="acts">${acts(x)}</td></tr>`).join('')}</tbody></table>
     <div class="ipf"><button class="btn sm" data-close="1">Close</button><span class="sp"></span><button class="btn sm" data-graph="1" title="the router counts traffic per interface, so this graph is shared by all the addresses above">Graph (whole interface)</button><button class="btn sm primary" data-add="1">+ Add address</button></div>`;
   document.body.appendChild(pop);
@@ -506,9 +515,10 @@ function bindForm() { change({ title: 'Bind traffic policy', action: 'qos.policy
 
 /* ----- IP ----- */
 PAGES.addresses = async c => {
-  const rows = ifCache = await api('/api/view/interfaces');
+  const rows = ifCache = await api('/api/view/interfaces'); arpCache.at = 0; await arpLoad();
   c.innerHTML = head('IP addresses') + '<div class="card"><div id="aT"></div></div>';
-  table($('#aT'), [{ t: 'Address', k: 'ip', cls: 'mono', f: r => `<b>${esc(r.ip)}</b>` }, { t: 'Interface', k: 'name' }, { t: 'VPN', k: 'vpn' }, { t: 'State', k: 'protocol', f: r => pill(r.protocol) }, { t: 'Description', k: 'description' },
+  table($('#aT'), [{ t: 'Address', k: 'ip', cls: 'mono', f: r => `<b>${esc(r.ip)}</b>` }, { t: 'Interface', k: 'name' }, { t: 'Neighbour (client)', k: 'nb', cls: 'mono', f: r => r.v6 ? '' : (n => n.length ? `<span title="${esc(nbText(n))}">${esc(n[0].ip)} · <b>${esc(n[0].mac)}</b>${n.length > 1 ? ` <span class="faint">+${n.length - 1}</span>` : ''}</span>` : '<span class="faint">-</span>')(ipNeighbours(r.ip, r.name)) },
+    { t: 'VPN', k: 'vpn' }, { t: 'State', k: 'protocol', f: r => pill(r.protocol) }, { t: 'Description', k: 'description' },
     { t: '', sort: false, cls: 'acts', f: r => r.v6 ? '' : `<button class="btn sm" onclick='ipChangeForm(${attr(r.name)},${attr(r.ip)},${!!r.sub})'>Change</button><button class="btn sm danger" onclick='ipRemoveForm(${attr(r.name)},${attr(r.ip)},${!!r.sub},"")'>Remove</button>` }],
     rows.filter(r => r.ip || (r.ipv6 || []).length).flatMap(r => [...(r.ip ? [r] : []), ...(r.secondary || []).map(ip => ({ ...r, ip, sub: true, description: (r.description ? r.description + ' · ' : '') + 'secondary' })),
       ...(r.ipv6 || []).map(ip => ({ ...r, ip, v6: true, description: (r.description ? r.description + ' · ' : '') + 'IPv6' }))]), { toolbar: `<button class="btn" onclick="addrForm()">+ Address</button>` });
