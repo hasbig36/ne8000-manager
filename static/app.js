@@ -261,7 +261,7 @@ PAGES.interfaces = async c => {
     { t: 'IP address', k: 'ip', f: ipCell }, { t: 'Client (ARP)', k: 'client', cls: 'mono nb', f: r => r.l2 || r.type === 'null' ? '' : nbHtml(r._nb || [], r.ip ? 'none in ARP' : '') }, { t: 'VPN', k: 'vpn', f: r => `<span class="muted">${esc(r.vpn)}</span>` }, { t: 'VLAN', k: 'vlan' },
     { t: 'In', k: 'in_util', f: r => ubar(r.in_util) }, { t: 'Out', k: 'out_util', f: r => ubar(r.out_util) },
     { t: 'Errors', k: 'in_errors', num: true, f: r => r.in_errors + r.out_errors ? `<span style="color:var(--bad)">${r.in_errors}/${r.out_errors}</span>` : '0' },
-    { t: 'Description', k: 'description' },
+    { t: 'Description', k: 'description', f: r => r.type === 'null' ? esc(r.description) : descCell(r.name, r.description) },
     { t: '', sort: false, cls: 'acts', f: r => r.type === 'null' ? '' : (r.admin_down ? `<button class="btn sm" onclick='ifToggle(${attr(r.name)},true)'>Enable</button>` : `<button class="btn sm" onclick='ifToggle(${attr(r.name)},false)'>Disable</button>`) + `<button class="btn sm" onclick='ifEdit(${attr(r.name)})'>Edit</button>` },
   ], withClients(rows).filter(pick), { onRow: r => interfaceDrawer(r.name), rowClass: r => r.admin_down ? 'off' : '' });
   draw(rows);
@@ -269,6 +269,14 @@ PAGES.interfaces = async c => {
 };
 /* adds the clients behind each row (for display) and their IP/MACs as text (so the filter box finds a MAC in any format) */
 function withClients(rows) { return rows.map(r => { const n = r.ip ? clientsOf(r) : []; return Object.assign(r, { _nb: n, client: nbSearch(n) }); }); }
+/* description text with a rename button; the button does not open the row's drawer */
+function descCell(name, d) { return `<span class="dsc">${esc(d || '')}<button class="btn sm ghost dren" title="Rename the description of ${esc(name)}" onclick='event.stopPropagation();descForm(${attr(name)})'>✎</button></span>`; }
+function descForm(name) {
+  const r = ifCache.find(x => x.name === name) || {};
+  change({ title: `Rename description of ${name}`, action: 'interface.set', params: { interface: name },
+    intro: r.description ? `Now: ${r.description}` : 'This interface has no description yet.',
+    fields: [{ k: 'description', label: 'New description', value: r.description || '', help: 'Leave empty to remove the description.' }] });
+}
 function ifToggle(name, on) { change({ title: `${on ? 'Enable' : 'Disable'} ${name}`, action: 'interface.set', params: { interface: name, enabled: on }, intro: on ? '' : 'Traffic on this interface will stop.' }); }
 function ifEdit(name) {
   const r = ifCache.find(x => x.name === name) || {};
@@ -535,7 +543,7 @@ PAGES.addresses = async c => {
   const rows = ifCache = await api('/api/view/interfaces'); arpCache.at = 0; await arpLoad();
   c.innerHTML = head('IP addresses') + '<div class="card"><div id="aT"></div></div>';
   table($('#aT'), [{ t: 'Address', k: 'ip', cls: 'mono', f: r => `<b>${esc(r.ip)}</b>` }, { t: 'Interface', k: 'name' }, { t: 'Neighbour (client)', k: 'nb', cls: 'mono', f: r => r.v6 ? '' : nbHtml(r._nb, '-') },
-    { t: 'VPN', k: 'vpn' }, { t: 'State', k: 'protocol', f: r => pill(r.protocol) }, { t: 'Description', k: 'description' },
+    { t: 'VPN', k: 'vpn' }, { t: 'State', k: 'protocol', f: r => pill(r.protocol) }, { t: 'Description', k: 'description', f: r => r.sub || r.v6 ? esc(r.description) : descCell(r.name, r.description) },
     { t: '', sort: false, cls: 'acts', f: r => r.v6 ? '' : `<button class="btn sm" onclick='ipChangeForm(${attr(r.name)},${attr(r.ip)},${!!r.sub})'>Change</button><button class="btn sm danger" onclick='ipRemoveForm(${attr(r.name)},${attr(r.ip)},${!!r.sub},"")'>Remove</button>` }],
     rows.filter(r => r.ip || (r.ipv6 || []).length).flatMap(r => [...(r.ip ? [r] : []), ...(r.secondary || []).map(ip => ({ ...r, ip, sub: true, description: (r.description ? r.description + ' · ' : '') + 'secondary' })),
       ...(r.ipv6 || []).map(ip => ({ ...r, ip, v6: true, description: (r.description ? r.description + ' · ' : '') + 'IPv6' }))])
