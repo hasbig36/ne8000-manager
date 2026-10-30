@@ -412,7 +412,10 @@ class RealRouter(Router):
 
     def _configure(self, lines, commit):
         out = self.conn.send_config_set(lines, exit_config_mode=False, read_timeout=90, cmd_verify=False)
-        if commit:
+        if commit and "Error:" in out:
+            # a rejected line: abort, so a half-done change is never committed
+            out += self.conn.send_command_timing("abort") + "\nInfo: Nothing was committed because a line was rejected."
+        elif commit:
             out += self.conn.commit()
         else:
             out += self.conn.send_command_timing("abort")

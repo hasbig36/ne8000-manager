@@ -207,7 +207,7 @@ class DemoRouter(Router):
         return "Info: Command executed (demo)."
 
     def _configure(self, lines, commit):
-        snapshot = None if commit else self._snapshot()
+        snapshot = self._snapshot()
         out, view, ctx = [], "system", None
         for raw in lines:
             line = " ".join(raw.split())
@@ -218,7 +218,10 @@ class DemoRouter(Router):
                 view, ctx = err
             elif err:
                 out.append(f"Error: {err}")
-        if commit:
+        if commit and any(l.startswith("Error:") for l in out):
+            self._restore(snapshot)
+            out.append(f"[*{self.sysname_}]abort\nInfo: Nothing was committed because a line was rejected.")
+        elif commit:
             out.append(f"[*{self.sysname_}]commit\n[~{self.sysname_}]")
             self.log("CFG/4/CFG_COMMIT", "The configuration was committed by the GUI user.")
         else:
@@ -466,8 +469,11 @@ class DemoRouter(Router):
                 return f"A QoS profile is already applied in the {w[2]} direction. Undo it first."
             i["qos"].append(line)
         elif w[:2] == ["undo", "qos-profile"]:
+            # like the real router: "undo qos-profile inbound", no profile name
+            if len(w) != 3 or w[2] not in ("inbound", "outbound"):
+                return "Unrecognized command found at '^' position."
             before = len(i["qos"])
-            i["qos"] = [q for q in i["qos"] if not (q.startswith("qos-profile ") and q.split()[1:3] == w[2:4])]
+            i["qos"] = [q for q in i["qos"] if not (q.startswith("qos-profile ") and q.split()[2] == w[2])]
             if len(i["qos"]) == before:
                 return "The QoS profile is not applied in that direction."
         elif w[0] == "traffic-policy":

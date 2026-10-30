@@ -345,7 +345,9 @@ def qos_profile_apply(p):
         cur = p.get("current") if isinstance(p.get("current"), dict) else {}
         old = s(p, "old_" + d) or str((cur.get(name) or {}).get(d) or "")
         if old and old != prof:
-            out.append(f"undo qos-profile {word({'x': old}, 'x', 'Current profile')} {d} identifier none")
+            # VRP takes no profile name (and no identifier) on the undo: "undo qos-profile inbound"
+            word({'x': old}, 'x', 'Current profile')
+            out.append(f"undo qos-profile {d}")
         out.append(f"qos-profile {prof} {d} identifier none")
     return out
 
@@ -353,7 +355,7 @@ def qos_profile_apply(p):
 @action("qos.profile_remove")
 def qos_profile_remove(p):
     name, prof = iface(p), word(p, "profile", "Profile")
-    return [f"interface {name}"] + [f"undo qos-profile {prof} {d} identifier none" for d in _dirs(p)]
+    return [f"interface {name}"] + [f"undo qos-profile {d}" for d in _dirs(p)]
 
 
 @action("qos.profile_create")
