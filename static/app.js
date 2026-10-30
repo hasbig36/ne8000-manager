@@ -256,12 +256,13 @@ PAGES.interfaces = async c => {
   $('#ifKind').onclick = e => { if (e.target.dataset.k) { c._kind = e.target.dataset.k; PAGES.interfaces(c); } };
   const pick = r => kind === 'all' || (kind === 'logical' ? ['loopback', 'vlanif', 'null', 'tunnel', 'virtual', 'eth-trunk'].includes(r.type) : kind === 'ethernet' ? ['ethernet', 'management'].includes(r.type) : r.type === kind);
   const draw = rows => table($('#ifTable'), [
-    { t: 'Name', k: 'name', f: r => `<b>${esc(r.name)}</b>` }, { t: 'Type', k: 'type', f: r => `<span class="muted">${esc(r.type)}</span>` },
+    { t: 'Name', k: 'name', f: r => `<b>${esc(r.name)}</b>` },
+    { t: 'Description', k: 'description', f: r => r.type === 'null' ? esc(r.description) : descCell(r.name, r.description) },
+    { t: 'Type', k: 'type', f: r => `<span class="muted">${esc(r.type)}</span>` },
     { t: 'Physical', k: 'phy', f: r => pill(r.phy) }, { t: 'Protocol', k: 'protocol', f: r => pill(r.protocol) },
     { t: 'IP address', k: 'ip', f: ipCell }, { t: 'Client (ARP)', k: 'client', cls: 'mono nb', f: r => r.l2 || r.type === 'null' ? '' : nbHtml(r._nb || [], r.ip ? 'none in ARP' : '') }, { t: 'VPN', k: 'vpn', f: r => `<span class="muted">${esc(r.vpn)}</span>` }, { t: 'VLAN', k: 'vlan' },
     { t: 'In', k: 'in_util', f: r => ubar(r.in_util) }, { t: 'Out', k: 'out_util', f: r => ubar(r.out_util) },
     { t: 'Errors', k: 'in_errors', num: true, f: r => r.in_errors + r.out_errors ? `<span style="color:var(--bad)">${r.in_errors}/${r.out_errors}</span>` : '0' },
-    { t: 'Description', k: 'description', f: r => r.type === 'null' ? esc(r.description) : descCell(r.name, r.description) },
     { t: '', sort: false, cls: 'acts', f: r => r.type === 'null' ? '' : (r.admin_down ? `<button class="btn sm" onclick='ifToggle(${attr(r.name)},true)'>Enable</button>` : `<button class="btn sm" onclick='ifToggle(${attr(r.name)},false)'>Disable</button>`) + `<button class="btn sm" onclick='ifEdit(${attr(r.name)})'>Edit</button>` },
   ], withClients(rows).filter(pick), { onRow: r => interfaceDrawer(r.name), rowClass: r => r.admin_down ? 'off' : '' });
   draw(rows);
@@ -482,7 +483,7 @@ function portForm(name) {
 
 /* ----- Queues / QoS ----- */
 PAGES.queues = async c => {
-  const q = await api('/api/view/qos'); await ensureIfs();
+  const q = await api('/api/view/qos'); ifCache = await api('/api/view/interfaces');
   const ifl = q.interfaces;
   c.innerHTML = head('Queues / QoS', 'QoS profiles, rate limits, shaping, port queues and traffic policies') +
     `<div class="card"><h3>Rate limits and shaping</h3><div id="qRules"></div></div>
@@ -492,7 +493,8 @@ PAGES.queues = async c => {
     <div class="card"><h3>Traffic policies <span class="sp"></span><button class="btn sm" onclick="simpleQueueForm()">+ Simple queue (policy)</button><button class="btn sm" onclick="bindForm()">Bind policy to interface</button></h3><pre>${esc(q.policies || '(none)')}</pre></div>`;
   window._qIfs = ifl; window._qProfiles = q.profiles || [];
   window._qBound = {}; q.rules.filter(r => r.kind === 'profile').forEach(r => { (window._qBound[r.interface] = window._qBound[r.interface] || {})[r.direction] = r.profile; });
-  table($('#qRules'), [{ t: 'Interface', k: 'interface', f: r => `<b>${esc(r.interface)}</b>` }, { t: 'Type', k: 'kind', f: r => ({ 'rate-limit': 'Rate limit (CAR)', shaping: 'Port shaping', policy: 'Traffic policy ' + esc(r.policy), profile: 'QoS profile <b>' + esc(r.profile) + '</b>' }[r.kind]) },
+  q.rules.forEach(r => { r.description = (ifCache.find(x => x.name === r.interface) || {}).description || ''; });    // which customer each rule is for
+  table($('#qRules'), [{ t: 'Interface', k: 'interface', f: r => `<b>${esc(r.interface)}</b>` }, { t: 'Description', k: 'description', f: r => descCell(r.interface, r.description) }, { t: 'Type', k: 'kind', f: r => ({ 'rate-limit': 'Rate limit (CAR)', shaping: 'Port shaping', policy: 'Traffic policy ' + esc(r.policy), profile: 'QoS profile <b>' + esc(r.profile) + '</b>' }[r.kind]) },
     { t: 'Direction', k: 'direction' }, { t: 'Rate (CIR)', k: 'cir_kbps', num: true, f: r => r.cir_kbps ? Fmt.bps(r.cir_kbps * 1000) : '-' }, { t: 'Peak (PIR)', k: 'pir_kbps', num: true, f: r => r.pir_kbps ? Fmt.bps(r.pir_kbps * 1000) : '-' },
     { t: 'Current', sort: false, f: r => { const i = ifCache.find(x => x.name === r.interface); return i ? ubar(r.direction === 'inbound' ? i.in_util : i.out_util) : ''; } },
     { t: 'Command', k: 'line', cls: 'mono faint' },
@@ -542,8 +544,8 @@ function bindForm() { change({ title: 'Bind traffic policy', action: 'qos.policy
 PAGES.addresses = async c => {
   const rows = ifCache = await api('/api/view/interfaces'); arpCache.at = 0; await arpLoad();
   c.innerHTML = head('IP addresses') + '<div class="card"><div id="aT"></div></div>';
-  table($('#aT'), [{ t: 'Address', k: 'ip', cls: 'mono', f: r => `<b>${esc(r.ip)}</b>` }, { t: 'Interface', k: 'name' }, { t: 'Neighbour (client)', k: 'nb', cls: 'mono', f: r => r.v6 ? '' : nbHtml(r._nb, '-') },
-    { t: 'VPN', k: 'vpn' }, { t: 'State', k: 'protocol', f: r => pill(r.protocol) }, { t: 'Description', k: 'description', f: r => r.sub || r.v6 ? esc(r.description) : descCell(r.name, r.description) },
+  table($('#aT'), [{ t: 'Address', k: 'ip', cls: 'mono', f: r => `<b>${esc(r.ip)}</b>` }, { t: 'Interface', k: 'name' }, { t: 'Description', k: 'description', f: r => r.sub || r.v6 ? esc(r.description) : descCell(r.name, r.description) }, { t: 'Neighbour (client)', k: 'nb', cls: 'mono', f: r => r.v6 ? '' : nbHtml(r._nb, '-') },
+    { t: 'VPN', k: 'vpn' }, { t: 'State', k: 'protocol', f: r => pill(r.protocol) }, 
     { t: '', sort: false, cls: 'acts', f: r => r.v6 ? '' : `<button class="btn sm" onclick='ipChangeForm(${attr(r.name)},${attr(r.ip)},${!!r.sub})'>Change</button><button class="btn sm danger" onclick='ipRemoveForm(${attr(r.name)},${attr(r.ip)},${!!r.sub},"")'>Remove</button>` }],
     rows.filter(r => r.ip || (r.ipv6 || []).length).flatMap(r => [...(r.ip ? [r] : []), ...(r.secondary || []).map(ip => ({ ...r, ip, sub: true, description: (r.description ? r.description + ' · ' : '') + 'secondary' })),
       ...(r.ipv6 || []).map(ip => ({ ...r, ip, v6: true, description: (r.description ? r.description + ' · ' : '') + 'IPv6' }))])
