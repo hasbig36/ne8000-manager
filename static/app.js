@@ -248,7 +248,7 @@ PAGES.resources = async c => {
 let ifCache = [];
 PAGES.interfaces = async c => {
   const rows = ifCache = await api('/api/view/interfaces');
-  await ipOffLoad();
+  await Promise.all([ipOffLoad(), arpLoad()]);
   const kind = c._kind || 'all';
   c.innerHTML = head('Interfaces', '', `<button class="btn" onclick="subifForm()">+ Sub-interface</button><button class="btn" onclick="loopbackForm()">+ Loopback</button>`) +
     `<div class="card"><div class="bar"><div class="seg" id="ifKind">${[['all', 'All'], ['ethernet', 'Physical'], ['sub-interface', 'Sub-interfaces'], ['logical', 'Logical']].map(([k, l]) => `<button data-k="${k}" class="${k === kind ? 'on' : ''}">${l}</button>`).join('')}</div>
@@ -258,15 +258,17 @@ PAGES.interfaces = async c => {
   const draw = rows => table($('#ifTable'), [
     { t: 'Name', k: 'name', f: r => `<b>${esc(r.name)}</b>` }, { t: 'Type', k: 'type', f: r => `<span class="muted">${esc(r.type)}</span>` },
     { t: 'Physical', k: 'phy', f: r => pill(r.phy) }, { t: 'Protocol', k: 'protocol', f: r => pill(r.protocol) },
-    { t: 'IP address', k: 'ip', f: ipCell }, { t: 'VPN', k: 'vpn', f: r => `<span class="muted">${esc(r.vpn)}</span>` }, { t: 'VLAN', k: 'vlan' },
+    { t: 'IP address', k: 'ip', f: ipCell }, { t: 'Client (ARP)', k: 'client', cls: 'mono nb', f: r => r.l2 || r.type === 'null' ? '' : nbHtml(r._nb || [], r.ip ? 'none in ARP' : '') }, { t: 'VPN', k: 'vpn', f: r => `<span class="muted">${esc(r.vpn)}</span>` }, { t: 'VLAN', k: 'vlan' },
     { t: 'In', k: 'in_util', f: r => ubar(r.in_util) }, { t: 'Out', k: 'out_util', f: r => ubar(r.out_util) },
     { t: 'Errors', k: 'in_errors', num: true, f: r => r.in_errors + r.out_errors ? `<span style="color:var(--bad)">${r.in_errors}/${r.out_errors}</span>` : '0' },
     { t: 'Description', k: 'description' },
     { t: '', sort: false, cls: 'acts', f: r => r.type === 'null' ? '' : (r.admin_down ? `<button class="btn sm" onclick='ifToggle(${attr(r.name)},true)'>Enable</button>` : `<button class="btn sm" onclick='ifToggle(${attr(r.name)},false)'>Disable</button>`) + `<button class="btn sm" onclick='ifEdit(${attr(r.name)})'>Edit</button>` },
-  ], rows.filter(pick), { onRow: r => interfaceDrawer(r.name), rowClass: r => r.admin_down ? 'off' : '' });
+  ], withClients(rows).filter(pick), { onRow: r => interfaceDrawer(r.name), rowClass: r => r.admin_down ? 'off' : '' });
   draw(rows);
-  every(10000, async () => { if (!$('#modalBg').classList.contains('hidden')) return; ifCache = await api('/api/view/interfaces'); draw(ifCache); });
+  every(10000, async () => { if (!$('#modalBg').classList.contains('hidden')) return; ifCache = await api('/api/view/interfaces'); await arpLoad(); draw(ifCache); });
 };
+/* adds the clients behind each row (for display) and their IP/MACs as text (so the filter box finds a MAC in any format) */
+function withClients(rows) { return rows.map(r => { const n = r.ip ? clientsOf(r) : []; return Object.assign(r, { _nb: n, client: nbSearch(n) }); }); }
 function ifToggle(name, on) { change({ title: `${on ? 'Enable' : 'Disable'} ${name}`, action: 'interface.set', params: { interface: name, enabled: on }, intro: on ? '' : 'Traffic on this interface will stop.' }); }
 function ifEdit(name) {
   const r = ifCache.find(x => x.name === name) || {};
@@ -293,7 +295,16 @@ function ipNeighbours(cidr, ifname) {
   const dead = a => /incomplete/i.test(a.mac || '') || !a.mac;
   return list.map(a => dead(a) ? { ...a, mac: 'no answer (Incomplete)' } : a).sort((p, q) => dead(p) - dead(q));
 }
-function nbText(list) { return list.map(a => `${a.ip} ${a.mac}`).join(', '); }
+function nbText(list) { return list.map(a => `${a.ip} ${macColon(a.mac)}`).join(', '); }
+/* 04f4-1c51-8e81 (router) -> 04:F4:1C:51:8E:81 (how most people write it); anything else is left alone */
+function macColon(m) { const h = String(m || '').replace(/[-:.]/g, ''); return /^[0-9a-f]{12}$/i.test(h) ? h.match(/../g).join(':').toUpperCase() : String(m || ''); }
+function nbHtml(n, none) {
+  return n.length ? `<span title="${esc(n.map(a => `${a.ip} ${macColon(a.mac)}${macColon(a.mac) !== a.mac ? ` (${a.mac})` : ''}`).join('\n'))}">${esc(n[0].ip)} · <b>${esc(macColon(n[0].mac))}</b>${n.length > 1 ? ` <span class="faint">+${n.length - 1}</span>` : ''}</span>` : `<span class="faint">${none}</span>`;
+}
+/* every client behind an interface's IPv4 addresses (primary and secondaries) */
+function clientsOf(r) { return [r.ip, ...(r.secondary || [])].filter(Boolean).flatMap(c => ipNeighbours(c, r.name)); }
+/* searchable text: IP plus the MAC in colon, router and bare form, so the table filter finds any of them */
+function nbSearch(n) { return n.map(a => { const h = String(a.mac || '').replace(/[-:.]/g, ''); return `${a.ip} ${macColon(a.mac)} ${a.mac} ${h}`; }).join(' '); }
 let ipOff = {};    // addresses taken off with Disable, by interface: [{ip, sub, by, at, reason}]
 async function ipOffLoad() { try { ipOff = await api('/api/ip/disabled'); } catch (e) { ipOff = {}; } }
 function ipsOf(r, withOff) {
@@ -336,7 +347,7 @@ async function ipMenu(btn, name) {
     : `<button class="btn sm" data-fg="${esc(ipNet(x.ip))}" title="traffic of ${esc(ipNet(x.ip))} from NetFlow">Graph</button><button class="btn sm" data-ch="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}">Change</button><button class="btn sm" data-dis="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}" data-use="${esc(used(x.ip))}">Disable</button><button class="btn sm danger" data-rm="${esc(x.ip)}" data-sub="${x.sub ? 1 : 0}" data-use="${esc(used(x.ip))}">Remove</button>`;
   pop.innerHTML = `<div class="iph"><b>${esc(name)}</b><span class="muted">${all.length - offN} active${offN ? ` · ${offN} disabled` : ''}</span><button class="ipx" data-close="1" title="Close">✕</button></div>
     <table class="tbl"><tbody>${all.map(x => `<tr class="${x.off ? 'ipoff' : ''}"><td><div class="mono ipa">${esc(x.ip)}</div><div class="muted ips">${x.off ? esc(`off since ${new Date(x.at * 1000).toLocaleDateString()} by ${x.by}${x.reason ? ' · ' + x.reason : ''}`) : esc(x.v6 ? '' : 'net ' + ipNet(x.ip)) + (used(x.ip) ? ` · ${esc(used(x.ip))}` : '')}</div></td><td><span class="pill ${x.v6 || x.sub || x.off ? '' : 'p-ok'}">${x.v6 ? 'IPv6' : (x.sub ? 'secondary' : 'primary') + (x.off ? ' · disabled' : '')}</span></td>
-      <td class="mono nb">${x.off || x.v6 ? '' : (n => n.length ? `<span title="${esc(nbText(n))}">${esc(n[0].ip)} · <b>${esc(n[0].mac)}</b>${n.length > 1 ? ` <span class="faint">+${n.length - 1}</span>` : ''}</span>` : '<span class="faint">no neighbour in ARP</span>')(ipNeighbours(x.ip, name))}</td>
+      <td class="mono nb">${x.off || x.v6 ? '' : nbHtml(ipNeighbours(x.ip, name), 'no neighbour in ARP')}</td>
       <td class="acts">${acts(x)}</td></tr>`).join('')}</tbody></table>
     <div class="ipf"><button class="btn sm" data-close="1">Close</button><span class="sp"></span><button class="btn sm" data-graph="1" title="the router counts traffic per interface, so this graph is shared by all the addresses above">Graph (whole interface)</button><button class="btn sm primary" data-add="1">+ Add address</button></div>`;
   document.body.appendChild(pop);
@@ -523,11 +534,12 @@ function bindForm() { change({ title: 'Bind traffic policy', action: 'qos.policy
 PAGES.addresses = async c => {
   const rows = ifCache = await api('/api/view/interfaces'); arpCache.at = 0; await arpLoad();
   c.innerHTML = head('IP addresses') + '<div class="card"><div id="aT"></div></div>';
-  table($('#aT'), [{ t: 'Address', k: 'ip', cls: 'mono', f: r => `<b>${esc(r.ip)}</b>` }, { t: 'Interface', k: 'name' }, { t: 'Neighbour (client)', k: 'nb', cls: 'mono', f: r => r.v6 ? '' : (n => n.length ? `<span title="${esc(nbText(n))}">${esc(n[0].ip)} · <b>${esc(n[0].mac)}</b>${n.length > 1 ? ` <span class="faint">+${n.length - 1}</span>` : ''}</span>` : '<span class="faint">-</span>')(ipNeighbours(r.ip, r.name)) },
+  table($('#aT'), [{ t: 'Address', k: 'ip', cls: 'mono', f: r => `<b>${esc(r.ip)}</b>` }, { t: 'Interface', k: 'name' }, { t: 'Neighbour (client)', k: 'nb', cls: 'mono', f: r => r.v6 ? '' : nbHtml(r._nb, '-') },
     { t: 'VPN', k: 'vpn' }, { t: 'State', k: 'protocol', f: r => pill(r.protocol) }, { t: 'Description', k: 'description' },
     { t: '', sort: false, cls: 'acts', f: r => r.v6 ? '' : `<button class="btn sm" onclick='ipChangeForm(${attr(r.name)},${attr(r.ip)},${!!r.sub})'>Change</button><button class="btn sm danger" onclick='ipRemoveForm(${attr(r.name)},${attr(r.ip)},${!!r.sub},"")'>Remove</button>` }],
     rows.filter(r => r.ip || (r.ipv6 || []).length).flatMap(r => [...(r.ip ? [r] : []), ...(r.secondary || []).map(ip => ({ ...r, ip, sub: true, description: (r.description ? r.description + ' · ' : '') + 'secondary' })),
-      ...(r.ipv6 || []).map(ip => ({ ...r, ip, v6: true, description: (r.description ? r.description + ' · ' : '') + 'IPv6' }))]), { toolbar: `<button class="btn" onclick="addrForm()">+ Address</button>` });
+      ...(r.ipv6 || []).map(ip => ({ ...r, ip, v6: true, description: (r.description ? r.description + ' · ' : '') + 'IPv6' }))])
+      .map(r => { const n = r.v6 ? [] : ipNeighbours(r.ip, r.name); return { ...r, _nb: n, nb: nbSearch(n) }; }), { toolbar: `<button class="btn" onclick="addrForm()">+ Address</button>` });
 };
 function addrForm() { change({ title: 'Add IP address', action: 'interface.ip_add', fields: [{ k: 'interface', label: 'Interface', type: 'select', options: ifCache.filter(i => i.type !== 'null' && !i.l2).map(i => i.name) }, { k: 'address', label: 'Address/prefix', ph: '10.0.0.1/30' }, { k: 'secondary', label: 'Secondary (sub)', type: 'check' }] }); }
 
