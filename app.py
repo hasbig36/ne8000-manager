@@ -12,6 +12,7 @@ import datetime
 import ipaddress
 import re
 import sys
+import threading
 import time
 import uuid
 
@@ -21,6 +22,7 @@ import actions
 import auth
 import billing
 import adopt
+import health
 import history
 import ipdisabled
 import netdesign
@@ -49,6 +51,7 @@ USERS = auth.UserStore(DATA_DIR)
 AUDIT = auth.Audit(DATA_DIR)
 SAVED = routers.RouterStore(DATA_DIR)
 HIST = history.History(DATA_DIR, SAVED)
+HEALTH = health.Health(DATA_DIR, SAVED, HIST)
 FLOWS = netflow.FlowCollector(SAVED, HIST, default_sampling=os.environ.get("NE8000_NETFLOW_SAMPLING", "1000"))
 NETMAP = netmap.NetMapStore(DATA_DIR)
 NETMAP_CACHE = {}   # map key -> (time, response)
@@ -808,6 +811,50 @@ def demo_flow_subnets(r):
     return out
 
 
+@app.get("/api/health")
+def health_report():
+    """Smart health check for the connected router: problems found, latency targets and when it last ran."""
+    r = router()
+    if r.demo:
+        return jsonify(health.demo_report(getattr(r, "ifs", {})))
+    rid = session.get("router_id", "")
+    if not rid:
+        return jsonify(findings=[], status={}, latency=[], targets=[], note="The health check runs for saved routers only (Manager > Routers).")
+    out = HEALTH.report(rid)
+    if not (SAVED.get(rid) or {}).get("snmp"):
+        out["note"] = "Add this router's SNMP login under Manager > Routers so the health check can read its links and optics."
+    return jsonify(out)
+
+
+@app.post("/api/health/run")
+def health_run():
+    """Check now instead of waiting for the next 5-minute round (runs in the background)."""
+    r = router()
+    rid = session.get("router_id", "")
+    if r.demo or not rid:
+        return jsonify(ok=True)
+    threading.Thread(target=lambda: HEALTH.check(rid), daemon=True).start()
+    return jsonify(ok=True)
+
+
+@app.post("/api/health/targets")
+def health_targets():
+    """Addresses this server pings for latency and loss (customer CPEs, upstreams)."""
+    r = router()
+    rows = (request.get_json(force=True) or {}).get("targets") or []
+    if r.demo:
+        return jsonify(targets=rows)
+    rid = session.get("router_id", "")
+    if not rid:
+        raise DeviceError("Latency targets are kept for saved routers only.")
+    try:
+        out = HEALTH.set_targets(rid, rows)
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "health_targets", host=r.host, count=len(out))
+    return jsonify(targets=out)
+
+
 @app.get("/api/flows")
 def flows():
     """Per-subnet traffic from NetStream for the connected router: collector status and every subnet with its last rates."""
@@ -1100,6 +1147,8 @@ if __name__ == "__main__":
         raise SystemExit(0)
     if env_on("NE8000_HISTORY", "1"):
         HIST.start()   # 5-minute interface history for every saved router with an SNMP login
+    if env_on("NE8000_HEALTH", "1"):
+        HEALTH.start()  # smart health check every 5 minutes (errors, drops, full links, optics, latency)
     if int(os.environ.get("NE8000_NETFLOW_PORT", "2055") or 0):
         try:            # per-address traffic from the routers' NetStream export (UDP)
             FLOWS.start(int(os.environ.get("NE8000_NETFLOW_PORT", "2055")), os.environ.get("NE8000_NETFLOW_BIND", "0.0.0.0"))

@@ -153,3 +153,4 @@ details.run .body{padding:0 12px 12px}.task-res{margin:8px 0}.task-res .t{font-w
 .dsc { display: inline-flex; align-items: center; gap: 4px; }
 .dren { opacity: .35; padding: 0 5px; min-height: 0; line-height: 18px; }
 tr:hover .dren, .dren:focus { opacity: 1; }
+a.tile:hover{border-color:var(--accent,var(--s1))}

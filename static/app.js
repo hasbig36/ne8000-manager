@@ -144,14 +144,14 @@ function showOutput(title, text) {
 
 /* ---------- navigation ---------- */
 const I = {
-  dash: '<path d="M2 2h5v6H2zM9 2h5v3H9zM9 7h5v7H9zM2 10h5v4H2z"/>', ifs: '<path d="M2 4h12v8H2zM5 7v2M8 7v2M11 7v2"/>', vlan: '<path d="M2 3h12M2 8h12M2 13h12M5 3v10M11 3v10"/>',
+  dash: '<path d="M2 2h5v6H2zM9 2h5v3H9zM9 7h5v7H9zM2 10h5v4H2z"/>', health: '<path d="M1 8h3l2-4 3 8 2-4h4"/>', ifs: '<path d="M2 4h12v8H2zM5 7v2M8 7v2M11 7v2"/>', vlan: '<path d="M2 3h12M2 8h12M2 13h12M5 3v10M11 3v10"/>',
   ip: '<circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12"/>', route: '<path d="M3 13V8a3 3 0 013-3h7M10 2l3 3-3 3"/>', q: '<path d="M2 4h9M2 8h12M2 12h6"/>',
   sys: '<circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5L13 13M3 13l1.5-1.5M11.5 4.5L13 3"/>', tool: '<path d="M10 2a3 3 0 00-3 4L2 11l3 3 5-5a3 3 0 004-3l-2 1-2-2 1-2z"/>',
   graph: '<path d="M2 13l4-5 3 3 5-7"/>', log: '<path d="M3 2h10v12H3zM5 5h6M5 8h6M5 11h4"/>', hw: '<path d="M3 3h10v10H3zM6 6h4v4H6zM1 6h2M1 10h2M13 6h2M13 10h2"/>', user: '<circle cx="8" cy="5" r="3"/><path d="M2 14c1-3 3-4 6-4s5 1 6 4"/>',
   term: '<path d="M2 3h12v10H2zM4 6l2 2-2 2M8 10h4"/>', rtr: '<path d="M2 9h12v4H2zM5 11h.01M8 11h.01M4 9l2-5h4l2 5"/>', adopt: '<path d="M2 9h8v4H2zM12 3v6M9 6h6"/>', plan: '<path d="M2 3l4-1 4 2 4-1v11l-4 1-4-2-4 1zM6 2v11M10 4v11"/>', bill: '<path d="M3 2h10v12l-2-1-2 1-2-1-2 1-2-1zM5.5 5h5M5.5 8h5M5.5 11h3"/>',
 };
 const NAV = [
-  [null, [['dashboard', 'Dashboard', I.dash]]],
+  [null, [['dashboard', 'Dashboard', I.dash], ['health', 'Health check', I.health]]],
   ['Network', [['interfaces', 'Interfaces', I.ifs], ['graphs', 'Graphs', I.graph], ['netflow', 'Traffic per address', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
   ['IP', [['addresses', 'Addresses', I.ip], ['routes', 'Routes', I.route], ['arp', 'ARP', I.ip], ['vpn', 'VPN instances', I.ip], ['neighbors', 'Neighbors (LLDP)', I.ip]]],
   ['Planning', [['netmap', 'Network map', I.plan], ['plans', 'Network plans', I.plan]]],
@@ -210,7 +210,8 @@ PAGES.dashboard = async c => {
     ${t('Uptime', esc(o.uptime.replace(/ days?,?/, 'd').replace(/ hours?,?/, 'h').replace(/ minutes?/, 'm')), esc(o.patch ? 'Patch ' + o.patch : ''))}${t('Max temperature', Fmt.temp(o.max_temp), 'hottest sensor')}
     ${t('Ports up', `${o.interfaces.up} / ${o.interfaces.total}`, `${o.interfaces.admin_down} admin down · ${o.interfaces.all} interfaces total`)}
     ${t('BGP established', `${o.bgp.established ?? 0} / ${o.bgp.total ?? 0}`, `AS ${esc(o.bgp.local_as || '-')} · RID ${esc(o.bgp.router_id || '-')}`)}
-    ${o.alarms.total == null ? t('Active alarms', '-', '<a href="#logs">sign in with SSH to read alarms</a>') : t('Active alarms', o.alarms.total, `${o.alarms.critical} major or critical`)}</div>
+    ${o.alarms.total == null ? t('Active alarms', '-', '<a href="#logs">sign in with SSH to read alarms</a>') : t('Active alarms', o.alarms.total, `${o.alarms.critical} major or critical`)}
+    <a class="tile" href="#health" id="dHealth" style="text-decoration:none;color:inherit"><div class="l">Health check</div><div class="v">…</div></a></div>
     <div class="grid g2"><div class="card"><h3>CPU <span class="sp"></span><a href="#resources" class="btn sm">Resources</a></h3><div id="cCpu"></div></div>
     <div class="card"><h3>Memory</h3><div id="cMem"></div></div></div>
     <div class="grid g2"><div class="card"><h3>Busiest interfaces<span class="sp"></span><a href="#interfaces" class="btn sm">All interfaces</a></h3><div id="dIf"></div></div>
@@ -223,9 +224,66 @@ PAGES.dashboard = async c => {
     table($('#dBgp'), [{ t: 'Peer', k: 'peer', f: r => `<b>${esc(r.peer)}</b>` }, { t: 'AS', k: 'as' }, { t: 'State', k: 'state', f: r => bgpPill(r.state) }, { t: 'Up/Down', k: 'up_down' }, { t: 'Prefixes', k: 'prefixes', num: true }], o.bgp.peers, { filter: false, empty: 'BGP not configured' });
   };
   tops();
+  const hl = async () => { const h = await api('/api/health'), f = h.findings || [], cr = f.filter(x => x.severity === 'critical').length, el = $('#dHealth'); if (!el) return;
+    el.innerHTML = `<div class="l">Health check</div><div class="v" style="color:${cr ? 'var(--bad)' : f.length ? 'var(--warn)' : 'var(--ok)'}">${f.length ? f.length + ' problem' + (f.length > 1 ? 's' : '') : 'All good'}</div><div class="s">${f.length ? `${cr} critical · ${f.filter(x => x.slow).length} slowing customers` : h.status && h.status.time ? 'nothing wrong found' : 'first check in a few minutes'}</div>`; };
+  hl().catch(() => { const el = $('#dHealth'); if (el) el.remove(); });
+  every(60000, hl);
   every(5000, async () => draw(await api('/api/resources')));
   every(15000, async () => { Object.assign(o, await topbar()); tops(); });
 };
+
+/* ----- smart health check: what is wrong or unusual, and what to do about it ----- */
+const HK = { errors: 'Errors', out_drops: 'Drops', in_drops: 'Drops', congestion: 'Full link', optics: 'SFP light', down: 'Link down', flap: 'Flapping', latency: 'Latency', loss: 'Loss', cpu: 'CPU', memory: 'Memory', temp: 'Temperature' };
+function ago(t) { if (!t) return '-'; const s = Math.max(0, Date.now() / 1000 - t); return s < 90 ? 'just now' : s < 5400 ? Math.round(s / 60) + ' min ago' : s < 172800 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' days ago'; }
+PAGES.health = async c => {
+  const h = await api('/api/health'); const f = h.findings || [], st = h.status || {}, lat = h.latency || [];
+  const cr = f.filter(x => x.severity === 'critical').length, slow = f.filter(x => x.slow).length;
+  const t = (l, v, s, col) => `<div class="tile"><div class="l">${l}</div><div class="v" ${col ? `style="color:var(${col})"` : ''}>${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`;
+  const notes = [h.note, st.error, /^unavailable/.test(st.ping || '') ? 'Latency checks: ' + st.ping.replace(/^unavailable: /, '') + '. The server needs to be allowed to ping (Docker sets this by default).' : ''].filter(Boolean);
+  c.innerHTML = head('Health check', `checks every ${Math.round((h.interval || 300) / 60)} minutes and learns each link's normal levels`, `<button class="btn" id="hRun">Check now</button>`) +
+    notes.map(n => `<div class="banner">${esc(n)}</div>`).join('') +
+    `<div class="tiles">${t('Critical', cr, 'needs action now', cr ? '--bad' : '--ok')}${t('Warnings', f.length - cr, 'worth a look', f.length - cr ? '--warn' : '--ok')}
+    ${t('Slowing customers', slow, 'errors, drops, full links, latency', slow ? '--bad' : '--ok')}
+    ${t('Checked', `${st.interfaces ?? 0} links`, `${st.optics ?? 0} SFPs · ${st.targets ?? 0} ping targets · ${st.time ? ago(st.time) : 'not yet'}`)}</div>
+    <div class="card"><h3>Problems found</h3>${st.time || st.demo ? '' : `<p class="muted">The first check runs within 5 minutes of the server starting. "Unusual" levels need about ${h.learn_hours || 2} hours of history first; fixed limits (errors, full links, SFP alarm levels) apply straight away.</p>`}<div id="hF"></div></div>
+    <div class="card"><h3>Latency and loss <span class="muted" style="font-weight:400;font-size:12px">pinged from this server</span><span class="sp"></span><button class="btn sm" id="hTg">Ping targets…</button></h3><div id="hL"></div></div>`;
+  table($('#hF'), [{ t: 'Severity', k: 'severity', f: x => `<span class="pill ${x.severity === 'critical' ? 'p-bad' : 'p-warn'}">${esc(x.severity)}</span>` },
+    { t: 'Problem', k: 'title', cls: 'wrap', f: x => `<b>${esc(x.title)}</b> <span class="faint">${esc(HK[x.kind] || '')}</span>${x.slow ? ' <span class="pill p-bad" title="likely to make customers slow">slows customers</span>' : ''}<div class="muted">${esc(x.detail)}</div>` },
+    { t: 'Where', k: 'target', f: x => `<b>${esc(x.target)}</b>` }, { t: 'Customer / description', k: 'description' },
+    { t: 'Since', k: 'since', f: x => ago(x.since) }, { t: 'What to do', sort: false, cls: 'wrap muted', f: x => esc(x.advice) },
+    { t: '', sort: false, cls: 'acts', f: x => /\//.test(x.target) ? `<button class="btn sm" onclick='showGraphs(${attr(x.target)})'>Graph</button>` : '' }],
+    f, { empty: st.time || st.demo ? 'No problems found. Everything is within its normal levels.' : 'Waiting for the first check.', onRow: x => /\//.test(x.target) && interfaceDrawer(x.target) });
+  table($('#hL'), [{ t: 'Address', k: 'ip', cls: 'mono', f: x => `<b>${esc(x.ip)}</b>` }, { t: 'Name', k: 'label' },
+    { t: 'Average', k: 'avg', num: true, f: x => x.error ? `<span class="faint">${esc(x.error)}</span>` : x.avg == null ? '<span class="faint">no reply</span>' : x.avg.toFixed(1) + ' ms' },
+    { t: 'Normal', k: 'normal', num: true, f: x => x.normal == null ? '<span class="faint">learning</span>' : x.normal.toFixed(1) + ' ms' },
+    { t: 'Min / max', sort: false, num: true, f: x => x.min == null ? '' : `${x.min.toFixed(1)} / ${x.max.toFixed(1)} ms` },
+    { t: 'Loss', k: 'loss', num: true, f: x => x.loss == null ? '' : `<span style="color:var(${x.loss >= 20 ? '--bad' : x.loss ? '--warn' : '--ok'})">${x.loss}%</span>` }],
+    lat, { empty: 'Nothing pinged yet. Add your customers\' CPEs with Ping targets.' });
+  $('#hRun').onclick = async () => { await post('/api/health/run'); toast('Checking now; results in about a minute.'); setTimeout(() => current === 'health' && refresh(), 45000); };
+  $('#hTg').onclick = () => healthTargets(h.targets || []);
+  every(60000, async () => { if ($('#modalBg').classList.contains('hidden')) refresh(); });
+};
+async function healthTargets(cur) {
+  const m = $('#modal');
+  m.innerHTML = `<h2>Ping targets</h2><p class="muted">This server pings each address 5 times every 5 minutes, learns its normal latency and warns when it rises or packets are lost. The router's own address is always included. One per line: address, then a name.</p>
+    <div class="form"><label>Addresses</label><textarea id="hTx" rows="12" class="mono" placeholder="102.216.117.26 DONNET">${esc(cur.map(x => `${x.ip} ${x.label}`).join('\n'))}</textarea></div>
+    <div class="err"></div><div class="actions"><button class="btn" data-a="arp" title="every client the router sees (ARP) behind an interface with a description">Add customers' CPEs</button><span class="sp"></span><button class="btn" data-a="c">Cancel</button><button class="btn primary" data-a="s">Save</button></div>`;
+  $('#modalBg').classList.remove('hidden');
+  m.querySelector('.actions').onclick = async e => {
+    const a = e.target.dataset.a; if (!a) return;
+    if (a === 'c') return closeModal();
+    if (a === 'arp') {
+      ifCache = await api('/api/view/interfaces'); arpCache.at = 0; await arpLoad();
+      const have = new Set($('#hTx').value.split('\n').map(l => l.trim().split(/\s+/)[0]).filter(Boolean)), add = [];
+      for (const r of ifCache) if (r.description && r.ip) for (const n of clientsOf(r)) if (!/no answer/.test(n.mac) && !have.has(n.ip)) { have.add(n.ip); add.push(`${n.ip} ${r.description}`); }
+      $('#hTx').value = ($('#hTx').value.trim() ? $('#hTx').value.trim() + '\n' : '') + add.join('\n');
+      return toast(add.length ? `Added ${add.length} CPE address${add.length > 1 ? 'es' : ''}.` : 'No new CPE addresses found in ARP.');
+    }
+    const rows = $('#hTx').value.split('\n').map(l => l.trim()).filter(Boolean).map(l => { const [ip, ...rest] = l.split(/\s+/); return { ip, label: rest.join(' ') }; });
+    try { await post('/api/health/targets', { targets: rows }); closeModal(); toast(`Saved ${rows.length} ping target${rows.length === 1 ? '' : 's'}; checking now.`); post('/api/health/run').catch(() => {}); refresh(); }
+    catch (err) { m.querySelector('.err').textContent = err.message; }
+  };
+}
 
 PAGES.resources = async c => {
   const r = await api('/api/resources');

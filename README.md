@@ -58,6 +58,16 @@ The router counts traffic per interface only, so the primary and "sub" addresses
 
 **Router setup** on that page builds the NetStream lines (1-in-1000 sampling, inbound on each interface so a flow is counted once, NetFlow v9, 1-minute export) for you to review; press **Check only** first. Only routers saved under Manager > Routers with an SNMP login are accepted; other senders are dropped. Settings: `NE8000_NETFLOW_PORT` (2055, 0 = off), `NE8000_NETFLOW_SAMPLING` (1000, used when the router does not report its sampling rate).
 
+### Health check
+
+Every 5 minutes, for each saved router with an SNMP login, the manager looks for what makes customers
+slow and learns each link's normal levels (about a day of memory; "unusual" needs 2 hours of history):
+input errors (CRC), drops in and out, links over 90% full, SFP light outside or near the module's alarm
+levels or falling from its normal, links down or flapping, router CPU/memory/temperature, and latency and
+loss to the router and to addresses you list (Health check > Ping targets; "Add customers' CPEs" fills them
+from ARP). Pings are sent from the manager's server without root, through an ICMP datagram socket, which
+Docker allows by default (`net.ipv4.ping_group_range`). Turn it off with `NE8000_HEALTH=0`.
+
 ## Requirements on the router
 SSH must be enabled for a user with level 3 rights, for example:
 ```
@@ -154,5 +164,6 @@ Follow the steps at the top of `deploy/ne8000.service`: copy the app to `/opt/ne
 - `billing.py`: Splynx billing sync
 - `plans.py`: network plans, versions and execution
 - `netflow.py`: NetFlow v5/v9/IPFIX collector for traffic per address
+- `health.py`: smart health check (errors, drops, full links, SFP light, flaps, latency and loss, CPU/memory/heat)
 - `templates/`, `static/`: the browser UI
 - `Dockerfile`, `docker-compose.yml`, `.env.example`, `deploy/`: hosting (Caddy, nginx, systemd)
