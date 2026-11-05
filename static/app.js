@@ -937,10 +937,12 @@ PAGES.ping = async c => {
   c.innerHTML = head('Ping / Traceroute') + `<div class="card"><div class="form" style="max-width:640px">
     <label>Target</label><input id="pT" placeholder="8.8.8.8"><label>Tool</label><select id="pK"><option value="ping">Ping</option><option value="tracert">Traceroute</option></select>
     <label>Count</label><input id="pC" type="number" value="5"><label>Packet size</label><input id="pS" type="number" placeholder="56">
+    <label>Max hops (traceroute)</label><input id="pM" type="number" value="15"><label>Probes per hop (traceroute)</label><input id="pQ" type="number" value="1">
     <label>Source address</label><input id="pA" placeholder="optional"><label>VPN instance</label><input id="pV" placeholder="optional"></div>
     <div class="bar" style="margin-top:12px"><button class="btn primary" id="pGo">Start</button><span class="muted mono" id="pCmd"></span></div><pre id="pOut" class="hidden"></pre></div>`;
   const build = () => { const k = $('#pK').value, t = $('#pT').value.trim(); let cmd = k;
     if (k === 'ping') { if ($('#pC').value) cmd += ' -c ' + (+$('#pC').value); if ($('#pS').value) cmd += ' -s ' + (+$('#pS').value); }
+    else { if ($('#pQ').value) cmd += ' -q ' + (+$('#pQ').value); if ($('#pM').value) cmd += ' -m ' + (+$('#pM').value); }   // keeps a silent path inside the time limit
     if ($('#pA').value.trim()) cmd += ' -a ' + $('#pA').value.trim(); if ($('#pV').value.trim()) cmd += ' -vpn-instance ' + $('#pV').value.trim();
     return cmd + ' ' + t; };
   c.querySelectorAll('input,select').forEach(e => e.oninput = () => $('#pCmd').textContent = build());

@@ -408,7 +408,26 @@ class RealRouter(Router):
             self.start_poller()
 
     def _run(self, command, read_timeout):
-        return self.conn.send_command(command, read_timeout=read_timeout)
+        try:
+            return self.conn.send_command(command, read_timeout=read_timeout)
+        except Exception:
+            if command.split()[0] in ("ping", "tracert"):
+                # still running on the router: stop it (Ctrl-C) so the session takes the next command
+                self._interrupt()
+                raise DeviceError(f"{command.split()[0]} did not finish within {read_timeout} s and was stopped. "
+                                  "For a target that does not answer, lower the count, or the max hops / probes for traceroute.")
+            raise
+
+    def _interrupt(self):
+        try:
+            self.conn.write_channel("\x03")
+            self.conn.read_until_prompt(read_timeout=15)
+        except Exception:
+            pass
+        try:
+            self.conn.clear_buffer()
+        except Exception:
+            pass
 
     def _configure(self, lines, commit):
         out = self.conn.send_config_set(lines, exit_config_mode=False, read_timeout=90, cmd_verify=False)
