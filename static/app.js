@@ -12,10 +12,11 @@ async function api(path, opts = {}, retried = false) {
   if (!res.ok) { const err = new Error(data.error || res.statusText); err.data = data; throw err; }
   return data;
 }
-let sshAsk = null;
+let sshAsk = null, sshCancel = null;
 function sshLogin(why) {
   if (sshAsk) return sshAsk;   // several requests at once share one prompt
   sshAsk = new Promise(done => {
+    sshCancel = () => { sshAsk = null; sshCancel = null; done(false); };   // closed by Esc or a click outside: same as Not now
     let last = ''; try { last = localStorage.getItem('ne8000.router') || ''; } catch (e) {}
     const m = $('#modal'), r = (ROUTER_LIST || []).find(x => x.id === last);
     m.innerHTML = `<h2>SSH login needed</h2><p class="muted">${esc(why || 'This needs the router command line.')} Monitoring keeps working over SNMP without it.</p>
@@ -23,7 +24,7 @@ function sshLogin(why) {
       <label>Password</label><input id="sshP" type="password" autocomplete="current-password"></div>
       <div class="err"></div><div class="actions"><button class="btn" data-a="c">Not now</button><button class="btn primary" data-a="s">Sign in</button></div>`;
     $('#modalBg').classList.remove('hidden'); ($('#sshU').value ? $('#sshP') : $('#sshU')).focus();
-    const finish = ok => { closeModal(); sshAsk = null; done(ok); };
+    const finish = ok => { sshCancel = null; closeModal(); sshAsk = null; done(ok); };
     const submit = async () => {
       try { const x = await post('/api/connect/ssh', { username: $('#sshU').value, password: $('#sshP').value }); VIA = x.via; topbar().catch(() => {}); toast('SSH connected'); finish(true); }
       catch (e) { m.querySelector('.err').textContent = e.message; }
@@ -80,7 +81,7 @@ function table(host, cols, rows, opts = {}) {
 }
 
 /* ---------- change flow: form -> preview CLI -> commit / check ---------- */
-function closeModal() { $('#modalBg').classList.add('hidden'); $('#modal').innerHTML = ''; }
+function closeModal() { $('#modalBg').classList.add('hidden'); $('#modal').innerHTML = ''; if (sshCancel) sshCancel(); }
 $('#modalBg').addEventListener('mousedown', e => { if (e.target.id === 'modalBg') closeModal(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeDrawer(); } });
 
@@ -947,7 +948,8 @@ PAGES.ping = async c => {
     return cmd + ' ' + t; };
   c.querySelectorAll('input,select').forEach(e => e.oninput = () => $('#pCmd').textContent = build());
   $('#pT').onkeydown = e => { if (e.key === 'Enter') $('#pGo').click(); };
-  $('#pGo').onclick = async () => { if (!$('#pT').value.trim()) return; const o = $('#pOut'); o.classList.remove('hidden'); o.textContent = 'Running ' + build() + ' …';
+  $('#pGo').onclick = async () => { const o = $('#pOut');
+    if (!$('#pT').value.trim()) { o.classList.remove('hidden'); o.textContent = 'Type a target address or name first, e.g. 8.8.8.8.'; $('#pT').focus(); return; } o.classList.remove('hidden'); o.textContent = 'Running ' + build() + ' …';
     try { o.textContent = (await post('/api/cli', { command: build() })).output; } catch (e) { o.textContent = 'Error: ' + e.message; } };
 };
 
