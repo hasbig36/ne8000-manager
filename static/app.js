@@ -166,6 +166,7 @@ $('#side').innerHTML = NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>
 $('#side').onclick = e => { const a = e.target.closest('a[data-p]'); if (a) { location.hash = a.dataset.p; $('#side').classList.remove('open'); } };
 $('#menuBtn').onclick = () => $('#side').classList.toggle('open');
 
+let MODEL = '';
 let timers = [], charts = [], current = null, DEMO = false, VIA = '', ME = null, AUTH = {}, ROUTER_LIST = [];
 function every(ms, fn) { timers.push(setInterval(() => { if (!document.hidden) fn().catch(e => console.warn(e)); }, ms)); }
 function cleanup() { timers.forEach(clearInterval); timers = []; charts.forEach(c => c.destroy()); charts = []; }
@@ -193,6 +194,7 @@ const legend = items => `<div class="legend">${items.map(([n, c, v]) => `<span><
 /* ---------- top bar ---------- */
 async function topbar() {
   const o = await api('/api/view/overview');
+  MODEL = o.model || MODEL;
   $('#tName').textContent = o.sysname; $('#tHost').textContent = o.host + (o.via ? ' · ' + o.via : ''); $('#tCpu').textContent = Fmt.pct(o.cpu);
   $('#tMem').textContent = Fmt.pct(o.memory.percent); $('#tUp').textContent = (o.uptime || '').replace(/ minutes?/, 'm').replace(/ hours?,/, 'h').replace(/ days?,/, 'd');
   document.title = `${o.sysname} · NE8000 Manager`;
@@ -227,7 +229,8 @@ PAGES.dashboard = async c => {
   tops();
   const hl = async () => { const h = await api('/api/health'), f = h.findings || [], cr = f.filter(x => x.severity === 'critical').length, el = $('#dHealth'); if (!el) return;
     el.innerHTML = `<div class="l">Health check</div><div class="v" style="color:${cr ? 'var(--bad)' : f.length ? 'var(--warn)' : 'var(--ok)'}">${f.length ? f.length + ' problem' + (f.length > 1 ? 's' : '') : 'All good'}</div><div class="s">${f.length ? `${cr} critical · ${f.filter(x => x.slow).length} slowing customers` : h.status && h.status.time ? 'nothing wrong found' : 'first check in a few minutes'}</div>`; };
-  const pv = async () => { const rows = await api('/api/view/interfaces'); ifCache = rows; await arpLoad(); portPanel($('#dPorts'), withClients(rows)); };
+  let hw = null;
+  const pv = async () => { const rows = await api('/api/view/interfaces'); ifCache = rows; await arpLoad(); if (!hw) hw = await api('/api/view/hardware').catch(() => ({})); portPanel($('#dPorts'), withClients(rows), { hw }); };
   pv().catch(e => { const el = $('#dPorts'); if (el) el.innerHTML = `<span class="muted">${esc(e.message)}</span>`; });
   every(15000, pv);
   hl().catch(() => { const el = $('#dHealth'); if (el) el.remove(); });
@@ -324,6 +327,40 @@ function portTip(r) {
     r.ip ? 'IP ' + r.ip + ((r.secondary || []).length ? ` +${r.secondary.length}` : '') : '', r.vlan ? 'VLAN ' + r.vlan : '',
     n.length ? 'Client ' + n[0].ip + ' ' + macColon(n[0].mac) : '', r.in_errors + r.out_errors ? `Errors ${r.in_errors}/${r.out_errors}` : ''].filter(Boolean).join('\n');
 }
+/* ----- the router drawn as its front panel: every slot by number, the boards the router reports, and each port in its cage ----- */
+const BOARD_KIND = t => /IPU|MPU|SRU|MMB/i.test(t) ? 'ipu' : /PWR|POWER|PAC|PDC/i.test(t) ? 'pwr' : /FAN/i.test(t) ? 'fan' : /CLK|CLOCK/i.test(t) ? 'clk' : 'pic';
+function chassisHtml(rows, hw) {
+  const boards = (hw && hw.boards) || [], optics = (hw && hw.optics) || {};
+  const phys = rows.filter(r => ['ethernet', 'management'].includes(r.type) && !r.name.includes('.'));
+  const pos = r => { const m = /(\d+)\/(\d+)\/(\d+)$/.exec(r.name); return m ? { slot: +m[2], port: +m[3], sub: +m[1] } : null; };
+  const by = k => boards.filter(b => BOARD_KIND(b.type) === k);
+  const portSlots = [...new Set(phys.map(pos).filter(x => x && x.slot > 0).map(x => x.slot))];
+  const m8 = /M8\b/i.test(MODEL);
+  let pics = m8 ? [1, 2, 3, 4, 5, 6, 7, 8] : [...new Set([...by('pic').map(b => +b.slot), ...portSlots])].filter(n => n > 0).sort((a, b) => a - b);
+  if (!pics.length && !portSlots.length) return '';
+  pics = [...new Set([...pics, ...portSlots])].sort((a, b) => a - b);
+  const subsN = p => rows.filter(r => r.name.startsWith(p.name + '.')).length;
+  const led = st => `<i class="cled ${st}"></i>`;
+  const bstate = b => !b ? 'off' : /absent/i.test(b.online) ? 'off' : /abnormal|fault|fail/i.test(b.status) ? 'bad' : 'ok';
+  const cage = p => { const s = portState(p), o = optics[p.name] || {}, x = pos(p), mod = /(LR4|SR4|ER4|ZR4|CWDM4|PSM4|LR|SR|ER|ZR|LX|SX|AOC|DAC)/i.exec(o.part || '');
+    return `<button class="cage ps-${s}" data-p="${esc(p.name)}" title="${esc(portTip(p) + (o.part ? `\nOptic ${[o.vendor, o.part].filter(Boolean).join(' ')}` : '') + (o.rx_dbm != null ? `\nRx ${o.rx_dbm} dBm · Tx ${o.tx_dbm} dBm` : '') + (subsN(p) ? `\n${subsN(p)} sub-interfaces` : ''))}">
+      <span class="cport">${x.port}</span><span class="chole"><span class="cfill"></span></span><span class="cmod">${esc(mod ? mod[1].toUpperCase() : portSpeed(p))}</span>${p.in_errors + p.out_errors ? '<span class="pe"></span>' : ''}</button>`; };
+  const portsIn = slot => phys.filter(r => { const x = pos(r); return x && x.slot === slot; }).sort((a, b) => pos(a).port - pos(b).port);
+  const pic = n => { const b = boards.find(x => +x.slot === n && BOARD_KIND(x.type) === 'pic'), ps = portsIn(n);
+    if (!b && !ps.length) return `<div class="cslot cempty"><span class="cnum">${n}</span><span class="clab">empty</span></div>`;
+    return `<div class="cslot"><span class="cnum">${n}</span>${led(bstate(b || { online: 'Present' }))}<span class="clab">${esc(b ? b.type : 'PIC')}${ps.length ? ` · ${ps.length} × ${esc(portSpeed(ps[0]))}` : ''}</span><div class="cages">${ps.map(cage).join('')}</div></div>`; };
+  const mgmt = phys.filter(r => { const x = pos(r); return x && x.slot === 0; });
+  const ipus = by('ipu').length ? by('ipu') : (m8 ? [{ slot: '9', type: 'IPU' }, { slot: '10', type: 'IPU' }] : []);
+  const ipu = (b, i) => `<div class="cslot cipu"><span class="cnum">${esc(b.slot)}</span>${led(bstate(b))}<span class="clab">${esc(b.type)}${b.role && b.role !== 'NA' ? ' · ' + esc(b.role) : ''}</span>${i === 0 && mgmt.length ? `<div class="cages">${mgmt.map(cage).join('')}<span class="faint" style="font-size:10px;align-self:center">MGMT</span></div>` : ''}</div>`;
+  const small = k => by(k).map(b => `<div class="cmini" title="${esc(`${b.type} slot ${b.slot}: ${b.online || ''} ${b.status || ''}`)}">${led(bstate(b))}<b>${esc(k.toUpperCase())} ${esc(b.slot)}</b>${b.type.toUpperCase() !== k.toUpperCase() ? `<span>${esc(b.type)}</span>` : ''}</div>`).join('');
+  const half = Math.ceil(pics.length / 2);
+  return `<div class="chassis"><div class="cear"><i></i><i></i></div><div class="cbody">
+    <div class="ctop"><b>${esc(MODEL || 'Router')}</b><span>front panel, laid out by slot number</span></div>
+    <div class="cpics">${pics.map(pic).join('')}</div>
+    ${ipus.length ? `<div class="cipus">${ipus.map(ipu).join('')}</div>` : ''}
+    ${by('pwr').length + by('fan').length + by('clk').length ? `<div class="cminis">${small('pwr')}${small('fan')}${small('clk')}</div>` : ''}
+  </div><div class="cear"><i></i><i></i></div></div>`;
+}
 /* opts.onPort(name): what a click on a physical port does (default: open its drawer) */
 function portPanel(host, rows, opts = {}) {
   if (!host) return;
@@ -346,10 +383,10 @@ function portPanel(host, rows, opts = {}) {
   const count = k => k === 'all' ? '' : ` ${rows.filter(r => r.name.includes('.') && phys.some(p => r.name.startsWith(p.name + '.'))).filter(r => { const o = st.chip; st.chip = k; const y = keep(r); st.chip = o; return y; }).length}`;
   host.innerHTML = `<div class="bar"><div class="seg pchips">${PORT_CHIPS.map(([k, l]) => `<button data-c="${k}" class="${st.chip === k ? 'on' : ''}">${l}${count(k)}</button>`).join('')}</div><span class="sp"></span>
     <div class="legend plegend"><span><i class="ps-up"></i>Up</span><span><i class="ps-half"></i>Protocol down</span><span><i class="ps-down"></i>Down</span><span><i class="ps-off"></i>Disabled</span><span><i class="pe"></i>Errors</span><span>bar = traffic</span></div></div>
-    <div class="pfplate">${phys.map(face).join('') || '<span class="muted">No physical ports found.</span>'}</div>
+    ${(opts.hw && chassisHtml(rows, opts.hw)) || `<div class="pfplate">${phys.map(face).join('') || '<span class="muted">No physical ports found.</span>'}</div>`}
     <div class="pports">${phys.filter(p => subsOf(p).length).map(port).join('')}</div>`;
   host.querySelector('.pchips').onclick = e => { const b = e.target.closest('[data-c]'); if (b) { st.chip = b.dataset.c; portPanel(host, rows, opts); } };
-  host.onclick = e => { const t = e.target.closest('.pports [data-n],.pports [data-p],.pfplate [data-p]'); if (!t) return;
+  host.onclick = e => { const t = e.target.closest('.pports [data-n],.pports [data-p],.pfplate [data-p],.chassis [data-p]'); if (!t) return;
     if (t.dataset.n) interfaceDrawer(t.dataset.n); else (opts.onPort || interfaceDrawer)(t.dataset.p); };
 }
 
@@ -375,7 +412,8 @@ PAGES.interfaces = async c => {
     { t: 'Errors', k: 'in_errors', num: true, f: r => r.in_errors + r.out_errors ? `<span style="color:var(--bad)">${r.in_errors}/${r.out_errors}</span>` : '0' },
     { t: '', sort: false, cls: 'acts', f: r => r.type === 'null' ? '' : (r.admin_down ? `<button class="btn sm" onclick='ifToggle(${attr(r.name)},true)'>Enable</button>` : `<button class="btn sm" onclick='ifToggle(${attr(r.name)},false)'>Disable</button>`) + `<button class="btn sm" onclick='ifEdit(${attr(r.name)})'>Edit</button>` },
   ], withClients(rows).filter(pick), { onRow: r => interfaceDrawer(r.name), rowClass: r => r.admin_down ? 'off' : '' });
-  const ports = rows => portPanel($('#ifPorts'), rows, { onPort: name => { const t = $('#ifTable'); t._t.q = name; draw(ifCache); t.scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
+  let hw = null; api('/api/view/hardware').then(h => { hw = h; ports(ifCache); }).catch(() => {});
+  const ports = rows => portPanel($('#ifPorts'), rows, { hw, onPort: name => { const t = $('#ifTable'); t._t.q = name; draw(ifCache); t.scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
   draw(rows); ports(rows);
   every(10000, async () => { if (!$('#modalBg').classList.contains('hidden')) return; ifCache = await api('/api/view/interfaces'); await arpLoad(); draw(ifCache); ports(ifCache); });
 };

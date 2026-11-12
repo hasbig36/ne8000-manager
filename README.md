@@ -64,7 +64,9 @@ The dashboard and the Interfaces page show the router's ports as tiles. A front 
 by state (green up, amber link up but protocol down, red down, grey disabled), with its speed, description and a traffic bar.
 Each port that has sub-interfaces gets its own row of tiles, one per sub-interface (customer VLAN). The filters (Up, Down,
 Busy 65%+, Errors) narrow the sub-interface tiles. Hover over a tile for its IP, VLAN, client MAC and traffic, and click it
-for the live drawer. On the Interfaces page, clicking a port lists it with its sub-interfaces in the table below.
+for the live drawer. When the router reports its boards, the front panel is drawn as the chassis: every slot by number
+(empty slots shown blank), each board with a status light, ports in their cages with the optic type, and the power, fan
+and clock boards along the bottom. On the Interfaces page, clicking a port lists it with its sub-interfaces in the table below.
 
 ### Health check
 
