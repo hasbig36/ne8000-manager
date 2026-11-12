@@ -1,0 +1,44 @@
+name: Huawei Device Setup (laptop tool)
+
+on:
+  push:
+    paths: ["setup-tool/**", "adopt.py", "actions.py", ".github/workflows/setup-tool.yml"]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r setup-tool/requirements.txt
+      - run: python -m unittest discover -s setup-tool/tests -v
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: windows-latest, name: HuaweiDeviceSetup-Windows}
+          - {os: macos-latest, name: HuaweiDeviceSetup-macOS-AppleSilicon}
+          - {os: macos-13, name: HuaweiDeviceSetup-macOS-Intel}
+    runs-on: ${{ matrix.os }}
+    defaults: {run: {working-directory: setup-tool}}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt pyinstaller
+      - run: pyinstaller --noconfirm huawei-setup.spec
+      - name: Zip (macOS keeps the .app and the plain binary)
+        if: runner.os == 'macOS'
+        run: cd dist && ditto -c -k --keepParent HuaweiDeviceSetup.app ../${{ matrix.name }}.zip
+      - name: Zip (Windows)
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path dist/HuaweiDeviceSetup.exe -DestinationPath ${{ matrix.name }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: setup-tool/${{ matrix.name }}.zip
