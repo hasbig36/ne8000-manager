@@ -4,6 +4,7 @@ Run it and it opens a page in the browser (http://127.0.0.1:<port>). Everything 
 laptop; nothing is sent anywhere else and no password is written to disk. Close the browser
 tab or press Quit to stop it.
 """
+import atexit
 import json
 import re
 import os
@@ -23,6 +24,7 @@ sys.path.insert(1, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."
 import adopt          # noqa: E402
 import configure      # noqa: E402
 import discover       # noqa: E402
+import laptopnet      # noqa: E402
 import session        # noqa: E402
 
 VERSION = "1.0.0"
@@ -31,6 +33,9 @@ JOBS = {}
 SECRET_RE = re.compile(r"(password irreversible-cipher|cipher)\s+\S+")
 LAST_SEEN = [time.time()]
 IDLE_EXIT = 15 * 60       # stop when no page has been open for this long
+
+FACTORY_NETS = [{"network": "192.168.1.0/24", "label": "192.168.1.x (S switches 192.168.1.253, AR 192.168.1.1)"},
+                {"network": "192.168.0.0/24", "label": "192.168.0.x"}]
 
 FACTORY_LOGINS = [
     {"models": "S-series switches (V200R010 and later)", "username": "admin", "password": "admin@huawei.com"},
@@ -53,7 +58,7 @@ class Job:
         except session.SessionError as exc:
             self.error = {"reason": exc.reason, "hint": exc.hint, "stage": exc.stage,
                           "need_new_password": isinstance(exc, session.NeedNewPassword)}
-        except (adopt.AdoptError, ValueError) as exc:
+        except (adopt.AdoptError, ValueError, laptopnet.NetError) as exc:
             self.error = {"reason": str(exc), "hint": "", "stage": "input"}
         except Exception as exc:
             traceback.print_exc()
@@ -145,6 +150,17 @@ def job_finish(job, host, username, password):
     return configure.finish_at(session.valid_host(host), username, password, job.log)
 
 
+def job_join(job, adapter, network):
+    r = laptopnet.join(adapter, network)
+    job.log(f"{adapter} now also has {r['address']}")
+    time.sleep(3)            # let the port settle before searching
+    return r
+
+
+def job_restore(job, adapter):
+    return {"restored": laptopnet.restore(adapter)}
+
+
 # ---- http ----------------------------------------------------------------------------
 class Handler(BaseHTTPRequestHandler):
     server_version = "HuaweiSetup"
@@ -178,7 +194,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/info":
             return self._send(200, {"networks": discover.local_networks(), "factory": discover.FACTORY,
                                     "logins": FACTORY_LOGINS, "serial_ports": session.list_serial_ports(),
-                                    "platforms": adopt.PLATFORMS, "version": VERSION})
+                                    "platforms": adopt.PLATFORMS, "version": VERSION, "adapters": laptopnet.adapters(),
+                                    "factory_nets": FACTORY_NETS})
         if path == "/api/job":
             q = dict(p.split("=", 1) for p in self.path.split("?", 1)[-1].split("&") if "=" in p)
             j = JOBS.get(q.get("id", ""))
@@ -215,11 +232,16 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"job": start(job_apply, t, d.get("fields") or {}, d.get("text") or "").id})
             if path == "/api/finish":
                 return self._send(200, {"job": start(job_finish, d.get("host"), d.get("username"), d.get("password")).id})
+            if path == "/api/net/join":
+                return self._send(200, {"job": start(job_join, d.get("adapter") or "", d.get("network") or "").id})
+            if path == "/api/net/restore":
+                return self._send(200, {"job": start(job_restore, d.get("adapter") or "").id})
             if path == "/api/quit":
+                laptopnet.restore_all()
                 self._send(200, {"ok": True})
                 threading.Timer(0.3, lambda: os._exit(0)).start()
                 return
-        except (adopt.AdoptError, ValueError) as exc:
+        except (adopt.AdoptError, ValueError, laptopnet.NetError) as exc:
             return self._send(400, {"error": str(exc)})
         return self._send(404, {"error": "not found"})
 
@@ -228,6 +250,7 @@ def watchdog():
     while True:
         time.sleep(30)
         if time.time() - LAST_SEEN[0] > IDLE_EXIT and not any(not j.done for j in JOBS.values()):
+            laptopnet.restore_all()
             os._exit(0)
 
 
@@ -237,6 +260,7 @@ def main():
     url = f"http://127.0.0.1:{srv.server_address[1]}/"
     print(f"Huawei Device Setup {VERSION} is running at {url}\nClose this window (or press Quit on the page) to stop it.", flush=True)
     threading.Thread(target=watchdog, daemon=True).start()
+    atexit.register(laptopnet.restore_all)
     if not os.environ.get("HUAWEI_SETUP_NO_BROWSER"):
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
     try:

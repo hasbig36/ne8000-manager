@@ -23,7 +23,6 @@ jobs:
         include:
           - {os: windows-latest, name: HuaweiDeviceSetup-Windows}
           - {os: macos-latest, name: HuaweiDeviceSetup-macOS-AppleSilicon}
-          - {os: macos-13, name: HuaweiDeviceSetup-macOS-Intel}
     runs-on: ${{ matrix.os }}
     defaults: {run: {working-directory: setup-tool}}
     steps:

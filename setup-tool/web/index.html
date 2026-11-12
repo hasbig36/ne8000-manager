@@ -58,6 +58,17 @@ details summary{cursor:pointer;color:var(--muted);font-weight:600;margin-top:8px
 <section id="s1">
   <h2>1. Find the device</h2>
   <div class="muted" id="nets">Reading this laptop's networks…</div>
+  <div class="status" id="direct">
+    <b>Device plugged straight into this laptop?</b>
+    <div class="muted">A new device waits at a factory address. This puts the laptop's wired port in that network too (Windows or macOS asks for your administrator password), then searches. The port is put back when you press "Put the laptop back" or Quit.</div>
+    <div class="row" style="margin-top:8px">
+      <label>Laptop port <select id="adapter"></select></label>
+      <label>Factory network <select id="fnet"></select></label>
+      <button class="primary" id="join">Join that network and search</button>
+      <button id="unjoin" class="hidden">Put the laptop back</button>
+      <span id="joinmsg" class="muted"></span>
+    </div>
+  </div>
   <div class="row" style="margin-top:10px">
     <label>Also scan (optional) <input id="extra" placeholder="e.g. 10.10.0.0/24" size="22"></label>
     <button class="primary" id="scan">Search the network</button>
@@ -182,6 +193,8 @@ async function init(){
   $("logins").innerHTML = "<table><tr><th>Models</th><th>Username</th><th>Password</th></tr>" + i.logins.map(l => `<tr><td>${esc(l.models)}</td><td><code>${esc(l.username)}</code></td><td><code>${esc(l.password)}</code></td></tr>`).join("") +
     "</table><p>Check the label on the device or its quick start guide if these do not work. A new device usually makes you change the password at first login; this tool handles that.</p>";
   $("serial").innerHTML = i.serial_ports.length ? i.serial_ports.map(p => `<option value="${esc(p.device)}">${esc(p.device)} ${esc(p.description)}</option>`).join("") : `<option value="">no console cable found</option>`;
+  $("adapter").innerHTML = i.adapters.length ? i.adapters.map(a => `<option value="${esc(a.id)}">${esc(a.label)}${a.addresses.length ? " (" + esc(a.addresses.join(", ")) + ")" : " (no address)"}</option>`).join("") : `<option value="">no wired port found</option>`;
+  $("fnet").innerHTML = i.factory_nets.map(n => `<option value="${esc(n.network)}">${esc(n.label)}</option>`).join("");
   $("f_platform").innerHTML = Object.entries(i.platforms).map(([k,v]) => `<option value="${k}">${esc(v)}</option>`).join("");
 }
 
@@ -192,7 +205,7 @@ $("scan").onclick = async () => {
     $("scanprog").textContent = `${r.scanned} addresses searched`;
     const notes = r.notes.map(n => `<div class="warn">${esc(n)}</div>`).join("");
     if (!r.devices.length){
-      $("found").innerHTML = notes + `<div class="status bad"><b>No device answered on SSH or Telnet.</b><div class="muted">Check the cable and the link light. A brand-new device may only answer on its management port at a factory address: give the laptop a fixed address in that network (for 192.168.1.253 use 192.168.1.10 / 255.255.255.0) and search again. Or connect the console cable and pick "Console cable" below.</div></div>`;
+      $("found").innerHTML = notes + `<div class="status bad"><b>No device answered on SSH or Telnet.</b><div class="muted">Check the cable and the link light. A brand-new device may only answer at its factory address: use "Join that network and search" above, or try the other factory network. Many routers (NE8000) have no factory address at all: connect the console cable and pick "Console cable" below.</div></div>`;
     } else {
       $("found").innerHTML = notes + `<table><tr><th>Address</th><th>Vendor</th><th>Open</th><th>Banner</th></tr>` + r.devices.map((d,i) =>
         `<tr class="pick" data-i="${i}"><td><b>${esc(d.host)}</b>${d.factory?`<br><span class="muted">${esc(d.factory)}</span>`:""}</td><td>${d.huawei?`<span class="badge ok">${esc(d.vendor)}</span>`:esc(d.vendor)}</td><td>${d.ssh?"SSH ":""}${d.telnet?"Telnet":""}</td><td class="muted">${esc(d.banner)}</td></tr>`).join("") +
@@ -206,6 +219,20 @@ $("scan").onclick = async () => {
     }
   }catch(e){ $("found").innerHTML = `<div class="bad">${esc(e.message)}</div>`; }
   $("scan").disabled = false;
+};
+$("join").onclick = async () => {
+  $("join").disabled = true; $("joinmsg").innerHTML = `<span class="spin"></span> Waiting for the administrator prompt…`;
+  try{
+    const r = await runJob("/api/net/join", {adapter:$("adapter").value, network:$("fnet").value});
+    $("joinmsg").innerHTML = `<span class="ok">The laptop now also has ${esc(r.address)} on ${esc(r.adapter)}.</span>`;
+    $("unjoin").classList.remove("hidden");
+    $("scan").click();
+  }catch(e){ $("joinmsg").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  $("join").disabled = false;
+};
+$("unjoin").onclick = async () => {
+  try{ await runJob("/api/net/restore", {adapter:$("adapter").value}); $("joinmsg").textContent = "The laptop port is back to normal."; $("unjoin").classList.add("hidden"); }
+  catch(e){ $("joinmsg").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
 };
 $("skip").onclick = () => { stepOn(2); $("s2").scrollIntoView({behavior:"smooth"}); $("host").focus(); };
 $("method").onchange = () => {

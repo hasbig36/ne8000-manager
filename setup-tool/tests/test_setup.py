@@ -132,6 +132,31 @@ class Apply(unittest.TestCase):
             s.close()
 
 
+class LaptopNet(unittest.TestCase):
+    def test_address_choice(self):
+        import laptopnet
+        self.assertEqual(laptopnet.laptop_address("192.168.1.0/24")[:2], ("192.168.1.10", "255.255.255.0"))
+        self.assertEqual(laptopnet.laptop_address("192.168.0.1/24")[0], "192.168.0.10")
+        with self.assertRaises(laptopnet.NetError):
+            laptopnet.laptop_address("10.0.0.0/8")
+
+    def test_mac_service_names(self):
+        import laptopnet
+        out = ("An asterisk (*) denotes that a network service is disabled.\n(1) USB 10/100/1000 LAN\n"
+               "(Hardware Port: USB 10/100/1000 LAN, Device: en5)\n\n(2) Wi-Fi\n(Hardware Port: Wi-Fi, Device: en0)\n")
+        orig = laptopnet._run
+        laptopnet._run = lambda args, timeout=60: (0, out)
+        try:
+            self.assertEqual(laptopnet.mac_services(), {"en5": "USB 10/100/1000 LAN", "en0": "Wi-Fi"})
+        finally:
+            laptopnet._run = orig
+
+    def test_rejects_unknown_adapter(self):
+        import laptopnet
+        with self.assertRaises(laptopnet.NetError):
+            laptopnet.join('eth0" & calc', "192.168.1.0/24")
+
+
 class Discover(unittest.TestCase):
     def test_targets(self):
         hosts, notes = discover.scan_targets([{"network": "10.0.0.0/16", "address": "10.0.5.9", "link_local": False}], "172.16.0.0/30")
