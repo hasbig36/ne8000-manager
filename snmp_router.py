@@ -235,7 +235,7 @@ class SnmpRouter(Router):
             rows.append({"name": name, "phy": "*down" if r["admin"] == 2 else ("up" if up else "down"),
                          "protocol": "up" if up else "down", "in_util": ui, "out_util": uo,
                          "in_errors": r["in_err"] or 0, "out_errors": r["out_err"] or 0,
-                         "admin_down": r["admin"] == 2, "type": P.interface_type(name),
+                         "admin_down": r["admin"] == 2, "type": P.interface_type(name), "speed_mbps": r["speed"] or 0,
                          "parent": name.split(".")[0] if "." in name else "", "_idx": idx, "_r": r})
         return rows
 

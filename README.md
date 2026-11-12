@@ -58,6 +58,14 @@ The router counts traffic per interface only, so the primary and "sub" addresses
 
 **Router setup** on that page builds the NetStream lines (1-in-1000 sampling, inbound on each interface so a flow is counted once, NetFlow v9, 1-minute export) for you to review; press **Check only** first. Only routers saved under Manager > Routers with an SNMP login are accepted; other senders are dropped. Settings: `NE8000_NETFLOW_PORT` (2055, 0 = off), `NE8000_NETFLOW_SAMPLING` (1000, used when the router does not report its sampling rate).
 
+### Port view
+
+The dashboard and the Interfaces page show the router's ports as tiles. A front panel shows every physical port, coloured
+by state (green up, amber link up but protocol down, red down, grey disabled), with its speed, description and a traffic bar.
+Each port that has sub-interfaces gets its own row of tiles, one per sub-interface (customer VLAN). The filters (Up, Down,
+Busy 65%+, Errors) narrow the sub-interface tiles. Hover over a tile for its IP, VLAN, client MAC and traffic, and click it
+for the live drawer. On the Interfaces page, clicking a port lists it with its sub-interfaces in the table below.
+
 ### Health check
 
 Every 5 minutes, for each saved router with an SNMP login, the manager looks for what makes customers

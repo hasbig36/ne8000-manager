@@ -212,6 +212,7 @@ PAGES.dashboard = async c => {
     ${t('BGP established', `${o.bgp.established ?? 0} / ${o.bgp.total ?? 0}`, `AS ${esc(o.bgp.local_as || '-')} · RID ${esc(o.bgp.router_id || '-')}`)}
     ${o.alarms.total == null ? t('Active alarms', '-', '<a href="#logs">sign in with SSH to read alarms</a>') : t('Active alarms', o.alarms.total, `${o.alarms.critical} major or critical`)}
     <a class="tile" href="#health" id="dHealth" style="text-decoration:none;color:inherit"><div class="l">Health check</div><div class="v">…</div></a></div>
+    <div class="card"><h3>Ports<span class="sp"></span><a href="#interfaces" class="btn sm">Interfaces</a></h3><div id="dPorts"><span class="muted">Loading…</span></div></div>
     <div class="grid g2"><div class="card"><h3>CPU <span class="sp"></span><a href="#resources" class="btn sm">Resources</a></h3><div id="cCpu"></div></div>
     <div class="card"><h3>Memory</h3><div id="cMem"></div></div></div>
     <div class="grid g2"><div class="card"><h3>Busiest interfaces<span class="sp"></span><a href="#interfaces" class="btn sm">All interfaces</a></h3><div id="dIf"></div></div>
@@ -226,6 +227,9 @@ PAGES.dashboard = async c => {
   tops();
   const hl = async () => { const h = await api('/api/health'), f = h.findings || [], cr = f.filter(x => x.severity === 'critical').length, el = $('#dHealth'); if (!el) return;
     el.innerHTML = `<div class="l">Health check</div><div class="v" style="color:${cr ? 'var(--bad)' : f.length ? 'var(--warn)' : 'var(--ok)'}">${f.length ? f.length + ' problem' + (f.length > 1 ? 's' : '') : 'All good'}</div><div class="s">${f.length ? `${cr} critical · ${f.filter(x => x.slow).length} slowing customers` : h.status && h.status.time ? 'nothing wrong found' : 'first check in a few minutes'}</div>`; };
+  const pv = async () => { const rows = await api('/api/view/interfaces'); ifCache = rows; await arpLoad(); portPanel($('#dPorts'), withClients(rows)); };
+  pv().catch(e => { const el = $('#dPorts'); if (el) el.innerHTML = `<span class="muted">${esc(e.message)}</span>`; });
+  every(15000, pv);
   hl().catch(() => { const el = $('#dHealth'); if (el) el.remove(); });
   every(60000, hl);
   every(5000, async () => draw(await api('/api/resources')));
@@ -303,6 +307,52 @@ PAGES.resources = async c => {
   draw(r); every(5000, async () => draw(await api('/api/resources')));
 };
 
+/* ----- port view: each physical port with its sub-interfaces (customer VLANs) as tiles ----- */
+/* port class from the name: 100GE0/4/1 -> 100G; GigabitEthernet0/0/0 -> 1G */
+function portSpeed(r) {
+  const m = r.speed_mbps; if (m && m < 4e6) return m >= 1000 ? (m % 1000 ? (m / 1000).toFixed(1) : m / 1000) + 'G' : m + 'M';
+  const n = String(r.name || ''); const x = /^(?:\d+\|)?(\d+)GE/i.exec(n);
+  return x ? x[1] + 'G' : /^(gigabitethernet|ge)/i.test(n) ? '1G' : /^(xgigabitethernet|10ge)/i.test(n) ? '10G' : /^ethernet/i.test(n) ? '100M' : '';
+}
+const portLoad = r => Math.max(+r.in_util || 0, +r.out_util || 0);
+function portState(r) { return r.admin_down ? 'off' : String(r.phy || '').toLowerCase().startsWith('up') ? (String(r.protocol || '').toLowerCase().startsWith('up') ? 'up' : 'half') : 'down'; }
+const PORT_STATE = { up: 'Up', half: 'Link up, protocol down', down: 'Down', off: 'Disabled (admin down)' };
+const PORT_CHIPS = [['all', 'All'], ['up', 'Up'], ['down', 'Down'], ['busy', 'Busy (65%+)'], ['err', 'Errors']];
+function portTip(r) {
+  const n = r._nb || [];
+  return [r.name, r.description, PORT_STATE[portState(r)], `In ${(+r.in_util || 0).toFixed(1)}% · Out ${(+r.out_util || 0).toFixed(1)}%`,
+    r.ip ? 'IP ' + r.ip + ((r.secondary || []).length ? ` +${r.secondary.length}` : '') : '', r.vlan ? 'VLAN ' + r.vlan : '',
+    n.length ? 'Client ' + n[0].ip + ' ' + macColon(n[0].mac) : '', r.in_errors + r.out_errors ? `Errors ${r.in_errors}/${r.out_errors}` : ''].filter(Boolean).join('\n');
+}
+/* opts.onPort(name): what a click on a physical port does (default: open its drawer) */
+function portPanel(host, rows, opts = {}) {
+  if (!host) return;
+  const st = host._p || (host._p = { chip: 'all' });
+  const phys = rows.filter(r => ['ethernet', 'management'].includes(r.type) && !r.name.includes('.'));
+  const subsOf = p => rows.filter(r => r.name.startsWith(p.name + '.')).sort((a, b) => (+a.name.split('.')[1] || 0) - (+b.name.split('.')[1] || 0));
+  const keep = r => st.chip === 'all' || (st.chip === 'up' ? portState(r) === 'up' : st.chip === 'down' ? portState(r) !== 'up' : st.chip === 'busy' ? portLoad(r) >= 65 : r.in_errors + r.out_errors > 0);
+  const lc = v => v >= 85 ? 'var(--bad)' : v >= 65 ? 'var(--warn)' : 'var(--s1)';
+  const bar = v => `<span class="pbar"><i style="width:${Math.min(100, Math.max(v ? 3 : 0, v))}%;background:${lc(v)}"></i></span>`;
+  const tile = r => { const v = portLoad(r), s = portState(r);
+    return `<button class="pt ps-${s}" data-n="${esc(r.name)}" title="${esc(portTip(r))}"><span class="pn">${esc(r.name.split('.')[1])}</span>${r.in_errors + r.out_errors ? '<span class="pe"></span>' : ''}${bar(v)}<span class="pd">${esc(r.description || '-')}</span></button>`; };
+  /* the front panel: every physical port as one tile, like a switch */
+  const face = p => { const v = portLoad(p), s = portState(p), n = subsOf(p).length, m = /(\d+\/\d+\/\d+)$/.exec(p.name);
+    return `<button class="pt pfp ps-${s}" data-p="${esc(p.name)}" title="${esc(portTip(p) + (n ? `\n${n} sub-interfaces` : ''))}"><span class="pn"><span class="psp2">${esc(portSpeed(p))}</span> ${esc(m ? m[1] : p.name)}</span>${p.in_errors + p.out_errors ? '<span class="pe"></span>' : ''}${bar(v)}<span class="pd">${esc(p.description || (s === 'down' ? 'not connected' : '-'))}${n ? ` · ${n} subs` : ''}</span></button>`; };
+  const port = p => { const subs = subsOf(p), shown = subs.filter(keep), s = portState(p), up = subs.filter(r => portState(r) === 'up').length;
+    return `<div class="pport"><button class="pface ps-${s}" data-p="${esc(p.name)}" title="${esc(portTip(p))}"><span class="psp">${esc(portSpeed(p))}</span><b>${esc(p.name)}</b>
+      <span class="pdesc">${esc(p.description || '')}</span><span class="pio">In ${bar(+p.in_util || 0)} ${(+p.in_util || 0).toFixed(1)}%</span><span class="pio">Out ${bar(+p.out_util || 0)} ${(+p.out_util || 0).toFixed(1)}%</span>
+      <span class="psub">${PORT_STATE[s]}${subs.length ? ` · ${subs.length} sub-interfaces, ${up} up` : ''}${p.in_errors + p.out_errors ? ` · <span style="color:var(--bad)">errors ${p.in_errors}/${p.out_errors}</span>` : ''}</span></button>
+      <div class="ptiles">${shown.map(tile).join('') || `<span class="faint" style="font-size:12px;padding:6px">${subs.length ? 'None match this filter.' : 'No sub-interfaces.'}</span>`}</div></div>`; };
+  const count = k => k === 'all' ? '' : ` ${rows.filter(r => r.name.includes('.') && phys.some(p => r.name.startsWith(p.name + '.'))).filter(r => { const o = st.chip; st.chip = k; const y = keep(r); st.chip = o; return y; }).length}`;
+  host.innerHTML = `<div class="bar"><div class="seg pchips">${PORT_CHIPS.map(([k, l]) => `<button data-c="${k}" class="${st.chip === k ? 'on' : ''}">${l}${count(k)}</button>`).join('')}</div><span class="sp"></span>
+    <div class="legend plegend"><span><i class="ps-up"></i>Up</span><span><i class="ps-half"></i>Protocol down</span><span><i class="ps-down"></i>Down</span><span><i class="ps-off"></i>Disabled</span><span><i class="pe"></i>Errors</span><span>bar = traffic</span></div></div>
+    <div class="pfplate">${phys.map(face).join('') || '<span class="muted">No physical ports found.</span>'}</div>
+    <div class="pports">${phys.filter(p => subsOf(p).length).map(port).join('')}</div>`;
+  host.querySelector('.pchips').onclick = e => { const b = e.target.closest('[data-c]'); if (b) { st.chip = b.dataset.c; portPanel(host, rows, opts); } };
+  host.onclick = e => { const t = e.target.closest('.pports [data-n],.pports [data-p],.pfplate [data-p]'); if (!t) return;
+    if (t.dataset.n) interfaceDrawer(t.dataset.n); else (opts.onPort || interfaceDrawer)(t.dataset.p); };
+}
+
 /* ----- interfaces ----- */
 let ifCache = [];
 PAGES.interfaces = async c => {
@@ -310,7 +360,8 @@ PAGES.interfaces = async c => {
   await Promise.all([ipOffLoad(), arpLoad()]);
   const kind = c._kind || 'all';
   c.innerHTML = head('Interfaces', '', `<button class="btn" onclick="subifForm()">+ Sub-interface</button><button class="btn" onclick="loopbackForm()">+ Loopback</button>`) +
-    `<div class="card"><div class="bar"><div class="seg" id="ifKind">${[['all', 'All'], ['ethernet', 'Physical'], ['sub-interface', 'Sub-interfaces'], ['logical', 'Logical']].map(([k, l]) => `<button data-k="${k}" class="${k === kind ? 'on' : ''}">${l}</button>`).join('')}</div>
+    `<div class="card"><h3>Ports <span class="muted" style="font-weight:400;font-size:12px">each physical port with its sub-interfaces. Click a tile for details, a port to list it below.</span></h3><div id="ifPorts"></div></div>
+    <div class="card"><div class="bar"><div class="seg" id="ifKind">${[['all', 'All'], ['ethernet', 'Physical'], ['sub-interface', 'Sub-interfaces'], ['logical', 'Logical']].map(([k, l]) => `<button data-k="${k}" class="${k === kind ? 'on' : ''}">${l}</button>`).join('')}</div>
     <span class="muted" style="font-size:12px">Click a row for live traffic, counters and settings.</span></div><div id="ifTable"></div></div>`;
   $('#ifKind').onclick = e => { if (e.target.dataset.k) { c._kind = e.target.dataset.k; PAGES.interfaces(c); } };
   const pick = r => kind === 'all' || (kind === 'logical' ? ['loopback', 'vlanif', 'null', 'tunnel', 'virtual', 'eth-trunk'].includes(r.type) : kind === 'ethernet' ? ['ethernet', 'management'].includes(r.type) : r.type === kind);
@@ -324,8 +375,9 @@ PAGES.interfaces = async c => {
     { t: 'Errors', k: 'in_errors', num: true, f: r => r.in_errors + r.out_errors ? `<span style="color:var(--bad)">${r.in_errors}/${r.out_errors}</span>` : '0' },
     { t: '', sort: false, cls: 'acts', f: r => r.type === 'null' ? '' : (r.admin_down ? `<button class="btn sm" onclick='ifToggle(${attr(r.name)},true)'>Enable</button>` : `<button class="btn sm" onclick='ifToggle(${attr(r.name)},false)'>Disable</button>`) + `<button class="btn sm" onclick='ifEdit(${attr(r.name)})'>Edit</button>` },
   ], withClients(rows).filter(pick), { onRow: r => interfaceDrawer(r.name), rowClass: r => r.admin_down ? 'off' : '' });
-  draw(rows);
-  every(10000, async () => { if (!$('#modalBg').classList.contains('hidden')) return; ifCache = await api('/api/view/interfaces'); await arpLoad(); draw(ifCache); });
+  const ports = rows => portPanel($('#ifPorts'), rows, { onPort: name => { const t = $('#ifTable'); t._t.q = name; draw(ifCache); t.scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
+  draw(rows); ports(rows);
+  every(10000, async () => { if (!$('#modalBg').classList.contains('hidden')) return; ifCache = await api('/api/view/interfaces'); await arpLoad(); draw(ifCache); ports(ifCache); });
 };
 /* adds the clients behind each row (for display) and their IP/MACs as text (so the filter box finds a MAC in any format) */
 function withClients(rows) { return rows.map(r => { const n = r.ip ? clientsOf(r) : []; return Object.assign(r, { _nb: n, client: nbSearch(n) }); }); }
