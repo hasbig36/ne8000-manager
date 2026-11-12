@@ -328,6 +328,23 @@ function portTip(r) {
     n.length ? 'Client ' + n[0].ip + ' ' + macColon(n[0].mac) : '', r.in_errors + r.out_errors ? `Errors ${r.in_errors}/${r.out_errors}` : ''].filter(Boolean).join('\n');
 }
 /* ----- the router drawn as its front panel: every slot by number, the boards the router reports, and each port in its cage ----- */
+/* optic type from the wavelength when the part number does not say: 850 nm is multimode (SR), 1310 single-mode (LR), 1550 long reach (ER) */
+function opticKind(o, speed) {
+  const w = +o.wavelength, lanes = /^(40|100|200|400)G$/.test(speed) ? '4' : '';
+  if (!w) return null;
+  return [null, w < 900 ? 'SR' + lanes : w < 1400 ? 'LR' + lanes : 'ER' + lanes];
+}
+/* the board's real model from the electronic labels (display elabel brief), e.g. CR81E2NBC0 2x100GE-QSFP28 */
+function boardModel(hw, kind, slot) {
+  const lines = String((hw && (hw.boards_elabel || hw.elabel)) || '').split('\n');
+  for (const l of lines) {
+    const t = l.trim().split(/\s+/);   // "PIC 4   CR81E2NBC0   034KEN10QC100528   2x100GE-QSFP28"
+    if (t[1] !== String(slot) || !(kind === 'pic' ? /^(PIC|LPU|CARD)$/i : /^(IPU|MPU)$/i).test(t[0])) continue;
+    const code = t.find(x => /^[A-Z]{2}\d\w{5,}$/.test(x) && !/^\d+$/.test(x)), desc = (/\d+\s*x\s*\d+G\w*(?:-[\w]+)?/i.exec(l) || [])[0];  // e.g. 2x100GE-QSFP28
+    if (code || desc) return [code, desc].filter(Boolean).join(' ');
+  }
+  return '';
+}
 const BOARD_KIND = t => /IPU|MPU|SRU|MMB/i.test(t) ? 'ipu' : /PWR|POWER|PAC|PDC/i.test(t) ? 'pwr' : /FAN/i.test(t) ? 'fan' : /CLK|CLOCK/i.test(t) ? 'clk' : 'pic';
 function chassisHtml(rows, hw) {
   const boards = (hw && hw.boards) || [], optics = (hw && hw.optics) || {};
@@ -336,23 +353,23 @@ function chassisHtml(rows, hw) {
   const by = k => boards.filter(b => BOARD_KIND(b.type) === k);
   const portSlots = [...new Set(phys.map(pos).filter(x => x && x.slot > 0).map(x => x.slot))];
   const m8 = /M8\b/i.test(MODEL);
-  let pics = m8 ? [1, 2, 3, 4, 5, 6, 7, 8] : [...new Set([...by('pic').map(b => +b.slot), ...portSlots])].filter(n => n > 0).sort((a, b) => a - b);
-  if (!pics.length && !portSlots.length) return '';
-  pics = [...new Set([...pics, ...portSlots])].sort((a, b) => a - b);
+  // only the card slots the router reports (a board or a port in them): slot numbers are shared with power supplies on some models
+  const pics = [...new Set([...by('pic').map(b => +b.slot), ...portSlots])].filter(n => n > 0).sort((a, b) => a - b);
+  if (!pics.length) return '';
   const subsN = p => rows.filter(r => r.name.startsWith(p.name + '.')).length;
   const led = st => `<i class="cled ${st}"></i>`;
   const bstate = b => !b ? 'off' : /absent/i.test(b.online) ? 'off' : /abnormal|fault|fail/i.test(b.status) ? 'bad' : 'ok';
-  const cage = p => { const s = portState(p), o = optics[p.name] || {}, x = pos(p), mod = /(LR4|SR4|ER4|ZR4|CWDM4|PSM4|LR|SR|ER|ZR|LX|SX|AOC|DAC)/i.exec(o.part || '');
+  const cage = p => { const s = portState(p), o = optics[p.name] || {}, x = pos(p), mod = /(LR4|SR4|ER4|ZR4|CWDM4|PSM4|LR|SR|ER|ZR|LX|SX|AOC|DAC)/i.exec(o.part || '') || opticKind(o, portSpeed(p));
     return `<button class="cage ps-${s}" data-p="${esc(p.name)}" title="${esc(portTip(p) + (o.part ? `\nOptic ${[o.vendor, o.part].filter(Boolean).join(' ')}` : '') + (o.rx_dbm != null ? `\nRx ${o.rx_dbm} dBm · Tx ${o.tx_dbm} dBm` : '') + (subsN(p) ? `\n${subsN(p)} sub-interfaces` : ''))}">
       <span class="cport">${x.port}</span><span class="chole"><span class="cfill"></span></span><span class="cmod">${esc(mod ? mod[1].toUpperCase() : portSpeed(p))}</span>${p.in_errors + p.out_errors ? '<span class="pe"></span>' : ''}</button>`; };
   const portsIn = slot => phys.filter(r => { const x = pos(r); return x && x.slot === slot; }).sort((a, b) => pos(a).port - pos(b).port);
   const pic = n => { const b = boards.find(x => +x.slot === n && BOARD_KIND(x.type) === 'pic'), ps = portsIn(n);
     if (!b && !ps.length) return `<div class="cslot cempty"><span class="cnum">${n}</span><span class="clab">empty</span></div>`;
-    return `<div class="cslot"><span class="cnum">${n}</span>${led(bstate(b || { online: 'Present' }))}<span class="clab">${esc(b ? b.type : 'PIC')}${ps.length ? ` · ${ps.length} × ${esc(portSpeed(ps[0]))}` : ''}</span><div class="cages">${ps.map(cage).join('')}</div></div>`; };
+    return `<div class="cslot"><span class="cnum">${n}</span>${led(bstate(b || { online: 'Present' }))}<span class="clab" title="${esc(boardModel(hw, 'pic', n))}">${esc(boardModel(hw, 'pic', n) || (b ? b.type : 'PIC'))}${ps.length ? ` · ${ps.length} × ${esc(portSpeed(ps[0]))}` : ''}</span><div class="cages">${ps.map(cage).join('')}</div></div>`; };
   const mgmt = phys.filter(r => { const x = pos(r); return x && x.slot === 0; });
   const ipus = by('ipu').length ? by('ipu') : (m8 ? [{ slot: '9', type: 'IPU' }, { slot: '10', type: 'IPU' }] : []);
-  const ipu = (b, i) => `<div class="cslot cipu"><span class="cnum">${esc(b.slot)}</span>${led(bstate(b))}<span class="clab">${esc(b.type)}${b.role && b.role !== 'NA' ? ' · ' + esc(b.role) : ''}</span>${i === 0 && mgmt.length ? `<div class="cages">${mgmt.map(cage).join('')}<span class="faint" style="font-size:10px;align-self:center">MGMT</span></div>` : ''}</div>`;
-  const small = k => by(k).map(b => `<div class="cmini" title="${esc(`${b.type} slot ${b.slot}: ${b.online || ''} ${b.status || ''}`)}">${led(bstate(b))}<b>${esc(k.toUpperCase())} ${esc(b.slot)}</b>${b.type.toUpperCase() !== k.toUpperCase() ? `<span>${esc(b.type)}</span>` : ''}</div>`).join('');
+  const ipu = (b, i) => `<div class="cslot cipu"><span class="cnum">${esc(b.slot)}</span>${led(bstate(b))}<span class="clab">${esc(b.type)}${boardModel(hw, 'ipu', b.slot) ? ' · ' + esc(boardModel(hw, 'ipu', b.slot)) : ''}${b.primary ? ' · ' + esc(b.primary) : b.role && b.role !== 'NA' ? ' · ' + esc(b.role) : ''}</span>${i === 0 && mgmt.length ? `<div class="cages">${mgmt.map(cage).join('')}<span class="faint" style="font-size:10px;align-self:center">MGMT</span></div>` : ''}</div>`;
+  const small = k => by(k).map(b => `<div class="cmini" title="${esc(`${b.type} slot ${b.slot}: ${b.online || ''} ${b.status || ''}`)}">${led(bstate(b))}<b>${esc(k.toUpperCase())} ${esc(b.slot)}</b>${b.type.toUpperCase() !== k.toUpperCase() ? `<span>${esc(b.type)}</span>` : ''}${b.primary ? `<span>${esc(b.primary)}</span>` : ''}</div>`).join('');
   const half = Math.ceil(pics.length / 2);
   return `<div class="chassis"><div class="cear"><i></i><i></i></div><div class="cbody">
     <div class="ctop"><b>${esc(MODEL || 'Router')}</b><span>front panel, laid out by slot number</span></div>

@@ -290,8 +290,17 @@ class SnmpRouter(Router):
     def interfaces(self):
         ips = self._ip_map()
         cfg = self.interface_config() if self.ssh else {}
+        cli = {}
+        if self.ssh:    # with the CLI available, link and protocol state follow "display interface brief" (SNMP can say up while the protocol is down)
+            try:
+                cli = {r["name"]: r for r in P.parse_interface_brief(self.cached("display interface brief", 10))}
+            except DeviceError:
+                cli = {}
         rows = []
         for row in self._brief():
+            c = cli.get(row["name"])
+            if c:
+                row.update(phy=c["phy"], protocol=c["protocol"], admin_down=c["admin_down"])
             idx, r = row.pop("_idx"), row.pop("_r")
             addrs = ips.get(idx, [])
             lines = cfg.get(row["name"], [])

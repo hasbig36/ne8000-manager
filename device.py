@@ -386,7 +386,14 @@ class Router:
         return {"boards": P.parse_device(self.cached("display device", 10)),
                 "temperature": P.parse_temperature(self.cached("display temperature", 10)),
                 "power": self.cached("display power", 10), "fan": self.cached("display fan", 10),
-                "elabel": self.cached("display esn", 300)}
+                "elabel": self.cached("display esn", 300), "boards_elabel": self._elabel_brief()}
+
+    def _elabel_brief(self):
+        """board models (e.g. CR81E2NBC0 2x100GE-QSFP28) for the front panel drawing; optional"""
+        try:
+            return self.cached("display elabel brief", 600)
+        except DeviceError:
+            return ""
 
     def logs(self):
         alarms_text = self.cached("display alarm active", 5)

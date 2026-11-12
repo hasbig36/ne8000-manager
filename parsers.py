@@ -73,10 +73,11 @@ def parse_temperature(text):
 def parse_device(text):
     rows = []
     for line in text.splitlines():
-        m = re.match(r"^\s*(\d+)\s+(\S+)\s+(Present|Absent)\s+(\S+)\s+(\S+)\s+(\S+)", line)
+        m = re.match(r"^\s*(\d+)\s+(\S+)\s+(Present|Absent)\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+\S+\s+(\S+))?", line)
         if m:
             rows.append({"slot": m.group(1), "type": m.group(2), "online": m.group(3),
-                         "register": m.group(4), "status": m.group(5), "role": m.group(6)})
+                         "register": m.group(4), "status": m.group(5), "role": m.group(6),
+                         "primary": m.group(7) if m.group(7) and m.group(7) != "NA" else ""})
     return rows
 
 
