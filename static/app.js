@@ -360,8 +360,8 @@ function chassisHtml(rows, hw) {
   const led = st => `<i class="cled ${st}"></i>`;
   const bstate = b => !b ? 'off' : /absent/i.test(b.online) ? 'off' : /abnormal|fault|fail/i.test(b.status) ? 'bad' : 'ok';
   const cage = p => { const s = portState(p), o = optics[p.name] || {}, x = pos(p), mod = /(LR4|SR4|ER4|ZR4|CWDM4|PSM4|LR|SR|ER|ZR|LX|SX|AOC|DAC)/i.exec(o.part || '') || opticKind(o, portSpeed(p));
-    return `<button class="cage ps-${s}" data-p="${esc(p.name)}" title="${esc(portTip(p) + (o.part ? `\nOptic ${[o.vendor, o.part].filter(Boolean).join(' ')}` : '') + (o.rx_dbm != null ? `\nRx ${o.rx_dbm} dBm · Tx ${o.tx_dbm} dBm` : '') + (subsN(p) ? `\n${subsN(p)} sub-interfaces` : ''))}">
-      <span class="cport">${x.port}</span><span class="chole"><span class="cfill"></span></span><span class="cmod">${esc(mod ? mod[1].toUpperCase() : portSpeed(p))}</span>${p.in_errors + p.out_errors ? '<span class="pe"></span>' : ''}</button>`; };
+    return `<button class="cage ps-${s}" data-p="${esc(p.name)}" title="${esc(portTip(p) + noteTip(p.name) + (o.part ? `\nOptic ${[o.vendor, o.part].filter(Boolean).join(' ')}` : '') + (o.rx_dbm != null ? `\nRx ${o.rx_dbm} dBm · Tx ${o.tx_dbm} dBm` : '') + (subsN(p) ? `\n${subsN(p)} sub-interfaces` : ''))}">
+      <span class="cport">${x.port}${notesFor(p.name).length ? ' 📝' : ''}</span><span class="chole"><span class="cfill"></span></span><span class="cmod">${esc(mod ? mod[1].toUpperCase() : portSpeed(p))}</span>${p.in_errors + p.out_errors ? '<span class="pe"></span>' : ''}</button>`; };
   const portsIn = slot => phys.filter(r => { const x = pos(r); return x && x.slot === slot; }).sort((a, b) => pos(a).port - pos(b).port);
   const pic = n => { const b = boards.find(x => +x.slot === n && BOARD_KIND(x.type) === 'pic'), ps = portsIn(n);
     if (!b && !ps.length) return `<div class="cslot cempty"><span class="cnum">${n}</span><span class="clab">empty</span></div>`;
@@ -380,7 +380,7 @@ function chassisHtml(rows, hw) {
 }
 /* ----- front panel photo: the router's own photo with each port marked on it, coloured live ----- */
 let PANEL = null;    // {photo, version, marks: {port: [x, y]}, size} for the connected router
-async function panelLoad() { try { PANEL = await api('/api/panel'); } catch (e) { PANEL = { error: e.message, marks: {} }; } return PANEL; }
+async function panelLoad() { try { PANEL = await api('/api/panel'); } catch (e) { PANEL = { error: e.message, marks: {} }; } await notesLoad(); return PANEL; }
 /* ----- crop and straighten the front photo: find the router's front automatically, adjust the 4 corners, warp to a rectangle ----- */
 async function photoCanvas(file, max = 2000) {
   const url = await new Promise((ok, bad) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = () => bad(new Error('Could not read that file.')); f.readAsDataURL(file); }), img = new Image();
@@ -506,7 +506,7 @@ function photoHtml(phys, st) {
   const marks = m ? m.marks : P.marks || {}, size = m ? m.size : P.size || 4;
   const short = n => (/(\d+\/\d+\/\d+)$/.exec(n) || [, n])[1];
   const pins = phys.filter(p => marks[p.name]).map(p => { const [x, y] = marks[p.name];
-    return `<button class="pmark ps-${portState(p)}${m && phys[m.i] && phys[m.i].name === p.name ? ' cur' : ''}" data-p="${esc(p.name)}" style="left:${x * 100}%;top:${y * 100}%" title="${esc(portTip(p))}"><span>${esc(short(p.name))}</span></button>`; }).join('');
+    return `<button class="pmark ps-${portState(p)}${m && phys[m.i] && phys[m.i].name === p.name ? ' cur' : ''}" data-p="${esc(p.name)}" style="left:${x * 100}%;top:${y * 100}%" title="${esc(portTip(p) + noteTip(p.name))}"><span>${esc(short(p.name))}${notesFor(p.name).length ? ' 📝' : ''}</span></button>`; }).join('');
   const missing = phys.filter(p => !(P.marks || {})[p.name]);
   const cur = m && phys[m.i];
   const tools = m ? `<div class="pmarkbar"><span>${cur ? `Tap where <b>${esc(cur.name)}</b> is on the photo <span class="muted">(${m.i + 1} of ${phys.length}${cur.description ? ', ' + esc(cur.description) : ''})</span>` : '<b>All ports placed.</b> Save to keep them.'}</span><span class="sp"></span>
@@ -515,6 +515,35 @@ function photoHtml(phys, st) {
     : `<div class="bar pphototools">${missing.length ? `<span class="muted" style="font-size:12px">Not marked yet: ${esc(missing.map(p => p.name).join(', '))}</span>` : `<span class="muted" style="font-size:12px">Hover over a port for its traffic and optic, and click it for details.</span>`}<span class="sp"></span>
       ${edit ? `<button class="btn sm${missing.length === phys.length ? ' primary' : ''}" data-a="mark">Mark ports</button><button class="btn sm" data-a="crop">Crop / straighten</button>${pick.replace('btn primary', 'btn sm')}<button class="btn sm ghost" data-a="del">Remove photo</button>` : ''}</div>`;
   return `<div class="pphoto${m ? ' marking' : ''}" style="--ms:${size}"><img src="/api/panel/photo?v=${P.version}" alt="Front of the router" draggable="false">${pins}</div>${tools}`;
+}
+/* ----- device notes: what engineers need to know about this router, beside its picture ----- */
+let NOTES = null;
+async function notesLoad() { try { NOTES = (await api('/api/notes')).notes; } catch (e) { NOTES = []; } return NOTES; }
+const notesFor = name => (NOTES || []).filter(n => n.port === name);
+const noteTip = name => notesFor(name).map(n => `\n📝 ${n.text.split('\n')[0].slice(0, 120)}`).join('');
+function noteWhen(t) { const d = new Date(t * 1000); return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); }
+/* draws into box and handles its own clicks, so the 15 s refresh of the ports never wipes a note being typed */
+function notesPanel(box, phys, onChange) {
+  const edit = !(ME && ME.role === 'viewer'), st = box._n || (box._n = { editing: null });
+  const opts = sel => `<option value="">Whole device</option>${phys.map(p => `<option value="${esc(p.name)}" ${sel === p.name ? 'selected' : ''}>${esc(p.name)}${p.description ? ' · ' + esc(p.description) : ''}</option>`).join('')}`;
+  const list = NOTES || [];
+  box.innerHTML = `<h4>Device notes <span class="muted">${list.length || ''}</span></h4>
+    ${edit ? `<div class="nadd"><textarea class="ntext" rows="3" placeholder="What should the next engineer know? e.g. 0/4/1 patched to ODF tray 3, do not move."></textarea>
+      <div class="nrow"><select class="nport">${opts('')}</select><label class="muted"><input type="checkbox" class="npin"> Pin</label><button class="btn sm primary" data-n="add">Add note</button></div></div>` : ''}
+    <div class="nlist">${list.map(n => st.editing === n.id ? `<div class="note${n.pinned ? ' pinned' : ''}" data-id="${n.id}"><textarea class="netext" rows="4">${esc(n.text)}</textarea>
+        <div class="nrow"><select class="neport">${opts(n.port)}</select><button class="btn sm" data-n="cancel">Cancel</button><button class="btn sm primary" data-n="save">Save</button></div></div>`
+      : `<div class="note${n.pinned ? ' pinned' : ''}" data-id="${n.id}">${n.pinned ? '<span class="npinned">📌 Pinned</span>' : ''}${n.port ? `<span class="nporttag">${esc(n.port)}</span>` : ''}<div class="ntxt">${esc(n.text)}</div>
+        <div class="nmeta">${esc(n.by)} · ${noteWhen(n.at)}${n.edited_at ? ` · edited by ${esc(n.edited_by)} ${noteWhen(n.edited_at)}` : ''}${edit ? `<span class="sp"></span><button class="lnk" data-n="pin">${n.pinned ? 'Unpin' : 'Pin'}</button><button class="lnk" data-n="edit">Edit</button><button class="lnk" data-n="del">Delete</button>` : ''}</div></div>`).join('')
+      || '<div class="muted nempty">No notes yet. Write down anything crucial: patching, spare slots, replaced parts, who to call.</div>'}</div>`;
+  const done = x => { NOTES = x.notes; st.editing = null; notesPanel(box, phys, onChange); onChange && onChange(); };
+  box.onclick = e => { const b = e.target.closest('[data-n]'); if (!b) return; const k = b.dataset.n, id = (b.closest('[data-id]') || {}).dataset?.id;
+    const fail = x => toast(x.message, true);
+    if (k === 'add') post('/api/notes', { text: box.querySelector('.ntext').value, port: box.querySelector('.nport').value, pinned: box.querySelector('.npin').checked }).then(done).catch(fail);
+    if (k === 'edit') { st.editing = id; notesPanel(box, phys, onChange); box.querySelector('.netext').focus(); }
+    if (k === 'cancel') { st.editing = null; notesPanel(box, phys, onChange); }
+    if (k === 'save') post(`/api/notes/${id}/update`, { text: box.querySelector('.netext').value, port: box.querySelector('.neport').value }).then(done).catch(fail);
+    if (k === 'pin') post(`/api/notes/${id}/update`, { pinned: !(NOTES.find(n => n.id === id) || {}).pinned }).then(done).catch(fail);
+    if (k === 'del' && confirm('Delete this note?')) post(`/api/notes/${id}/delete`).then(done).catch(fail); };
 }
 /* opts.onPort(name): what a click on a physical port does (default: open its drawer) */
 function portPanel(host, rows, opts = {}) {
@@ -538,13 +567,17 @@ function portPanel(host, rows, opts = {}) {
       <span class="psub">${PORT_STATE[s]}${subs.length ? ` · ${subs.length} sub-interfaces, ${up} up` : ''}${p.in_errors + p.out_errors ? ` · <span style="color:var(--bad)">errors ${p.in_errors}/${p.out_errors}</span>` : ''}</span></button>
       <div class="ptiles">${shown.map(tile).join('') || `<span class="faint" style="font-size:12px;padding:6px">${subs.length ? 'None match this filter.' : 'No sub-interfaces.'}</span>`}</div></div>`; };
   const count = k => k === 'all' ? '' : ` ${rows.filter(r => r.name.includes('.') && phys.some(p => r.name.startsWith(p.name + '.'))).filter(r => { const o = st.chip; st.chip = k; const y = keep(r); st.chip = o; return y; }).length}`;
+  const keepNotes = host.querySelector('.pnotes');
   host.innerHTML = `<div class="bar"><div class="seg pchips">${PORT_CHIPS.map(([k, l]) => `<button data-c="${k}" class="${st.chip === k ? 'on' : ''}">${l}${count(k)}</button>`).join('')}</div><span class="sp"></span>
     <div class="legend plegend"><span><i class="ps-up"></i>Up</span><span><i class="ps-half"></i>Protocol down</span><span><i class="ps-down"></i>Down</span><span><i class="ps-off"></i>Disabled</span><span><i class="pe"></i>Errors</span><span>bar = traffic</span></div></div>
     <div class="bar pviewbar"><div class="seg pview">${[['drawing', 'Drawing'], ['photo', 'Photo']].map(([k, l]) => `<button data-v="${k}" class="${view === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-    ${view === 'photo' ? photoHtml(phys, st) : (opts.hw && chassisHtml(rows, opts.hw)) || `<div class="pfplate">${phys.map(face).join('') || '<span class="muted">No physical ports found.</span>'}</div>`}
+    <div class="pfront"><div class="pfview">${view === 'photo' ? photoHtml(phys, st) : (opts.hw && chassisHtml(rows, opts.hw)) || `<div class="pfplate">${phys.map(face).join('') || '<span class="muted">No physical ports found.</span>'}</div>`}</div><div class="pnotes"></div></div>
     <div class="pports">${phys.filter(p => subsOf(p).length).map(port).join('')}</div>`;
   host.querySelector('.pchips').onclick = e => { const b = e.target.closest('[data-c]'); if (b) { st.chip = b.dataset.c; portPanel(host, rows, opts); } };
   const again = () => portPanel(host, rows, opts);
+  const slot = host.querySelector('.pnotes');
+  if (keepNotes && keepNotes.dataset.ready) slot.replaceWith(keepNotes);
+  else if (NOTES) { slot.dataset.ready = '1'; notesPanel(slot, phys, again); }
   const fail = e => toast(e.message, true);
   host.onclick = e => {
     const v = e.target.closest('.pview [data-v]');

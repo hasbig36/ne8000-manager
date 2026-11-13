@@ -75,6 +75,11 @@ Crop / straighten works on a saved photo too and keeps the port marks. All of th
 your own photo, coloured live; hover for traffic and optics, click for details. The photo (resized to 1600 px, JPEG or
 PNG only) and the positions are kept per router in `data/panel/`. Viewers can look but not change them.
 
+**Device notes** sit beside the front view: what the next engineer must know about this router (patching, spare
+slots, replaced parts, who to call). Each note shows who wrote it and when, can be pinned to the top, edited or deleted,
+and can be tied to a port, which then shows a 📝 badge with the note on hover. Notes are kept per router in
+`data/notes/` and every change is in the audit log. Viewers can read them.
+
 ### Health check
 
 Every 5 minutes, for each saved router with an SNMP login, the manager looks for what makes customers

@@ -112,3 +112,83 @@ class PanelStore:
         with open(tmp, "w") as f:
             json.dump(meta, f)
         os.replace(tmp, self._meta_path(key))
+
+
+class NotesStore:
+    """Engineers' notes about each router (what to know before touching it). <data>/notes/<key>.json"""
+    MAX_TEXT = 4000
+    MAX_NOTES = 300
+
+    def __init__(self, data_dir):
+        self.dir = os.path.join(data_dir, "notes")
+        os.makedirs(self.dir, exist_ok=True)
+        self.lock = threading.Lock()
+
+    def _path(self, key):
+        return os.path.join(self.dir, PanelStore.key(key) + ".json")
+
+    def list(self, key):
+        try:
+            with open(self._path(key)) as f:
+                notes = json.load(f)
+        except (OSError, ValueError):
+            notes = []
+        return sorted(notes, key=lambda n: (not n.get("pinned"), -n.get("at", 0)))
+
+    def _save(self, key, notes):
+        tmp = self._path(key) + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(notes, f)
+        os.replace(tmp, self._path(key))
+
+    @classmethod
+    def _text(cls, text):
+        text = str(text or "").strip()
+        if not text:
+            raise ValueError("Write something first.")
+        if len(text) > cls.MAX_TEXT:
+            raise ValueError(f"A note can be {cls.MAX_TEXT} characters at most.")
+        return text
+
+    @staticmethod
+    def _port(port):
+        port = str(port or "").strip()
+        if port and not PORT_RE.match(port):
+            raise ValueError("Bad port name.")
+        return port
+
+    def add(self, key, text, by, pinned=False, port=""):
+        note = {"id": os.urandom(6).hex(), "text": self._text(text), "by": by, "at": int(time.time()), "pinned": bool(pinned),
+                "port": self._port(port)}
+        with self.lock:
+            notes = self.list(key)
+            if len(notes) >= self.MAX_NOTES:
+                raise ValueError("Too many notes on this router; delete some old ones first.")
+            notes.append(note)
+            self._save(key, notes)
+        return note
+
+    def update(self, key, note_id, by, text=None, pinned=None, port=None):
+        with self.lock:
+            notes = self.list(key)
+            n = next((x for x in notes if x["id"] == note_id), None)
+            if not n:
+                raise ValueError("That note no longer exists.")
+            if text is not None:
+                n["text"] = self._text(text)
+                n["edited_by"], n["edited_at"] = by, int(time.time())
+            if pinned is not None:
+                n["pinned"] = bool(pinned)
+            if port is not None:
+                n["port"] = self._port(port)
+            self._save(key, notes)
+        return n
+
+    def delete(self, key, note_id):
+        with self.lock:
+            notes = self.list(key)
+            n = next((x for x in notes if x["id"] == note_id), None)
+            if not n:
+                raise ValueError("That note no longer exists.")
+            self._save(key, [x for x in notes if x["id"] != note_id])
+        return n

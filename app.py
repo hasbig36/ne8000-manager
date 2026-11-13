@@ -58,6 +58,7 @@ NETMAP = netmap.NetMapStore(DATA_DIR)
 NETMAP_CACHE = {}   # map key -> (time, response)
 DISABLED_IPS = ipdisabled.DisabledIPs(DATA_DIR)
 PANELS = panel.PanelStore(DATA_DIR)
+NOTES = panel.NotesStore(DATA_DIR)
 THROTTLE_IP = auth.Throttle(limit=5)        # per client address
 THROTTLE_USER = auth.Throttle(limit=20)     # per username, high enough that strangers cannot easily lock out a real user
 THROTTLE_ROUTER = auth.Throttle(limit=5)    # failed router SSH logins per app user (slows password guessing on the router)
@@ -886,6 +887,44 @@ def panel_delete():
     PANELS.delete(panel_key())
     AUDIT.log(me(), "panel_delete", host=router().host)
     return jsonify(PANELS.get(panel_key()))
+
+
+# ---- device notes: what engineers need to know about this router ----
+@app.get("/api/notes")
+def notes_list():
+    return jsonify(notes=NOTES.list(panel_key()))
+
+
+@app.post("/api/notes")
+def notes_add():
+    body = request.get_json(force=True) or {}
+    try:
+        n = NOTES.add(panel_key(), body.get("text"), me(), body.get("pinned"), body.get("port"))
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "note_add", host=router().host, note=n["id"], text=n["text"][:200])
+    return jsonify(notes=NOTES.list(panel_key()))
+
+
+@app.post("/api/notes/<note_id>/update")
+def notes_update(note_id):
+    body = request.get_json(force=True) or {}
+    try:
+        n = NOTES.update(panel_key(), note_id, me(), text=body.get("text"), pinned=body.get("pinned"), port=body.get("port"))
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "note_update", host=router().host, note=note_id, text=n["text"][:200], pinned=n.get("pinned"))
+    return jsonify(notes=NOTES.list(panel_key()))
+
+
+@app.post("/api/notes/<note_id>/delete")
+def notes_delete(note_id):
+    try:
+        n = NOTES.delete(panel_key(), note_id)
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "note_delete", host=router().host, note=note_id, text=n["text"][:200])
+    return jsonify(notes=NOTES.list(panel_key()))
 
 
 @app.post("/api/health/targets")
