@@ -81,7 +81,7 @@ function table(host, cols, rows, opts = {}) {
 }
 
 /* ---------- change flow: form -> preview CLI -> commit / check ---------- */
-function closeModal() { $('#modalBg').classList.add('hidden'); $('#modal').innerHTML = ''; if (sshCancel) sshCancel(); }
+function closeModal() { $('#modalBg').classList.add('hidden'); $('#modal').innerHTML = ''; $('#modal').classList.remove('wide'); if (sshCancel) sshCancel(); if (cropCancel) cropCancel(); }
 $('#modalBg').addEventListener('mousedown', e => { if (e.target.id === 'modalBg') closeModal(); });
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeDrawer(); } });
 
@@ -381,16 +381,122 @@ function chassisHtml(rows, hw) {
 /* ----- front panel photo: the router's own photo with each port marked on it, coloured live ----- */
 let PANEL = null;    // {photo, version, marks: {port: [x, y]}, size} for the connected router
 async function panelLoad() { try { PANEL = await api('/api/panel'); } catch (e) { PANEL = { error: e.message, marks: {} }; } return PANEL; }
-async function shrinkPhoto(file) {
-  // read as a data: URL (the page's security policy allows data: images, not blob:)
+/* ----- crop and straighten the front photo: find the router's front automatically, adjust the 4 corners, warp to a rectangle ----- */
+async function photoCanvas(file, max = 2000) {
   const url = await new Promise((ok, bad) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = () => bad(new Error('Could not read that file.')); f.readAsDataURL(file); }), img = new Image();
-  try {
-    await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error('That file is not a photo the browser can open. Use a JPEG or PNG.')); img.src = url; });
-    const k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight)), c = document.createElement('canvas');
-    c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
-    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-    return c.toDataURL('image/jpeg', 0.85);
-  } finally { img.src = ''; }
+  await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error('That file is not a photo the browser can open. Use a JPEG or PNG.')); img.src = url; });
+  const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight)), c = document.createElement('canvas');
+  c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height); img.src = '';
+  return c;
+}
+/* the busiest band of rows, then of columns: a router front is dense with edges (ports, LEDs, labels, screws), walls and racks are not */
+function detectFront(src) {
+  const W = 360, k = W / src.width, H = Math.max(8, Math.round(src.height * k)), c = document.createElement('canvas');
+  c.width = W; c.height = H; const g = c.getContext('2d'); g.drawImage(src, 0, 0, W, H);
+  const d = g.getImageData(0, 0, W, H).data, L = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) L[i] = d[i * 4] * 0.3 + d[i * 4 + 1] * 0.59 + d[i * 4 + 2] * 0.11;
+  const E = new Float32Array(W * H);
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) { const i = y * W + x; E[i] = Math.abs(L[i + 1] - L[i - 1]) + Math.abs(L[i + W] - L[i - W]); }
+  const band = (prof, n) => {
+    const sm = prof.map((_, i) => { let t = 0, m = 0; for (let j = Math.max(0, i - 3); j <= Math.min(n - 1, i + 3); j++) { t += prof[j]; m++; } return t / m; });
+    const mx = Math.max(...sm), mn = Math.min(...sm), th = mn + 0.3 * (mx - mn), gap = Math.max(2, Math.round(n * 0.03));
+    let best = [0, n - 1], bestScore = -1, a = -1, last = -1, score = 0;
+    for (let i = 0; i <= n; i++) {
+      if (i < n && sm[i] >= th) { if (a < 0) { a = i; score = 0; } last = i; score += sm[i]; }
+      else if (a >= 0 && (i === n || i - last > gap)) { if (score > bestScore) { bestScore = score; best = [a, last]; } a = -1; }
+    }
+    return best;
+  };
+  const rows = Array.from({ length: H }, (_, y) => { let t = 0; for (let x = 0; x < W; x++) t += E[y * W + x]; return t; });
+  let [y0, y1] = band(rows, H);
+  const cols = Array.from({ length: W }, (_, x) => { let t = 0; for (let y = y0; y <= y1; y++) t += E[y * W + x]; return t; });
+  let [x0, x1] = band(cols, W);
+  // the edges mark the ports; the plain faceplate around them has the same colour: grow out to where the colour changes
+  const med = a => { const b = Float32Array.from(a).sort(); return b[b.length >> 1] || 0; };
+  const span = (ya, yb, xa, xb) => { const v = []; for (let y = ya; y <= yb; y += 2) for (let x = xa; x <= xb; x += 2) v.push(L[y * W + x]); return med(v); };
+  const face = span(y0, y1, x0, x1), close = v => Math.abs(v - face) < 22;
+  const rowMed = y => { const v = []; for (let x = x0; x <= x1; x++) v.push(L[y * W + x]); return med(v); };
+  const colMed = x => { const v = []; for (let y = y0; y <= y1; y++) v.push(L[y * W + x]); return med(v); };
+  const growY = Math.round((y1 - y0 + 1) * 0.6), growX = Math.round((x1 - x0 + 1) * 0.25);
+  for (let n = 0; n < growY && y0 > 0 && close(rowMed(y0 - 1)); n++) y0--;
+  for (let n = 0; n < growY && y1 < H - 1 && close(rowMed(y1 + 1)); n++) y1++;
+  for (let n = 0; n < growX && x0 > 0 && close(colMed(x0 - 1)); n++) x0--;
+  for (let n = 0; n < growX && x1 < W - 1 && close(colMed(x1 + 1)); n++) x1++;
+  const px = Math.round(W * 0.006), py = Math.round(H * 0.01);
+  let b = [Math.max(0, x0 - px), Math.max(0, y0 - py), Math.min(W - 1, x1 + px), Math.min(H - 1, y1 + py)];
+  if ((b[2] - b[0]) * (b[3] - b[1]) < W * H * 0.04) b = [W * 0.05, H * 0.05, W * 0.95, H * 0.95];   // nothing clear found
+  const s = 1 / k;
+  return [[b[0] * s, b[1] * s], [b[2] * s, b[1] * s], [b[2] * s, b[3] * s], [b[0] * s, b[3] * s]];
+}
+/* projective map from the unit square (u, v) to the quad: x = (a u + b v + c) / (g u + h v + 1), y = (d u + e v + f) / (...) */
+function quadMatrix(q) {
+  const [[x0, y0], [x1, y1], [x2, y2], [x3, y3]] = q, sx = x0 - x1 + x2 - x3, sy = y0 - y1 + y2 - y3;
+  if (Math.abs(sx) < 1e-6 && Math.abs(sy) < 1e-6) return [x1 - x0, x3 - x0, x0, y1 - y0, y3 - y0, y0, 0, 0];
+  const dx1 = x1 - x2, dx2 = x3 - x2, dy1 = y1 - y2, dy2 = y3 - y2, den = dx1 * dy2 - dx2 * dy1;
+  const g = (sx * dy2 - dx2 * sy) / den, h = (dx1 * sy - sx * dy1) / den;
+  return [x1 - x0 + g * x1, x3 - x0 + h * x3, x0, y1 - y0 + g * y1, y3 - y0 + h * y3, y0, g, h];
+}
+/* where a point of the original photo lands in the cropped one (u, v from 0 to 1), so port marks survive a re-crop */
+function quadInverse(q, x, y) {
+  const [a, b, c, d, e, f, g, h] = quadMatrix(q), M = [[a, b, c], [d, e, f], [g, h, 1]];
+  const det = M[0][0] * (M[1][1] * M[2][2] - M[1][2] * M[2][1]) - M[0][1] * (M[1][0] * M[2][2] - M[1][2] * M[2][0]) + M[0][2] * (M[1][0] * M[2][1] - M[1][1] * M[2][0]);
+  const inv = [[M[1][1] * M[2][2] - M[1][2] * M[2][1], M[0][2] * M[2][1] - M[0][1] * M[2][2], M[0][1] * M[1][2] - M[0][2] * M[1][1]],
+    [M[1][2] * M[2][0] - M[1][0] * M[2][2], M[0][0] * M[2][2] - M[0][2] * M[2][0], M[0][2] * M[1][0] - M[0][0] * M[1][2]],
+    [M[1][0] * M[2][1] - M[1][1] * M[2][0], M[0][1] * M[2][0] - M[0][0] * M[2][1], M[0][0] * M[1][1] - M[0][1] * M[1][0]]].map(r => r.map(v => v / det));
+  const z = inv[2][0] * x + inv[2][1] * y + inv[2][2];
+  return [(inv[0][0] * x + inv[0][1] * y + inv[0][2]) / z, (inv[1][0] * x + inv[1][1] * y + inv[1][2]) / z];
+}
+/* the quad (top-left, top-right, bottom-right, bottom-left) warped to a straight rectangle */
+function warpQuad(src, q, max = 1600) {
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  let w = Math.max(dist(q[0], q[1]), dist(q[3], q[2])), h = Math.max(dist(q[0], q[3]), dist(q[1], q[2]));
+  const k = Math.min(1, max / Math.max(w, h)); w = Math.max(8, Math.round(w * k)); h = Math.max(8, Math.round(h * k));
+  const [a, b, c, d, e, f, g, hh] = quadMatrix(q);
+  const S = src.getContext('2d').getImageData(0, 0, src.width, src.height), sd = S.data, SW = src.width, SH = src.height;
+  const out = document.createElement('canvas'); out.width = w; out.height = h;
+  const O = out.getContext('2d').createImageData(w, h), od = O.data;
+  for (let y = 0; y < h; y++) { const v = (y + 0.5) / h;
+    for (let x = 0; x < w; x++) { const u = (x + 0.5) / w, z = g * u + hh * v + 1, X = (a * u + b * v + c) / z - 0.5, Y = (d * u + e * v + f) / z - 0.5;
+      const xi = Math.max(0, Math.min(SW - 2, Math.floor(X))), yi = Math.max(0, Math.min(SH - 2, Math.floor(Y))), fx = Math.max(0, Math.min(1, X - xi)), fy = Math.max(0, Math.min(1, Y - yi));
+      const i00 = (yi * SW + xi) * 4, i10 = i00 + 4, i01 = i00 + SW * 4, i11 = i01 + 4, o = (y * w + x) * 4;
+      for (let ch = 0; ch < 3; ch++) od[o + ch] = (sd[i00 + ch] * (1 - fx) + sd[i10 + ch] * fx) * (1 - fy) + (sd[i01 + ch] * (1 - fx) + sd[i11 + ch] * fx) * fy;
+      od[o + 3] = 255; } }
+  out.getContext('2d').putImageData(O, 0, 0);
+  return out;
+}
+let cropCancel = null;
+/* shows the photo with 4 draggable corners on the detected front; resolves to {image (JPEG data URL), q (the corners)}, or null if cancelled */
+function cropPhoto(src, startFull) {
+  return new Promise(done => {
+    const m = $('#modal'), q0 = detectFront(src), full = [[0, 0], [src.width, 0], [src.width, src.height], [0, src.height]];
+    let q = (startFull ? full : q0).map(p => [...p]);
+    m.classList.add('wide');
+    m.innerHTML = `<h2>Crop and straighten</h2><p class="muted">${startFull ? 'Drag' : "The router's front was found automatically. Drag"} the four corners onto the corners of the front panel if needed; everything outside is cut away, and an angled photo is straightened.</p>
+      <div class="cropwrap"><canvas class="cropimg"></canvas><svg class="cropsvg"></svg></div>
+      <div class="actions"><button class="btn" data-a="auto">Find automatically</button><button class="btn" data-a="full">Whole photo</button><span class="sp" style="flex:1"></span><button class="btn" data-a="c">Cancel</button><button class="btn primary" data-a="ok">Crop and save</button></div>`;
+    $('#modalBg').classList.remove('hidden');
+    const cv = m.querySelector('.cropimg'), svg = m.querySelector('.cropsvg');
+    const vw = Math.min(m.clientWidth - 40, 880), k = Math.min(vw / src.width, (window.innerHeight * 0.6) / src.height, 1);
+    cv.width = Math.round(src.width * k); cv.height = Math.round(src.height * k); cv.getContext('2d').drawImage(src, 0, 0, cv.width, cv.height);
+    svg.setAttribute('width', cv.width); svg.setAttribute('height', cv.height); svg.setAttribute('viewBox', `0 0 ${cv.width} ${cv.height}`);
+    const draw = () => { const p = q.map(([x, y]) => [x * k, y * k]);
+      svg.innerHTML = `<path d="M0 0H${cv.width}V${cv.height}H0Z M${p.map(v => v.join(' ')).join(' L')}Z" fill="rgba(0,0,0,.55)" fill-rule="evenodd"/><polygon points="${p.map(v => v.join(',')).join(' ')}" fill="none" stroke="#3ccf7f" stroke-width="2"/>` +
+        p.map((v, i) => `<circle data-i="${i}" cx="${v[0]}" cy="${v[1]}" r="11" fill="rgba(60,207,127,.35)" stroke="#fff" stroke-width="2" style="cursor:grab;touch-action:none"/>`).join(''); };
+    draw(); window._cropQuad = () => q;
+    let drag = -1;
+    svg.onpointerdown = e => { const c = e.target.closest('circle'); if (!c) return; drag = +c.dataset.i; svg.setPointerCapture(e.pointerId); e.preventDefault(); };
+    svg.onpointermove = e => { if (drag < 0) return; const r = svg.getBoundingClientRect();
+      q[drag] = [Math.max(0, Math.min(src.width, (e.clientX - r.left) / k)), Math.max(0, Math.min(src.height, (e.clientY - r.top) / k))]; draw(); };
+    svg.onpointerup = svg.onpointercancel = () => { drag = -1; };
+    const finish = v => { cropCancel = null; m.classList.remove('wide'); closeModal(); done(v); };
+    cropCancel = () => { cropCancel = null; m.classList.remove('wide'); done(null); };
+    m.querySelector('.actions').onclick = e => { const a = e.target.dataset.a;
+      if (a === 'auto') { q = q0.map(p => [...p]); draw(); }
+      if (a === 'full') { q = full.map(p => [...p]); draw(); }
+      if (a === 'c') finish(null);
+      if (a === 'ok') finish({ image: warpQuad(src, q).toDataURL('image/jpeg', 0.88), q }); };
+  });
 }
 function photoHtml(phys, st) {
   const P = PANEL || {}, edit = !(ME && ME.role === 'viewer'), m = st.mark;
@@ -407,7 +513,7 @@ function photoHtml(phys, st) {
       <label class="muted" style="font-size:12px">Marker size <input type="range" class="psize" min="1.5" max="12" step="0.5" value="${size}"></label>
       <button class="btn sm" data-a="m-back" ${m.i ? '' : 'disabled'}>Back</button>${cur ? '<button class="btn sm" data-a="m-skip">Skip</button>' : ''}<button class="btn sm" data-a="m-cancel">Cancel</button><button class="btn sm primary" data-a="m-save">Save</button></div>`
     : `<div class="bar pphototools">${missing.length ? `<span class="muted" style="font-size:12px">Not marked yet: ${esc(missing.map(p => p.name).join(', '))}</span>` : `<span class="muted" style="font-size:12px">Hover over a port for its traffic and optic, and click it for details.</span>`}<span class="sp"></span>
-      ${edit ? `<button class="btn sm${missing.length === phys.length ? ' primary' : ''}" data-a="mark">Mark ports</button>${pick.replace('btn primary', 'btn sm')}<button class="btn sm ghost" data-a="del">Remove photo</button>` : ''}</div>`;
+      ${edit ? `<button class="btn sm${missing.length === phys.length ? ' primary' : ''}" data-a="mark">Mark ports</button><button class="btn sm" data-a="crop">Crop / straighten</button>${pick.replace('btn primary', 'btn sm')}<button class="btn sm ghost" data-a="del">Remove photo</button>` : ''}</div>`;
   return `<div class="pphoto${m ? ' marking' : ''}" style="--ms:${size}"><img src="/api/panel/photo?v=${P.version}" alt="Front of the router" draggable="false">${pins}</div>${tools}`;
 }
 /* opts.onPort(name): what a click on a physical port does (default: open its drawer) */
@@ -451,6 +557,19 @@ function portPanel(host, rows, opts = {}) {
       if (k === 'm-skip') { m.i++; return again(); }
       if (k === 'm-cancel') { st.mark = null; return again(); }
       if (k === 'm-save') { post('/api/panel/marks', { marks: m.marks, size: m.size }).then(x => { PANEL = x; st.mark = null; toast('Port positions saved'); again(); }).catch(fail); return; }
+      if (k === 'crop') { (async () => {
+        const img = new Image(); await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error('Could not load the photo.')); img.src = '/api/panel/photo?v=' + PANEL.version; });
+        const src = document.createElement('canvas'); src.width = img.naturalWidth; src.height = img.naturalHeight; src.getContext('2d').drawImage(img, 0, 0);
+        const c = await cropPhoto(src, true); if (!c) return;
+        const old = PANEL.marks || {}, size = PANEL.size || 4, marks = {};
+        for (const [n, [x, y]] of Object.entries(old)) { const [u, v] = quadInverse(c.q, x * src.width, y * src.height); if (u >= 0 && u <= 1 && v >= 0 && v <= 1) marks[n] = [u, v]; }
+        PANEL = await post('/api/panel/photo', { image: c.image });
+        // the panel is now a smaller part of the picture, so the rings scale up with it
+        const w0 = Math.hypot(c.q[1][0] - c.q[0][0], c.q[1][1] - c.q[0][1]);
+        if (Object.keys(marks).length) PANEL = await post('/api/panel/marks', { marks, size: Math.min(12, size * src.width / Math.max(1, w0)) });
+        const lost = Object.keys(old).length - Object.keys(marks).length;
+        toast(lost ? `Cropped. ${lost} port mark${lost > 1 ? 's were' : ' was'} outside the crop; mark ${lost > 1 ? 'them' : 'it'} again.` : 'Cropped; port marks kept.'); again();
+      })().catch(fail); return; }
       if (k === 'del') { if (confirm('Remove the photo and the port positions?')) post('/api/panel/delete').then(x => { PANEL = x; st.mark = null; again(); }).catch(fail); return; }
       return;
     }
@@ -463,7 +582,9 @@ function portPanel(host, rows, opts = {}) {
     if (t.dataset.n) interfaceDrawer(t.dataset.n); else (opts.onPort || interfaceDrawer)(t.dataset.p); };
   host.onchange = async e => {
     if (!e.target.classList.contains('pfile') || !e.target.files[0]) return;
-    try { toast('Uploading the photo…'); PANEL = await post('/api/panel/photo', { image: await shrinkPhoto(e.target.files[0]) });
+    const file = e.target.files[0]; e.target.value = '';
+    try { const c = await cropPhoto(await photoCanvas(file)); if (!c) return;
+      toast('Uploading the photo…'); PANEL = await post('/api/panel/photo', { image: c.image });
       st.mark = { i: 0, marks: {}, size: PANEL.size || 4 }; again(); } catch (x) { fail(x); }
   };
   host.oninput = e => { if (e.target.classList.contains('psize') && st.mark) { st.mark.size = +e.target.value; host.querySelector('.pphoto').style.setProperty('--ms', st.mark.size); } };

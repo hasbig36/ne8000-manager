@@ -69,7 +69,9 @@ for the live drawer. When the router reports its boards, the front panel is draw
 and clock boards along the bottom. On the Interfaces page, clicking a port lists it with its sub-interfaces in the table below.
 
 Switch the front view between **Drawing** and **Photo**. Photo asks for a straight-on picture of the router's front
-(on a phone it opens the camera), then asks you to tap where each port is, once. After that each port is a ring on
+(on a phone it opens the camera), then finds the router's front in it and crops away the background (rack, walls, cables beside it) and
+straightens an angled shot; drag the four corners to adjust. It then asks you to tap where each port is, once.
+Crop / straighten works on a saved photo too and keeps the port marks. All of this runs in the browser. After that each port is a ring on
 your own photo, coloured live; hover for traffic and optics, click for details. The photo (resized to 1600 px, JPEG or
 PNG only) and the positions are kept per router in `data/panel/`. Viewers can look but not change them.
 

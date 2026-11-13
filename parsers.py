@@ -191,7 +191,7 @@ def interface_type(name):
     n = name.lower()
     if "." in n:
         return "sub-interface"
-    for prefix, t in (("vlanif", "vlanif"), ("loopback", "loopback"), ("null", "null"), ("eth-trunk", "eth-trunk"),
+    for prefix, t in (("vlanif", "vlanif"), ("loopback", "loopback"), ("inloopback", "loopback"), ("null", "null"), ("eth-trunk", "eth-trunk"),
                       ("tunnel", "tunnel"), ("virtual-template", "virtual"), ("gigabitethernet0/0/0", "management")):
         if n.startswith(prefix):
             return t

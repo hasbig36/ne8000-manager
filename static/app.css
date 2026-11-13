@@ -215,3 +215,6 @@ a.tile:hover{border-color:var(--accent,var(--s1))}
 .pmarkbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0 14px;padding:8px 10px;border-radius:6px;background:var(--accent-soft)}
 .pmarkbar input[type=range]{width:110px;vertical-align:middle}
 .pphototools{margin:6px 0 14px}
+#modal.wide{width:min(940px,100%)}
+.cropwrap{position:relative;display:inline-block;line-height:0;margin:8px 0;max-width:100%}.cropwrap canvas{display:block;border-radius:4px}
+.cropsvg{position:absolute;inset:0;touch-action:none;overflow:visible}
