@@ -230,7 +230,7 @@ PAGES.dashboard = async c => {
   const hl = async () => { const h = await api('/api/health'), f = h.findings || [], cr = f.filter(x => x.severity === 'critical').length, el = $('#dHealth'); if (!el) return;
     el.innerHTML = `<div class="l">Health check</div><div class="v" style="color:${cr ? 'var(--bad)' : f.length ? 'var(--warn)' : 'var(--ok)'}">${f.length ? f.length + ' problem' + (f.length > 1 ? 's' : '') : 'All good'}</div><div class="s">${f.length ? `${cr} critical · ${f.filter(x => x.slow).length} slowing customers` : h.status && h.status.time ? 'nothing wrong found' : 'first check in a few minutes'}</div>`; };
   let hw = null;
-  const pv = async () => { const rows = await api('/api/view/interfaces'); ifCache = rows; await arpLoad(); if (!hw) hw = await api('/api/view/hardware').catch(() => ({})); portPanel($('#dPorts'), withClients(rows), { hw }); };
+  const pv = async () => { const rows = await api('/api/view/interfaces'); ifCache = rows; await arpLoad(); if (!hw) [hw] = await Promise.all([api('/api/view/hardware').catch(() => ({})), panelLoad()]); portPanel($('#dPorts'), withClients(rows), { hw }); };
   pv().catch(e => { const el = $('#dPorts'); if (el) el.innerHTML = `<span class="muted">${esc(e.message)}</span>`; });
   every(15000, pv);
   hl().catch(() => { const el = $('#dHealth'); if (el) el.remove(); });
@@ -378,10 +378,44 @@ function chassisHtml(rows, hw) {
     ${by('pwr').length + by('fan').length + by('clk').length ? `<div class="cminis">${small('pwr')}${small('fan')}${small('clk')}</div>` : ''}
   </div><div class="cear"><i></i><i></i></div></div>`;
 }
+/* ----- front panel photo: the router's own photo with each port marked on it, coloured live ----- */
+let PANEL = null;    // {photo, version, marks: {port: [x, y]}, size} for the connected router
+async function panelLoad() { try { PANEL = await api('/api/panel'); } catch (e) { PANEL = { error: e.message, marks: {} }; } return PANEL; }
+async function shrinkPhoto(file) {
+  // read as a data: URL (the page's security policy allows data: images, not blob:)
+  const url = await new Promise((ok, bad) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = () => bad(new Error('Could not read that file.')); f.readAsDataURL(file); }), img = new Image();
+  try {
+    await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error('That file is not a photo the browser can open. Use a JPEG or PNG.')); img.src = url; });
+    const k = Math.min(1, 1600 / Math.max(img.naturalWidth, img.naturalHeight)), c = document.createElement('canvas');
+    c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+    c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+    return c.toDataURL('image/jpeg', 0.85);
+  } finally { img.src = ''; }
+}
+function photoHtml(phys, st) {
+  const P = PANEL || {}, edit = !(ME && ME.role === 'viewer'), m = st.mark;
+  if (P.error) return `<div class="pnophoto muted">${esc(P.error)}</div>`;
+  const pick = `<label class="btn primary">${P.photo ? 'New photo' : 'Take or upload a photo'}<input type="file" accept="image/*" capture="environment" class="pfile" hidden></label>`;
+  if (!P.photo) return `<div class="pnophoto"><b>Show your real router here.</b><span class="muted">Take a straight-on photo of the router's front with every port visible (on a phone this opens the camera), then tap where each port is, once. After that every port lights up on your photo with its live state.</span>${edit ? pick : '<span class="muted">An operator or admin can add the photo.</span>'}</div>`;
+  const marks = m ? m.marks : P.marks || {}, size = m ? m.size : P.size || 4;
+  const short = n => (/(\d+\/\d+\/\d+)$/.exec(n) || [, n])[1];
+  const pins = phys.filter(p => marks[p.name]).map(p => { const [x, y] = marks[p.name];
+    return `<button class="pmark ps-${portState(p)}${m && phys[m.i] && phys[m.i].name === p.name ? ' cur' : ''}" data-p="${esc(p.name)}" style="left:${x * 100}%;top:${y * 100}%" title="${esc(portTip(p))}"><span>${esc(short(p.name))}</span></button>`; }).join('');
+  const missing = phys.filter(p => !(P.marks || {})[p.name]);
+  const cur = m && phys[m.i];
+  const tools = m ? `<div class="pmarkbar"><span>${cur ? `Tap where <b>${esc(cur.name)}</b> is on the photo <span class="muted">(${m.i + 1} of ${phys.length}${cur.description ? ', ' + esc(cur.description) : ''})</span>` : '<b>All ports placed.</b> Save to keep them.'}</span><span class="sp"></span>
+      <label class="muted" style="font-size:12px">Marker size <input type="range" class="psize" min="1.5" max="12" step="0.5" value="${size}"></label>
+      <button class="btn sm" data-a="m-back" ${m.i ? '' : 'disabled'}>Back</button>${cur ? '<button class="btn sm" data-a="m-skip">Skip</button>' : ''}<button class="btn sm" data-a="m-cancel">Cancel</button><button class="btn sm primary" data-a="m-save">Save</button></div>`
+    : `<div class="bar pphototools">${missing.length ? `<span class="muted" style="font-size:12px">Not marked yet: ${esc(missing.map(p => p.name).join(', '))}</span>` : `<span class="muted" style="font-size:12px">Hover over a port for its traffic and optic, and click it for details.</span>`}<span class="sp"></span>
+      ${edit ? `<button class="btn sm${missing.length === phys.length ? ' primary' : ''}" data-a="mark">Mark ports</button>${pick.replace('btn primary', 'btn sm')}<button class="btn sm ghost" data-a="del">Remove photo</button>` : ''}</div>`;
+  return `<div class="pphoto${m ? ' marking' : ''}" style="--ms:${size}"><img src="/api/panel/photo?v=${P.version}" alt="Front of the router" draggable="false">${pins}</div>${tools}`;
+}
 /* opts.onPort(name): what a click on a physical port does (default: open its drawer) */
 function portPanel(host, rows, opts = {}) {
   if (!host) return;
   const st = host._p || (host._p = { chip: 'all' });
+  let saved = ''; try { saved = localStorage.getItem('ne8000.portview') || ''; } catch (x) {}
+  const view = st.view || saved || (PANEL && PANEL.photo ? 'photo' : 'drawing');
   const phys = rows.filter(r => ['ethernet', 'management'].includes(r.type) && !r.name.includes('.'));
   const subsOf = p => rows.filter(r => r.name.startsWith(p.name + '.')).sort((a, b) => (+a.name.split('.')[1] || 0) - (+b.name.split('.')[1] || 0));
   const keep = r => st.chip === 'all' || (st.chip === 'up' ? portState(r) === 'up' : st.chip === 'down' ? portState(r) !== 'up' : st.chip === 'busy' ? portLoad(r) >= 65 : r.in_errors + r.out_errors > 0);
@@ -400,11 +434,39 @@ function portPanel(host, rows, opts = {}) {
   const count = k => k === 'all' ? '' : ` ${rows.filter(r => r.name.includes('.') && phys.some(p => r.name.startsWith(p.name + '.'))).filter(r => { const o = st.chip; st.chip = k; const y = keep(r); st.chip = o; return y; }).length}`;
   host.innerHTML = `<div class="bar"><div class="seg pchips">${PORT_CHIPS.map(([k, l]) => `<button data-c="${k}" class="${st.chip === k ? 'on' : ''}">${l}${count(k)}</button>`).join('')}</div><span class="sp"></span>
     <div class="legend plegend"><span><i class="ps-up"></i>Up</span><span><i class="ps-half"></i>Protocol down</span><span><i class="ps-down"></i>Down</span><span><i class="ps-off"></i>Disabled</span><span><i class="pe"></i>Errors</span><span>bar = traffic</span></div></div>
-    ${(opts.hw && chassisHtml(rows, opts.hw)) || `<div class="pfplate">${phys.map(face).join('') || '<span class="muted">No physical ports found.</span>'}</div>`}
+    <div class="bar pviewbar"><div class="seg pview">${[['drawing', 'Drawing'], ['photo', 'Photo']].map(([k, l]) => `<button data-v="${k}" class="${view === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+    ${view === 'photo' ? photoHtml(phys, st) : (opts.hw && chassisHtml(rows, opts.hw)) || `<div class="pfplate">${phys.map(face).join('') || '<span class="muted">No physical ports found.</span>'}</div>`}
     <div class="pports">${phys.filter(p => subsOf(p).length).map(port).join('')}</div>`;
   host.querySelector('.pchips').onclick = e => { const b = e.target.closest('[data-c]'); if (b) { st.chip = b.dataset.c; portPanel(host, rows, opts); } };
-  host.onclick = e => { const t = e.target.closest('.pports [data-n],.pports [data-p],.pfplate [data-p],.chassis [data-p]'); if (!t) return;
+  const again = () => portPanel(host, rows, opts);
+  const fail = e => toast(e.message, true);
+  host.onclick = e => {
+    const v = e.target.closest('.pview [data-v]');
+    if (v) { st.view = v.dataset.v; try { localStorage.setItem('ne8000.portview', st.view); } catch (x) {} return again(); }
+    const a = e.target.closest('[data-a]');
+    if (a) {
+      const m = st.mark, k = a.dataset.a;
+      if (k === 'mark') { st.mark = { i: 0, marks: { ...(PANEL.marks || {}) }, size: PANEL.size || 4 }; return again(); }
+      if (k === 'm-back') { m.i = Math.max(0, m.i - 1); return again(); }
+      if (k === 'm-skip') { m.i++; return again(); }
+      if (k === 'm-cancel') { st.mark = null; return again(); }
+      if (k === 'm-save') { post('/api/panel/marks', { marks: m.marks, size: m.size }).then(x => { PANEL = x; st.mark = null; toast('Port positions saved'); again(); }).catch(fail); return; }
+      if (k === 'del') { if (confirm('Remove the photo and the port positions?')) post('/api/panel/delete').then(x => { PANEL = x; st.mark = null; again(); }).catch(fail); return; }
+      return;
+    }
+    const img = e.target.closest('.pphoto.marking img, .pphoto.marking .pmark');
+    if (img && st.mark) { const m = st.mark, cur = phys[m.i]; if (!cur) return;
+      const r = host.querySelector('.pphoto img').getBoundingClientRect();
+      m.marks[cur.name] = [Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (e.clientY - r.top) / r.height))];
+      m.i++; return again(); }
+    const t = e.target.closest('.pports [data-n],.pports [data-p],.pfplate [data-p],.chassis [data-p],.pphoto:not(.marking) [data-p]'); if (!t) return;
     if (t.dataset.n) interfaceDrawer(t.dataset.n); else (opts.onPort || interfaceDrawer)(t.dataset.p); };
+  host.onchange = async e => {
+    if (!e.target.classList.contains('pfile') || !e.target.files[0]) return;
+    try { toast('Uploading the photo…'); PANEL = await post('/api/panel/photo', { image: await shrinkPhoto(e.target.files[0]) });
+      st.mark = { i: 0, marks: {}, size: PANEL.size || 4 }; again(); } catch (x) { fail(x); }
+  };
+  host.oninput = e => { if (e.target.classList.contains('psize') && st.mark) { st.mark.size = +e.target.value; host.querySelector('.pphoto').style.setProperty('--ms', st.mark.size); } };
 }
 
 /* ----- interfaces ----- */
@@ -429,7 +491,7 @@ PAGES.interfaces = async c => {
     { t: 'Errors', k: 'in_errors', num: true, f: r => r.in_errors + r.out_errors ? `<span style="color:var(--bad)">${r.in_errors}/${r.out_errors}</span>` : '0' },
     { t: '', sort: false, cls: 'acts', f: r => r.type === 'null' ? '' : (r.admin_down ? `<button class="btn sm" onclick='ifToggle(${attr(r.name)},true)'>Enable</button>` : `<button class="btn sm" onclick='ifToggle(${attr(r.name)},false)'>Disable</button>`) + `<button class="btn sm" onclick='ifEdit(${attr(r.name)})'>Edit</button>` },
   ], withClients(rows).filter(pick), { onRow: r => interfaceDrawer(r.name), rowClass: r => r.admin_down ? 'off' : '' });
-  let hw = null; api('/api/view/hardware').then(h => { hw = h; ports(ifCache); }).catch(() => {});
+  let hw = null; Promise.all([api('/api/view/hardware').catch(() => null), panelLoad()]).then(([h]) => { hw = h; ports(ifCache); });
   const ports = rows => portPanel($('#ifPorts'), rows, { hw, onPort: name => { const t = $('#ifTable'); t._t.q = name; draw(ifCache); t.scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
   draw(rows); ports(rows);
   every(10000, async () => { if (!$('#modalBg').classList.contains('hidden')) return; ifCache = await api('/api/view/interfaces'); await arpLoad(); draw(ifCache); ports(ifCache); });
