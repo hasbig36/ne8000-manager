@@ -62,6 +62,17 @@ class Device:
                     out = "Now saving the current configuration to the slot 17\r\nInfo: Save the configuration successfully."
             elif l == "quit" and view == "user":
                 return
+            elif view == "user" and self.network is not None and re.match(r"^(stelnet|telnet)( -a \S+)? (\S+)$", l):
+                out = self._hop(io, l)
+            elif view == "user" and l.startswith("ping ") and self.network is not None:
+                ip = l.split()[-1]
+                out = (f"  PING {ip}: 56  data bytes\r\n    Reply from {ip}: bytes=56 Sequence=1 ttl=255 time=1 ms\r\n  --- {ip} ping statistics ---\r\n    0.00% packet loss"
+                       if ip in self.network else f"  PING {ip}: 56  data bytes\r\n    Request time out\r\n  --- {ip} ping statistics ---\r\n    100.00% packet loss")
+            elif view == "user" and l == "display current-configuration | include first-time":
+                out = "ssh client first-time enable" if "ssh client first-time enable" in self.running else ""
+            elif view == "user" and l.startswith("display arp interface"):
+                out = "IP ADDRESS      MAC ADDRESS    EXPIRE(M) TYPE        INTERFACE      VPN-INSTANCE\r\n" + "".join(
+                    f"{ip:<16}00e0-fc12-3456  20        D-0         {l.split()[-1]}\r\n" for ip in self.network)
             elif view == "system":
                 if l.startswith("bogus") or l.startswith("abort"):
                     out = "                ^\r\nError: Unrecognized command found at '^' position."
@@ -81,6 +92,41 @@ class Device:
                 out = "Error: Unrecognized command found at '^' position."
             io.write(("\r\n" + out if out else "") + "\r\n" + p())
 
+    home = None           # on a device behind a router: that router's network dict
+    network = None        # on a router: {ip: Device} of the devices behind its ports
+
+    def _hop(self, io, line):
+        parts = line.split()
+        ssh, ip = parts[0] == "stelnet", parts[-1]
+        user = ""
+        if ssh:
+            io.write("\r\nPlease input the username:")
+            user = (io.readline() or "").strip()
+        io.write(f"\r\nTrying {ip} ...\r\nPress CTRL+K to abort\r\n")
+        dev = self.network.get(ip)
+        if dev is None:
+            return "Error: Failed to connect to the remote host."
+        if ssh:
+            if "ssh client first-time enable" not in self.running:
+                return "Error: Failed to verify the server's public key."
+            io.write(f"Connected to {ip} ...\r\nThe server is not authenticated. Continue to access it? [Y/N]:")
+            if (io.readline() or "").strip().upper() != "Y":
+                return ""
+            io.write("\r\nSave the server's public key? [Y/N]:")
+            if (io.readline() or "").strip().upper() == "Y":
+                self.running.append(f"ssh client peer {ip}")
+            io.write("\r\nEnter password:")
+        else:
+            io.write(f"Connected to {ip} ...\r\n\r\nLogin authentication\r\n\r\nUsername:")
+            user = (io.readline() or "").strip()
+            io.write("\r\nPassword:")
+        pw = (io.readline() or "").strip()
+        if dev.users.get(user) != pw:
+            return "Error: Failed to verify the password." if ssh else "Error: Username or password error."
+        if dev.login_prompts(io, user):
+            dev.run_cli(io, user)
+        return "\r\nInfo: The connection was closed by the remote host."
+
     def _commit(self, lines, io):
         return self._apply(lines, io)
 
@@ -96,8 +142,10 @@ class Device:
                 m = re.match(r"local-user (\S+) password irreversible-cipher (\S+)", l)
                 if m:
                     self.users[m.group(1)] = m.group(2)
-                if re.match(r"ip address ", l):
+                if re.match(r"ip address ", l) and self.network is None:
                     moved = True
+                    if self.home is not None:      # reachable at the new address from the router
+                        self.home[l.split()[2]] = self
         return moved
 
     def login_prompts(self, io, user):

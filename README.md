@@ -73,6 +73,15 @@ Switch the front view between **Drawing** and **Photo**. Photo asks for a straig
 your own photo, coloured live; hover for traffic and optics, click for details. The photo (resized to 1600 px, JPEG or
 PNG only) and the positions are kept per router in `data/panel/`. Viewers can look but not change them.
 
+### Set up a new device from a port (admin)
+Plug a factory-new Huawei switch or router into a free port of the NE8000, click that port (Port view or Interfaces), and press **Set up a new device here**. The router reaches the new device itself, so nothing is needed on a laptop:
+1. **Prepare the port**: checks the port is free (no IP, no sub-interfaces, routed), that the factory network (192.168.1.0/24 or 192.168.0.0/24) and the port's management network are not routed anywhere on the router, and reads LLDP on the port. It shows the router lines: a temporary address in the factory network (192.168.1.10), the port's own address if you give one (for example 10.10.5.1/30, which stays), and `ssh client first-time enable` if the router does not have it. They are committed but not saved.
+2. **Connect**: the router pings the factory addresses and reads ARP on the port, then logs in to the device from its own command line (`stelnet`, or `telnet`). The device's SSH key is accepted for this session but never stored on the router. A forced password change at first login is handled. Failures say why (no answer, wrong password, user locked, the router's SSH client refused the key).
+3. **Settings, review, apply**: the same template as the laptop tool and Adopt devices. After commit and save, the new admin login is tested through the router, then the management address moves (for example 10.10.5.2/30 with the port address as gateway) and the router pings it. A device that ends up ready is added to Manager › Routers.
+4. **Finish** takes the temporary lines back off the router (also done when you disconnect). Press Save on the router to keep the port's own address.
+
+While a step runs it uses the router's SSH line, so the other pages wait for it. Demo mode does not offer it.
+
 ### Health check
 
 Every 5 minutes, for each saved router with an SNMP login, the manager looks for what makes customers

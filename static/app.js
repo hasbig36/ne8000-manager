@@ -652,6 +652,7 @@ async function interfaceDrawer(name) {
     <div class="bar"><button class="btn" onclick='ifToggle(${attr(name)},${/down/i.test(info.state) && /admin/i.test(info.state)})'>${/admin/i.test(info.state) ? 'Enable' : 'Disable'}</button>
     <button class="btn" onclick='ifEdit(${attr(name)})'>Description / MTU</button><button class="btn" onclick='ifIpForm(${attr(name)})'>+ IP address</button>
     ${info.ip ? `<button class="btn" id="dIps" onclick='event.stopPropagation();ipMenu(this,${attr(name)})'>IP addresses ▾</button>` : ''}
+    ${!isSub && ME && ME.role === 'admin' && !DEMO ? `<button class="btn primary" onclick='portSetup(${attr(name)})'>Set up a new device here</button>` : ''}
     ${!isSub ? `<button class="btn" onclick='subifForm(${attr(name)})'>+ Sub-interface</button><button class="btn" onclick='location.hash="queues";setTimeout(()=>queueStats(${attr(name)}),300)'>Queues</button>` : ''}
     <button class="btn" onclick='change({title:"Reset counters on ${esc(name)}",action:"interface.reset_counters",params:{interface:${attr(name)}}})'>Reset counters</button>
     ${isSub ? `<button class="btn danger" onclick='change({title:"Delete ${esc(name)}",action:"interface.delete",params:{interface:${attr(name)}},after:()=>{closeDrawer();refresh()}})'>Delete</button>` : ''}</div>

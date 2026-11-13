@@ -2,7 +2,7 @@ name: Huawei Device Setup (laptop tool)
 
 on:
   push:
-    paths: ["setup-tool/**", "adopt.py", "actions.py", ".github/workflows/setup-tool.yml"]
+    paths: ["setup-tool/**", "adopt.py", "actions.py", "portsetup.py", "device.py", ".github/workflows/setup-tool.yml"]
   workflow_dispatch:
 
 jobs:
@@ -12,7 +12,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: {python-version: "3.12"}
-      - run: pip install -r setup-tool/requirements.txt
+      - run: pip install -r setup-tool/requirements.txt netmiko
       - run: python -m unittest discover -s setup-tool/tests -v
 
   build:

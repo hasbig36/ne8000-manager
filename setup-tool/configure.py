@@ -80,9 +80,9 @@ def _commit_and_save(sh, platform, log):
         raise SessionError("The configuration was applied but saving it may have failed.", out.strip()[-400:], "save")
 
 
-def check_only(target, text, log):
+def check_only(target, text, log, reach=None):
     p1, p2 = split_phases(text)
-    sh = open_session(target)
+    sh = (reach or Direct(target)).first()
     try:
         info = identify(sh)
         if info["platform"] != "vrp8":
@@ -100,12 +100,31 @@ def ssh_port(target):
     return int(target.get("ssh_port") or (target.get("port") if target.get("method") == "ssh" else 0) or 22)
 
 
-def verify_login(host, username, password, log, tries=3, wait=4, port=22):
+class Direct:
+    """How the laptop reaches the device: straight from this computer. The web app's port
+    setup supplies another one that goes through the router."""
+    where = "This laptop"
+
+    def __init__(self, target):
+        self.target, self.sp = target, ssh_port(target)
+
+    def first(self):
+        return open_session(self.target)
+
+    def login(self, host, username, password):
+        return open_session({"method": "ssh", "host": host, "port": self.sp, "username": username, "password": password})
+
+    def reachable(self, host):
+        return tcp_check(host, self.sp, timeout=3) is None
+
+
+def verify_login(host, username, password, log, tries=3, wait=4, port=22, reach=None):
     """Log in over SSH with the new admin user. Returns (device info, open session) or raises the last error."""
+    reach = reach or Direct({"method": "ssh", "port": port})
     last = None
     for n in range(tries):
         try:
-            sh = open_session({"method": "ssh", "host": host, "port": port, "username": username, "password": password})
+            sh = reach.login(host, username, password)
         except SessionError as exc:
             last = exc
             log(f"(SSH login as {username} at {host}: {exc.reason})")
@@ -120,14 +139,15 @@ def verify_login(host, username, password, log, tries=3, wait=4, port=22):
     raise last
 
 
-def apply(target, fields, text, log):
+def apply(target, fields, text, log, reach=None):
     """Returns a report dict. `log` is called with each step so the screen can follow along."""
+    reach = reach or Direct(target)
     p1, p2 = split_phases(text)
     admin, admin_pw = str(fields.get("admin_user") or "").strip(), fields.get("admin_password") or ""
     report = {"steps": [], "ready": False, "host": target.get("host") or "", "warnings": []}
     step = lambda name, ok, detail="": (report["steps"].append({"name": name, "ok": ok, "detail": detail}), log(("OK  " if ok else "FAIL ") + name + (f": {detail}" if detail else "")))
 
-    sh = open_session(target)
+    sh = reach.first()
     try:
         info = identify(sh)
         report["device"] = info
@@ -148,10 +168,9 @@ def apply(target, fields, text, log):
 
     host = report["host"] if target.get("method") != "console" else ""
     nh = new_address(p2)
-    sp = ssh_port(target)
     if host and admin:
         try:
-            v, s2 = verify_login(host, admin, admin_pw, log, port=sp)
+            v, s2 = verify_login(host, admin, admin_pw, log, reach=reach)
             s2.close()
             step(f"New admin '{admin}' can log in over SSH", True, f"{host}, name {v['sysname']}")
         except SessionError as exc:
@@ -162,12 +181,12 @@ def apply(target, fields, text, log):
                 return report
 
     if p2:
-        sh = open_session(target) if target.get("method") == "console" else None
+        sh = reach.first() if target.get("method") == "console" else None
         if sh is None:
             try:
-                sh = open_session({"method": "ssh", "host": host, "port": sp, "username": admin, "password": admin_pw})
+                sh = reach.login(host, admin, admin_pw)
             except SessionError:
-                sh = open_session(target)
+                sh = reach.first()
         moved_ok = False
         try:
             sh.cmd("system-view", timeout=30)
@@ -184,9 +203,9 @@ def apply(target, fields, text, log):
         finally:
             sh.close()
         if nh and admin:
-            if tcp_check(nh, sp, timeout=3) is None:
+            if reach.reachable(nh):
                 try:
-                    v, s3 = verify_login(nh, admin, admin_pw, log, tries=4, port=sp)
+                    v, s3 = verify_login(nh, admin, admin_pw, log, tries=4, reach=reach)
                     if not moved_ok:
                         s3.cmd("save", timeout=300, answer="Y")
                         step("Management address set and saved", True, f"{nh} (saved from the new address)")
@@ -198,7 +217,7 @@ def apply(target, fields, text, log):
                     step(f"Reachable at the new address {nh}", False, exc.reason)
             else:
                 report["warnings"].append(
-                    f"This laptop cannot reach {nh} (normal when it is on another network). " +
+                    f"{reach.where} cannot reach {nh} (normal when it is on another network). " +
                     ("The setting is saved." if moved_ok else
                      "The address is set but NOT saved yet: connect to the device's new network and press 'Finish at the new address'."))
                 if not moved_ok:

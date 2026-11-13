@@ -234,13 +234,17 @@ class Shell:
         pats = [  # checked in this order once the device goes quiet
             ("fail", re.compile(r"(?i)(authentication fail|username or password|password invalid|login failed|access denied)")),
             ("locked", re.compile(r"(?i)(user|account|ip|address).{0,40}\b(is|been) locked")),
+            ("hopfail", re.compile(r"(?i)(failed to connect|connection refused|connect(ion)? timed? ?out|unable to connect|"
+                                   r"host is unreachable|failed to verify the server|server is not reachable|no route to)[^\n]*")),
             ("prompt", PROMPT_RE),
             ("user", re.compile(r"(?i)(user ?name|login)\s*:\s*$")),
             ("old", re.compile(r"(?i)old password\s*:?\s*$")),
             ("confirm", re.compile(r"(?i)(confirm|re-?enter|retype|again).{0,30}password\s*:?\s*$")),
-            ("new", re.compile(r"(?i)(new|enter) password\s*(\([^)]*\))?\s*:?\s*$")),
+            ("new", re.compile(r"(?i)new password\s*(\([^)]*\))?\s*:?\s*$")),
             ("password", re.compile(r"(?i)password\s*:\s*$")),
             ("change", re.compile(r"(?i)(change now|change the password|modify the password).{0,40}(\[y/n\])\s*:?\s*$")),
+            ("trust", re.compile(r"(?i)(not authenticated|continue to access)[^\n]*\[y/n\]\s*:?\s*$")),
+            ("savekey", re.compile(r"(?i)save the server'?s public key[^\n]*\[y/n\]\s*:?\s*$")),
             ("yn", CONFIRM_RE),
             ("enter", re.compile(r"(?i)(press enter|press return|press any key)[^\n]*$")),
         ]
@@ -264,21 +268,23 @@ class Shell:
             if k == "locked":
                 raise SessionError("The device says this user or address is locked after too many wrong passwords.",
                                    "Wait 5 to 10 minutes (or use the console cable) and try again with the right password.", "login")
+            if k == "hopfail":
+                m = rx[names.index("hopfail")].search(text)
+                raise SessionError(f"The router could not open a session to the device: {m.group(0).strip()}",
+                                   "Check the device is plugged into this port, has finished booting, and answers on its factory address.", "network")
             if k == "prompt":
+                if getattr(self.t, "home_prompt", None) and PROMPT_RE.search(text).group(1).strip("<>[]~*") == self.t.home_prompt:
+                    tail = " ".join(text.strip().splitlines()[-3:-1])[:200]
+                    raise SessionError("The router could not reach the device" + (f": {tail}" if tail else "."),
+                                       "Check the device is plugged into this port and answers on its factory address.", "network")
                 self.prompt = PROMPT_RE.search(text).group(1)
                 return changed
             if k == "user":
                 self.t.send(username + "\n")
             elif k == "old":
                 self.t.send(password + "\n")
-            elif k in ("confirm", "new"):
-                first_console = "login password" in text.lower()
-                if k == "new" and not changed and not first_console and "enter password" in text.lower() and not new_password:
-                    pw_sent += 1          # some consoles say "Enter password:" for the normal login
-                    if pw_sent > 2:
-                        raise SessionError("The device refused the password.", "Check the login.", "login")
-                    self.t.send(password + "\n")
-                    continue
+            elif k in ("confirm", "new") or (k == "password" and "login password" in text.lower()):
+                # a forced change, or a new console asking to set its first login password
                 if not new_password:
                     raise NeedNewPassword("The device asks for a new password before it can be used.",
                                           "Enter the new password for this user below and check again.", "login")
@@ -290,6 +296,10 @@ class Shell:
                     raise SessionError("The device refused the username or password.",
                                        "Check the login. Common factory logins are listed below the form.", "login")
                 self.t.send(password + "\n")
+            elif k == "trust":
+                self.t.send("Y\n")       # first contact with this device's SSH key
+            elif k == "savekey":
+                self.t.send("N\n")       # do not store the key on the router (that would change its configuration)
             elif k == "change":
                 if not new_password:
                     raise NeedNewPassword("The device wants its factory password changed before it can be used.",
@@ -312,6 +322,9 @@ class Shell:
             out += text
             if i == 0:
                 self.prompt = PROMPT_RE.search(text).group(1)
+                if getattr(self.t, "home_prompt", None) and self.prompt.strip("<>[]~*") == self.t.home_prompt:
+                    self.log.append(out)       # back at the router: the device ended the session
+                    raise SessionError("The device closed the session.", "", "session")
                 break
             if i == 1:
                 self.t.send(answer + "\n")
@@ -326,10 +339,11 @@ class Shell:
         return PROMPT_RE.sub("", body).strip("\n")
 
     def close(self):
-        try:
-            self.t.send("quit\n")
-        except Exception:
-            pass
+        if not getattr(self.t, "home_prompt", None):     # through a router, its transport leaves carefully
+            try:
+                self.t.send("quit\n")
+            except Exception:
+                pass
         self.t.close()
 
 
