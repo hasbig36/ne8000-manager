@@ -235,12 +235,9 @@ function portSetup(port) {
   const lab = (k, t, v = '', x = '') => `<label>${t}</label><input id="ps_${k}" value="${esc(v)}" autocomplete="off" ${x}>`;
   const mgr = /^\d+\.\d+\.\d+\.\d+$/.test(location.hostname) ? location.hostname : '';
   d.innerHTML = `<h1>New device on ${esc(port)}<span style="flex:1"></span><button class="btn" id="psBack">Back to the port</button></h1>
-    <div class="faint" style="font-size:12.5px">Plug the new Huawei switch or router into this port. The router itself reaches it: it gets a temporary address in the device's factory network on this port, logs in to the device from its own command line, and sets it up. Nothing on the router is saved, and the temporary lines are taken back when you finish. While a step runs, the router's other pages wait for it.</div>
-    <div class="card"><h3>1. Prepare the port</h3>
-      <div class="form">
-        <label>Factory network</label><select id="ps_net"><option value="192.168.1.0/24">192.168.1.x (S switches 192.168.1.253, AR 192.168.1.1)</option><option value="192.168.0.0/24">192.168.0.x</option></select>
-        ${lab('router_addr', 'This port\'s address (stays)', '', 'placeholder="e.g. 10.10.5.1/30, for the device\'s management (optional)"')}</div>
-      <div class="actions" style="justify-content:flex-start"><button class="btn" id="psPlan">Check the port</button></div>
+    <div class="faint" style="font-size:12.5px">The router reaches the device plugged into this port and sets it up from its own command line. <b>Nothing on the router is changed</b>: it only reads, pings and logs in to the device. That works when the port already has an address in the device's network. A brand-new box on a port with no address needs the laptop tool. While a step runs, the router's other pages wait for it.</div>
+    <div class="card"><h3>1. Check the port</h3>
+      <div class="actions" style="justify-content:flex-start"><button class="btn primary" id="psPlan">Check the port</button></div>
       <div id="psPlanR"></div></div>
     <div class="card hidden" id="psS2"><h3>2. Connect to the device</h3>
       <div class="form">
@@ -257,7 +254,7 @@ function portSetup(port) {
         ${lab('hostname', 'Device name', '', 'placeholder="SW-SITE-01"')}${lab('admin_user', 'New admin user', 'noc')}
         <label>New admin password</label><input id="ps_admin_password" type="password" autocomplete="new-password" placeholder="8 to 64 characters, sent to the device only">
         ${lab('mgmt_interface', 'Management interface', '', 'placeholder="Vlanif10 or GigabitEthernet0/0/1"')}${lab('mgmt_vlan', 'Management VLAN', '', 'placeholder="switch: e.g. 10"')}
-        ${lab('mgmt_ip', 'Management IP / prefix', '', 'placeholder="e.g. 10.10.5.2/30, in this port\'s network"')}${lab('gateway', 'Default gateway', '', 'placeholder="this port\'s address, e.g. 10.10.5.1"')}
+        ${lab('mgmt_ip', 'Management IP / prefix', '', 'placeholder="in this port\'s network (optional)"')}${lab('gateway', 'Default gateway', '', 'placeholder="this port\'s address"')}
         ${lab('snmp_user', 'SNMPv3 user', 'ne8000mon')}<label>SNMP authentication password</label><input id="ps_snmp_auth_key" type="password" autocomplete="new-password" placeholder="8 to 64 characters">
         <label>SNMP privacy password</label><input id="ps_snmp_priv_key" type="password" autocomplete="new-password" placeholder="8 to 64 characters">
         ${lab('snmp_acl_source', 'Allow SNMP only from', mgr)}${lab('ntp', 'NTP server(s)', '')}${lab('syslog', 'Syslog server(s)', '')}
@@ -269,9 +266,7 @@ function portSetup(port) {
       <div class="faint" style="font-size:12.5px">Sent to the device in this order. The new management address goes last, after the new admin login has been tested through the router.</div>
       <textarea id="psText" spellcheck="false" style="min-height:300px;margin-top:6px"></textarea>
       <div class="actions" style="justify-content:flex-start"><button class="btn" id="psCheckCfg">Check only</button><button class="btn primary" id="psApply">Apply, save and verify</button></div>
-      <div id="psRes"></div><pre id="psLog" class="hidden" style="max-height:300px;overflow:auto"></pre></div>
-    <div class="card"><h3>Finish</h3><div class="faint" style="font-size:12.5px">Takes the temporary address (and "ssh client first-time enable", if it was added) back off the router. The port's own address stays.</div>
-      <div class="actions" style="justify-content:flex-start"><button class="btn" id="psClose">Finish and undo the temporary lines</button><span id="psCloseR" class="muted" style="align-self:center"></span></div></div>`;
+      <div id="psRes"></div><pre id="psLog" class="hidden" style="max-height:300px;overflow:auto"></pre></div>`;
   const val = k => { const e = $('#ps_' + k); return e.type === 'checkbox' ? e.checked : e.value; };
   const target = () => ({ method: val('method'), host: val('host'), username: val('user'), password: val('pass'), new_password: val('newpw') });
   const fields = () => Object.fromEntries(['hostname', 'admin_user', 'admin_password', 'ssh_only', 'mgmt_interface', 'mgmt_vlan', 'mgmt_ip', 'gateway', 'snmp_user', 'snmp_auth_key', 'snmp_priv_key',
@@ -283,20 +278,21 @@ function portSetup(port) {
   const fillHosts = (found, cands) => { $('#ps_host').innerHTML = [...new Set([...found, ...cands])].map(h => `<option value="${esc(h)}">${esc(h)}${found.includes(h) ? ' (answers)' : ''}</option>`).join(''); };
   const look = async () => {
     $('#psCheckR').innerHTML = '<span class="muted">Looking for the device from the router…</span>';
-    const r = await psJob('/api/portsetup/open', {}, l => $('#psCheckR').innerHTML = `<span class="muted">${esc(l)}</span>`);
+    const r = await psJob('/api/portsetup/look', {}, l => $('#psCheckR').innerHTML = `<span class="muted">${esc(l)}</span>`);
     fillHosts(r.found, r.candidates); $('#psS2').classList.remove('hidden');
     $('#psCheckR').innerHTML = r.found.length ? `<span class="pill p-ok">found</span> ${esc(r.found.join(', '))} answers from the router.` :
-      `<span class="err">Nothing answers yet.</span> <span class="faint">Check the cable and link light, give the device a minute to boot, or try the other factory network. Many NE routers have no factory address: use the console cable for those.</span>`;
+      `<span class="err">Nothing answers on this port's network.</span> <span class="faint">Check the cable and link light and give the device a minute to boot. A device still at its factory address (192.168.1.253) is not in this port's network: set it up with the laptop tool.</span>`;
   };
   $('#psPlan').onclick = async e => {
     busy(e.target, true);
     try {
-      const p = await post('/api/portsetup/plan', { port, network: val('net'), router_addr: val('router_addr') });
+      const p = await post('/api/portsetup/plan', { port });
       $('#psPlanR').innerHTML = steps(p.checks) + (p.lldp && p.lldp.name ? `<div class="faint">LLDP on this port: ${esc(p.lldp.name)} ${esc(p.lldp.description || '')}${p.lldp.address ? ' · ' + esc(p.lldp.address) : ''}</div>` : '') +
-        (p.ok ? `<div style="margin-top:6px">The router gets these lines (committed, <b>not saved</b>):</div><pre>${esc(p.lines.join('\n'))}</pre>
-          <div class="actions" style="justify-content:flex-start"><button class="btn primary" id="psOpen">Apply them and look for the device</button></div>` :
-          `<div class="err">This port cannot be used: ${esc(p.blockers.join('; '))}</div>`);
-      if (p.ok) $('#psOpen').onclick = async ev => { busy(ev.target, true); try { await look(); ev.target.textContent = 'Applied'; } catch (x) { toast(x.message, true); busy(ev.target, false); } };
+        (p.ok ? `<div class="actions" style="justify-content:flex-start"><button class="btn primary" id="psLook">Look for the device</button></div>` :
+          `<div class="err">${esc(p.blockers.join(' '))}</div>`);
+      if (!p.first_time) $('#ps_method').value = 'telnet';
+      if (p.own && p.own[0] && !val('gateway')) $('#ps_gateway').value = p.own[0];
+      if (p.ok) $('#psLook').onclick = async ev => { busy(ev.target, true); try { await look(); } catch (x) { toast(x.message, true); } finally { busy(ev.target, false); } };
     } catch (x) { $('#psPlanR').innerHTML = `<div class="err">${esc(x.message)}</div>`; } finally { busy(e.target, false); }
   };
   $('#psFind').onclick = () => look().catch(x => toast(x.message, true));
@@ -311,7 +307,6 @@ function portSetup(port) {
         if (r.password_changed) { $('#ps_pass').value = $('#ps_newpw').value; $('#ps_newpw').value = ''; }
         const dv = r.device; $('#ps_platform').value = dv.platform;
         $('#psCheckR').innerHTML = `<span class="pill p-ok">connected</span> ${esc(dv.model || 'Huawei')} · VRP ${esc(dv.version)} · name <b>${esc(dv.sysname)}</b>${dv.esn ? ' · serial ' + esc(dv.esn) : ''}${r.password_changed ? ' · <b>its password was changed to the new one</b>' : ''}`;
-        const ra = val('router_addr'); if (ra && !val('gateway')) $('#ps_gateway').value = ra.split('/')[0];
         $('#psS3').classList.remove('hidden'); $('#psS3').scrollIntoView({ behavior: 'smooth' });
       }
     } catch (x) { $('#psCheckR').innerHTML = `<span class="err">${esc(x.message)}</span>`; } finally { busy(e.target, false); }
@@ -334,9 +329,4 @@ function portSetup(port) {
   };
   $('#psCheckCfg').onclick = e => run(true, e.target);
   $('#psApply').onclick = e => run(false, e.target);
-  $('#psClose').onclick = async e => {
-    busy(e.target, true);
-    try { const r = await post('/api/portsetup/close'); $('#psCloseR').innerHTML = r.undone.length ? `Done. Taken back: <span class="mono">${esc(r.undone.map(x => x.trim()).join(' · '))}</span>. Press Save on the router to keep the port's own address.` : 'Nothing to take back.'; }
-    catch (x) { $('#psCloseR').innerHTML = `<span class="err">${esc(x.message)}</span>`; } finally { busy(e.target, false); }
-  };
 }

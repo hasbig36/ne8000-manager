@@ -1,17 +1,13 @@
 """Set up a new device plugged into one of the router's own ports, through the router.
 
-The router reaches the new device for us:
-  1. plan:  check the port is free, that the factory network (192.168.1.0/24) is not routed
-            anywhere on the router, read LLDP on the port, and list the router lines needed:
-            a temporary address in the factory network on the port (and, if asked, the port's
-            permanent address for the device's management network), plus
-            "ssh client first-time enable" so the router's SSH client accepts a new device.
-  2. open:  apply those lines (committed, not saved) and look for the device from the router.
-  3. check / apply: log in to the device from the router's command line (stelnet, or telnet)
-            and drive it with the laptop tool's engine (setup-tool/session.py, configure.py):
-            forced password change, initial configuration, commit, save, new admin login test,
-            then the new management address.
-  4. close: remove the temporary address and anything else that was only for the setup.
+Read-only on the router: nothing here changes the router's configuration.
+  1. plan:  read the port's addresses, LLDP and whether the router's SSH client accepts new
+            devices. The router can only reach a device in a network the port already has.
+  2. look:  ping the candidates and read ARP on the port (display commands and ping only).
+  3. check / run: log in to the device from the router's command line (stelnet, or telnet;
+            the device's key is accepted for the session but never stored on the router) and
+            drive it with the laptop tool's engine (setup-tool/session.py, configure.py).
+A brand-new box on a port with no address needs the laptop tool instead.
 While a step runs it holds the router's SSH line, so the GUI's own reads wait for it.
 """
 import ipaddress
@@ -26,7 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "set
 import session as devsession        # noqa: E402
 import configure as devconfigure    # noqa: E402
 
-FACTORY_NETS = {"192.168.1.0/24": ["192.168.1.253", "192.168.1.1"], "192.168.0.0/24": ["192.168.0.1"]}
+FACTORY_NETS = {"192.168.1.0/24": ["192.168.1.253", "192.168.1.1"], "192.168.0.0/24": ["192.168.0.1"]}    # tried when the port is in one
 NAME_RE = re.compile(r"^[A-Za-z0-9/.:\-]{1,64}$")
 
 
@@ -117,72 +113,48 @@ class ViaRouter:
 
 
 # ---- the plan ------------------------------------------------------------------------
-def plan(r, port, factory_net, router_addr=""):
+def port_networks(row):
+    out = []
+    for c in [row.get("ip") or ""] + list(row.get("secondary") or []):
+        try:
+            itf = ipaddress.ip_interface(c)
+        except ValueError:
+            continue
+        if itf.version == 4 and itf.network.prefixlen < 32:
+            out.append(itf)
+    return out
+
+
+def plan(r, port):
+    """Read-only: what is on this port, and can the router reach it as the router is now."""
     if not NAME_RE.match(port or "") or "." in port:
         raise PortSetupError("Pick a physical port.")
-    if factory_net not in FACTORY_NETS:
-        raise PortSetupError("Pick one of the factory networks.")
     rows = {x["name"]: x for x in r.interfaces()}
     row = rows.get(port)
     if not row or row.get("type") not in ("ethernet", "management"):
         raise PortSetupError(f"{port} is not a physical port on this router.")
-    net = ipaddress.ip_network(factory_net)
-    temp = ipaddress.ip_interface(f"{list(net.hosts())[9]}/{net.prefixlen}")      # 192.168.1.10/24
-    checks, blockers = [], []
-    add = lambda name, ok, detail="": checks.append({"name": name, "ok": ok, "detail": detail}) or (None if ok else blockers.append(f"{name}: {detail}"))
-    subs = [n for n in rows if n.startswith(port + ".")]
-    add("Port has no sub-interfaces", not subs, ", ".join(subs[:5]) + (" …" if len(subs) > 5 else ""))
-    add("Port is a routed (layer 3) port", not row.get("l2"), "it is a switch port (portswitch)" if row.get("l2") else "")
-    has_ip = row.get("ip") and row["ip"] not in ("unassigned", "")
-    add("Port has no IP address yet", not has_ip, f"it has {row.get('ip')}: it is in use" if has_ip else "")
-    perm = None
-    if router_addr.strip():
-        try:
-            perm = ipaddress.ip_interface(router_addr.strip())
-        except ValueError:
-            raise PortSetupError("Router port address: use address/prefix, e.g. 10.10.5.1/30.")
-        if perm.version != 4 or perm.network.prefixlen >= 32 or perm.ip in (perm.network.network_address, perm.network.broadcast_address):
-            raise PortSetupError("Router port address: a usable IPv4 address with its prefix, e.g. 10.10.5.1/30.")
-        if perm.network.overlaps(net):
-            raise PortSetupError("Router port address must not be in the factory network.")
-    for n in [net] + ([perm.network] if perm else []):
-        routes = used_routes(r, n)
-        label = "factory network" if n == net else "management network"
-        add(f"The {label} {n} is not used on the router", not routes,
-            ", ".join(f"{x['destination']} via {x['interface'] or x['next_hop']}" for x in routes[:3]))
-    lldp = lldp_on(r, port)
+    nets = port_networks(row)
+    checks = []
+    add = lambda name, ok, detail="": checks.append({"name": name, "ok": ok, "detail": detail})
+    add("The port has an address the router can reach the device from", bool(nets),
+        ", ".join(str(n) for n in nets) or "no IP address on this port")
     first_time = bool(re.search(r"^\s*ssh client first-time enable", r.run("display current-configuration | include first-time"), re.M))
-    lines = [f"interface {port}"]
-    if "*down" in (row.get("phy") or "") or row.get("admin_down"):
-        lines.append(" undo shutdown")
-    if perm:
-        lines += [f" ip address {perm.ip} {perm.network.netmask}", f" ip address {temp.ip} {temp.network.netmask} sub"]
-    else:
-        lines.append(f" ip address {temp.ip} {temp.network.netmask}")
-    lines.append("quit")
-    undo = [f"interface {port}", f" undo ip address {temp.ip} {temp.network.netmask}" + (" sub" if perm else ""), "quit"]
-    if not first_time:
-        lines.append("ssh client first-time enable")
-        undo.append("undo ssh client first-time enable")
-    candidates = ([lldp["address"]] if lldp.get("address") else []) + FACTORY_NETS[factory_net]
-    return {"port": port, "network": factory_net, "ok": not blockers, "blockers": blockers, "checks": checks, "lines": lines, "undo": undo,
-            "temp": str(temp), "permanent": str(perm) if perm else "", "lldp": lldp, "candidates": list(dict.fromkeys(candidates)),
+    add("The router's SSH client accepts a new device (ssh client first-time enable)", first_time,
+        "" if first_time else "not set: use Telnet from the router, or the laptop tool")
+    lldp = lldp_on(r, port)
+    own = {str(n.ip) for n in nets}
+    candidates = []
+    if lldp.get("address") and any(ipaddress.ip_address(lldp["address"]) in n.network for n in nets):
+        candidates.append(lldp["address"])
+    for n in nets:
+        for f in FACTORY_NETS.get(str(n.network), []):
+            if f not in own:
+                candidates.append(f)
+    blockers = [] if nets else ["This port has no IP address, so the router cannot reach a device on it without a change to the router. "
+                                "Set up a brand-new box with the laptop tool, or give the port an address first."]
+    return {"port": port, "ok": bool(nets), "blockers": blockers, "checks": checks, "networks": [str(n) for n in nets],
+            "own": sorted(own), "lldp": lldp, "candidates": list(dict.fromkeys(candidates)), "first_time": first_time,
             "description": row.get("description") or "", "state": row.get("phy") or ""}
-
-
-def used_routes(r, net):
-    """Routes on the router that overlap `net`: more specific ones inside it, and the route that
-    covers it now (anything but the default route)."""
-    from parsers import parse_routing_table
-    rows = parse_routing_table(r.run(f"display ip routing-table {net.network_address} {net.prefixlen} longer-match", read_timeout=30))
-    rows += parse_routing_table(r.run(f"display ip routing-table {next(net.hosts())}", read_timeout=30))
-    seen, out = set(), []
-    for x in rows:
-        if x["destination"].startswith("0.0.0.0/0") or x["destination"] in seen:
-            continue
-        seen.add(x["destination"])
-        out.append(x)
-    return out
 
 
 def lldp_on(r, port):
@@ -203,9 +175,8 @@ def find(r, conn, plan_):
         if re.search(r"Reply from|bytes from", out):
             found.append(a)
     arp = conn.send_command(f"display arp interface {plan_['port']}", read_timeout=15)
-    temp_ip = plan_["temp"].split("/")[0]
     for m in re.finditer(r"^(\d+\.\d+\.\d+\.\d+)\s+([0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4})", arp, re.M | re.I):
-        if m.group(1) not in found and m.group(1) != temp_ip:
+        if m.group(1) not in found and m.group(1) not in plan_.get("own", []):
             found.append(m.group(1))
     return found
 

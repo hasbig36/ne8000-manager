@@ -129,7 +129,7 @@ OPEN = {"index", "static", "auth_login", "auth_me", "healthz"}
 VIEWER_POST = {"connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password"}
 ADMIN_ONLY = {"users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
               "routers_test_snmp", "adopt_discover", "adopt_scan", "adopt_build", "adopt_apply", "adopt_identify",
-              "port_setup_plan", "port_setup_open", "port_setup_check", "port_setup_build", "port_setup_run", "port_setup_close", "port_setup_job"}
+              "port_setup_plan", "port_setup_look", "port_setup_check", "port_setup_build", "port_setup_run", "port_setup_job"}
 
 
 def current_user():
@@ -461,7 +461,7 @@ def port_router():
 def port_state(r):
     st = portsetup.STATE.get(session.get("sid"))
     if not st or not st.get("open"):
-        raise DeviceError("Prepare the port first (step 1).")
+        raise DeviceError("Check the port and look for the device first.")
     return st
 
 
@@ -479,42 +479,27 @@ def port_setup_plan():
     d = request.get_json(force=True)
     r = port_router()
     try:
-        p = portsetup.plan(r, d.get("port") or "", d.get("network") or "192.168.1.0/24", d.get("router_addr") or "")
+        p = portsetup.plan(r, d.get("port") or "")
     except portsetup.PortSetupError as exc:
         raise DeviceError(str(exc))
-    old = portsetup.STATE.get(session.get("sid"))
-    if old and old.get("open") and old["plan"]["port"] != p["port"]:
-        raise DeviceError(f"Finish or undo the setup on {old['plan']['port']} first.")
-    if not (old and old.get("open")):
-        portsetup.STATE[session.get("sid")] = {"plan": p, "open": False}
+    portsetup.STATE[session.get("sid")] = {"plan": p, "open": False}
     return jsonify(p)
 
 
-@app.post("/api/portsetup/open")
-def port_setup_open():
+@app.post("/api/portsetup/look")
+def port_setup_look():
+    """Read-only: ping the candidates from the router and read ARP on the port."""
     r = port_router()
     st = portsetup.STATE.get(session.get("sid"))
-    if not st:
+    if not st or not st["plan"]["ok"]:
         raise DeviceError("Check the port first.")
     p = st["plan"]
-    if not p["ok"]:
-        raise DeviceError("The port checks did not pass:\n" + "\n".join(p["blockers"]))
-    AUDIT.log(me(), "port_setup_open", host=r.host, port=p["port"], lines=len(p["lines"]), ip=client_ip())
 
     def run(job):
-        def go(conn):
-            if not st["open"]:
-                job.log("Router: " + " | ".join(l.strip() for l in p["lines"]))
-                out = r._configure(p["lines"], True)
-                if "Error:" in out:
-                    raise DeviceError("The router rejected the port setup, nothing was committed:\n" + out[-600:])
-                st["open"] = True
-                job.log("Router: committed (not saved). Looking for the device…")
-                time.sleep(2)
-            found = portsetup.find(r, conn, p)
-            job.log("Answering: " + (", ".join(found) or "nothing yet"))
-            return {"found": found, "candidates": p["candidates"]}
-        return portsetup.locked(r, go)
+        found = portsetup.locked(r, lambda conn: portsetup.find(r, conn, p))
+        st["open"] = True
+        job.log("Answering: " + (", ".join(found) or "nothing"))
+        return {"found": found, "candidates": p["candidates"]}
     return jsonify(job=portsetup.start(session.get("sid"), run))
 
 
@@ -578,7 +563,7 @@ def port_setup_run():
             return portsetup.devconfigure.apply(t, f, text, job.log, reach=via)
         res = portsetup.locked(r, go)
         nh = res.get("host") or ""
-        if not check_only and res.get("ready") and nh and ipaddress.ip_address(nh) not in ipaddress.ip_network(st["plan"]["temp"], strict=False):
+        if not check_only and res.get("ready") and nh:
             try:
                 saved = SAVED.add({"name": name, "host": nh, "port": 22, "username": (f.get("admin_user") or "").strip(),
                                    "notes": f"Set up on {r.host} {st['plan']['port']} {time.strftime('%Y-%m-%d')} {res.get('device', {}).get('model', '')}"[:200],
@@ -590,25 +575,6 @@ def port_setup_run():
                 res.setdefault("warnings", []).append(f"Set up, but not added to Manager > Routers: {exc}")
         return res
     return jsonify(job=portsetup.start(session.get("sid"), run))
-
-
-@app.post("/api/portsetup/close")
-def port_setup_close():
-    r = port_router()
-    st = portsetup.STATE.get(session.get("sid"))
-    if not st or not st.get("open"):
-        portsetup.STATE.pop(session.get("sid"), None)
-        return jsonify(ok=True, undone=[])
-    p = st["plan"]
-
-    def go(conn):
-        out = r._configure(p["undo"], True)
-        if "Error:" in out:
-            raise DeviceError("The router did not take back the temporary lines:\n" + out[-600:])
-    portsetup.locked(r, go)
-    portsetup.STATE.pop(session.get("sid"), None)
-    AUDIT.log(me(), "port_setup_close", host=r.host, port=p["port"], ip=client_ip())
-    return jsonify(ok=True, undone=p["undo"])
 
 
 @app.get("/api/portsetup/job")
@@ -752,21 +718,9 @@ def connect_ssh():
     return jsonify(ok=True, via=r.via)
 
 
-def port_setup_undo(r, sid):
-    """Leaving the router: take back a port setup that is still open."""
-    st = portsetup.STATE.pop(sid, None)
-    if st and st.get("open") and r and not r.demo:
-        try:
-            portsetup.locked(r, lambda conn: r._configure(st["plan"]["undo"], True))
-            AUDIT.log(me(), "port_setup_close", host=r.host, port=st["plan"]["port"], ip=client_ip())
-        except Exception as exc:
-            AUDIT.log(me(), "port_setup_close_failed", host=r.host, port=st["plan"]["port"], error=str(exc)[:200])
-
-
 @app.post("/api/disconnect")
 def disconnect():
-    sid = session.get("sid")
-    port_setup_undo(ROUTERS.get(sid), sid)
+    portsetup.STATE.pop(session.get("sid"), None)
     r = ROUTERS.pop(session.pop("sid", None), None)
     if r:
         close_router(r)
