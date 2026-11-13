@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Huawei Device Setup</title>
+<style>
+:root{--bg:#f4f6f8;--card:#fff;--text:#1d2329;--muted:#5d6b78;--line:#d9dfe5;--accent:#c7000b;--ok:#1a7f37;--bad:#c62828;--warn:#9a6700;--code:#0f1720;--codetext:#d6e2ee;--sel:#fdecec}
+@media (prefers-color-scheme:dark){:root{--bg:#121518;--card:#1b2026;--text:#e6ebf0;--muted:#9aa7b3;--line:#2e363f;--accent:#ff4d55;--ok:#3fb950;--bad:#ff6b6b;--warn:#d29922;--code:#0b0f14;--codetext:#d6e2ee;--sel:#3a1d20}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:12px 20px;background:var(--card);border-bottom:1px solid var(--line)}
+header h1{font-size:17px;margin:0;flex:1}
+header small{color:var(--muted)}
+main{max-width:980px;margin:0 auto;padding:16px}
+nav.steps{display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap}
+nav.steps span{padding:6px 12px;border-radius:999px;background:var(--card);border:1px solid var(--line);color:var(--muted);font-weight:600;font-size:13px}
+nav.steps span.on{border-color:var(--accent);color:var(--accent)}
+nav.steps span.done{color:var(--ok);border-color:var(--ok)}
+section{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin-bottom:14px}
+section h2{font-size:15px;margin:0 0 10px}
+.muted{color:var(--muted)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:end}
+label{display:flex;flex-direction:column;gap:3px;font-size:12px;color:var(--muted);font-weight:600}
+input,select,textarea{font:inherit;color:var(--text);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:7px 9px;min-width:0}
+input[type=checkbox]{width:auto}
+label.cb{flex-direction:row;align-items:center;gap:6px;font-weight:500;color:var(--text);font-size:13px}
+textarea{width:100%;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;min-height:260px}
+button{font:inherit;font-weight:600;border:1px solid var(--line);background:var(--card);color:var(--text);border-radius:6px;padding:7px 14px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button:disabled{opacity:.5;cursor:default}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+tr.pick{cursor:pointer}
+tr.pick:hover,tr.sel{background:var(--sel)}
+.badge{display:inline-block;padding:1px 7px;border-radius:999px;font-size:11px;font-weight:700;border:1px solid currentColor}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}
+.status{border-radius:8px;padding:12px 14px;margin-top:12px;border:1px solid var(--line)}
+.status.ok{border-color:var(--ok);color:var(--text)}.status.bad{border-color:var(--bad);color:var(--text)}
+::placeholder{color:var(--muted);opacity:.55;font-style:italic}
+.status b{font-size:15px}
+ul.steps{list-style:none;padding:0;margin:8px 0 0}
+ul.steps li{padding:2px 0}
+pre.log{background:var(--code);color:var(--codetext);border-radius:8px;padding:10px;max-height:300px;overflow:auto;font-size:12px;white-space:pre-wrap;margin:10px 0 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px}
+.hidden{display:none}
+details summary{cursor:pointer;color:var(--muted);font-weight:600;margin-top:8px}
+.spin{display:inline-block;width:12px;height:12px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:s 0.8s linear infinite;vertical-align:-2px}
+@keyframes s{to{transform:rotate(360deg)}}
+@media (max-width:600px){main{padding:10px}.row{flex-direction:column;align-items:stretch}}
+</style>
+</head>
+<body>
+<header><h1>Huawei Device Setup</h1><small>v__VERSION__ · runs only on this laptop</small><button id="quit" title="Stop the tool">Quit</button></header>
+<main>
+<nav class="steps"><span data-s="1">1 Find</span><span data-s="2">2 Connect</span><span data-s="3">3 Settings</span><span data-s="4">4 Review &amp; apply</span><span data-s="5">5 Ready</span></nav>
+
+<section id="s1">
+  <h2>1. Find the device</h2>
+  <div class="muted" id="nets">Reading this laptop's networks…</div>
+  <div class="status" id="direct">
+    <b>Device plugged straight into this laptop?</b>
+    <div class="muted">A new device waits at a factory address. This puts the laptop's wired port in that network too (Windows or macOS asks for your administrator password), then searches. The port is put back when you press "Put the laptop back" or Quit.</div>
+    <div class="row" style="margin-top:8px">
+      <label>Laptop port <select id="adapter"></select></label>
+      <label>Factory network <select id="fnet"></select></label>
+      <button class="primary" id="join">Join that network and search</button>
+      <button id="unjoin" class="hidden">Put the laptop back</button>
+      <span id="joinmsg" class="muted"></span>
+    </div>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <label>Also scan (optional) <input id="extra" placeholder="e.g. 10.10.0.0/24" size="22"></label>
+    <button class="primary" id="scan">Search the network</button>
+    <button id="skip">Enter details by hand</button>
+    <span id="scanprog" class="muted"></span>
+  </div>
+  <div id="found" style="margin-top:12px"></div>
+</section>
+
+<section id="s2">
+  <h2>2. Connect and check</h2>
+  <div class="row">
+    <label>Method <select id="method"><option value="ssh">SSH</option><option value="telnet">Telnet</option><option value="console">Console cable (USB / serial)</option></select></label>
+    <label class="net">Address <input id="host" placeholder="192.168.1.253" size="16"></label>
+    <label class="net">Port <input id="port" value="22" size="5"></label>
+    <label class="con hidden">Console port <select id="serial"></select></label>
+    <label class="con hidden">Speed <select id="baud"><option>9600</option><option>115200</option></select></label>
+    <label>Username <input id="user" autocomplete="off" size="12"></label>
+    <label>Password <input id="pass" type="password" autocomplete="off" size="16"></label>
+    <label id="newpwwrap" class="hidden">New password for this user <input id="newpw" type="password" autocomplete="off" size="16"></label>
+    <button class="primary" id="check">Check connection</button>
+  </div>
+  <details><summary>Common factory logins</summary><div id="logins" class="muted"></div></details>
+  <div id="checkres"></div>
+</section>
+
+<section id="s3">
+  <h2>3. Settings</h2>
+  <p class="muted" style="margin-top:0">Fill in what this device needs. Empty fields are left out. You see every command before anything is sent.</p>
+  <div class="grid">
+    <label>Platform <select id="f_platform"></select></label>
+    <label>Device name (hostname) <input id="f_hostname" placeholder="BNG-SITE1"></label>
+    <label>Admin user <input id="f_admin_user" value="netadmin"></label>
+    <label>Admin password <input id="f_admin_password" type="password" autocomplete="new-password"></label>
+    <label>Management interface <input id="f_mgmt_interface" placeholder="Vlanif10 or GigabitEthernet0/0/0"></label>
+    <label>Management IP / prefix <input id="f_mgmt_ip" placeholder="10.10.0.21/24"></label>
+    <label>Management VLAN (switch) <input id="f_mgmt_vlan" placeholder="10"></label>
+    <label>Default gateway <input id="f_gateway" placeholder="10.10.0.1"></label>
+    <label>DNS servers <input id="f_dns" placeholder="8.8.8.8 1.1.1.1"></label>
+    <label>NTP servers <input id="f_ntp" placeholder="10.10.0.1"></label>
+    <label>Syslog servers <input id="f_syslog" placeholder="10.10.0.5"></label>
+    <label>Time zone (UTC offset, name) <span class="row" style="gap:4px"><input id="f_tz_offset" placeholder="+03:00" size="6"><input id="f_tz_name" placeholder="EAT" size="5"></span></label>
+    <label>SNMPv3 user <input id="f_snmp_user" placeholder="monitor"></label>
+    <label>SNMP auth password <input id="f_snmp_auth_key" type="password" autocomplete="new-password"></label>
+    <label>SNMP privacy password <input id="f_snmp_priv_key" type="password" autocomplete="new-password"></label>
+    <label>SNMP allowed source IP <input id="f_snmp_acl_source" placeholder="10.10.0.5"></label>
+    <label>Login banner <input id="f_banner" placeholder="Authorised access only"></label>
+  </div>
+  <div class="row" style="margin-top:10px">
+    <label class="cb"><input type="checkbox" id="f_ssh_only" checked> SSH only (switch Telnet off)</label>
+    <label class="cb"><input type="checkbox" id="f_create_ssh_key"> Create the SSH host key (new device reached by Telnet or console)</label>
+  </div>
+  <div class="row" style="margin-top:12px"><button class="primary" id="build">Show the commands</button><span id="builderr" class="bad"></span></div>
+</section>
+
+<section id="s4">
+  <h2>4. Review and apply</h2>
+  <p class="muted" style="margin-top:0">These lines go to the device in this order. Edit them if you need to. The new management address is set last, after the new admin login has been tested.</p>
+  <textarea id="cfg" spellcheck="false"></textarea>
+  <div class="row" style="margin-top:10px">
+    <button id="checkcfg" title="Routers only: send the lines and throw them away">Check only (no change)</button>
+    <button class="primary" id="apply">Apply, save and verify</button>
+    <span id="applyprog" class="muted"></span>
+  </div>
+  <div id="applyres"></div>
+  <pre class="log hidden" id="log"></pre>
+</section>
+
+<section id="s5">
+  <h2>5. Ready</h2>
+  <div id="ready" class="muted">The result shows here after Apply.</div>
+  <div class="row hidden" id="finishrow" style="margin-top:10px">
+    <label>New address <input id="fin_host" size="16"></label>
+    <button class="primary" id="finish">Finish at the new address</button>
+  </div>
+  <div class="row" style="margin-top:10px"><button id="report" disabled>Save a setup report</button><button id="again">Set up another device</button></div>
+</section>
+</main>
+
+<script>
+const TOKEN = "__TOKEN__";
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let device = null, lastReport = null, logText = "";
+const FIELDS = ["hostname","admin_user","admin_password","mgmt_interface","mgmt_ip","mgmt_vlan","gateway","dns","ntp","syslog","tz_offset","tz_name","snmp_user","snmp_auth_key","snmp_priv_key","snmp_acl_source","banner"];
+
+async function api(path, body){
+  const r = await fetch(path, body === undefined ? {headers:{"X-Token":TOKEN}} :
+    {method:"POST", headers:{"X-Token":TOKEN,"Content-Type":"application/json"}, body:JSON.stringify(body)});
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error || r.statusText);
+  return d;
+}
+async function runJob(path, body, onLine, onProg){
+  const {job} = await api(path, body);
+  let since = 0;
+  for(;;){
+    await new Promise(r => setTimeout(r, 500));
+    const v = await api(`/api/job?id=${job}&since=${since}`);
+    since = v.next; v.lines.forEach(l => onLine && onLine(l)); onProg && onProg(v.progress);
+    if (v.done){ if (v.error){ const e = new Error(v.error.reason); e.info = v.error; throw e; } return v.result; }
+  }
+}
+function stepOn(n){ document.querySelectorAll("nav.steps span").forEach(s => { const k = +s.dataset.s; s.className = k < n ? "done" : k === n ? "on" : ""; }); }
+function target(){
+  const m = $("method").value;
+  return {method:m, host:$("host").value.trim(), port:$("port").value.trim(), serial_port:$("serial").value, baud:$("baud").value,
+          username:$("user").value.trim(), password:$("pass").value, new_password:$("newpw").value};
+}
+function fields(){
+  const f = {}; FIELDS.forEach(k => f[k] = $("f_"+k).value);
+  f.ssh_only = $("f_ssh_only").checked; f.create_ssh_key = $("f_create_ssh_key").checked; return f;
+}
+function addLog(l){ logText += l + "\n"; const el = $("log"); el.classList.remove("hidden"); el.textContent += l + "\n"; el.scrollTop = el.scrollHeight; }
+function stepsHtml(steps){ return `<ul class="steps">${(steps||[]).map(s => `<li><span class="${s.ok?"ok":"bad"}">${s.ok?"✔":"✘"}</span> ${esc(s.name)}${s.detail?` <span class="muted">· ${esc(s.detail)}</span>`:""}</li>`).join("")}</ul>`; }
+
+async function init(){
+  stepOn(1);
+  const i = await api("/api/info");
+  $("nets").innerHTML = "This laptop: " + (i.networks.length ? i.networks.map(n => `<b>${esc(n.address)}/${n.prefix}</b> <span class="muted">(${esc(n.adapter)})</span>`).join(", ") : "no network connection found") +
+    `. The search covers these networks and the usual factory addresses (${i.factory.map(f => esc(f[0])).join(", ")}).`;
+  $("logins").innerHTML = "<table><tr><th>Models</th><th>Username</th><th>Password</th></tr>" + i.logins.map(l => `<tr><td>${esc(l.models)}</td><td><code>${esc(l.username)}</code></td><td><code>${esc(l.password)}</code></td></tr>`).join("") +
+    "</table><p>Check the label on the device or its quick start guide if these do not work. A new device usually makes you change the password at first login; this tool handles that.</p>";
+  $("serial").innerHTML = i.serial_ports.length ? i.serial_ports.map(p => `<option value="${esc(p.device)}">${esc(p.device)} ${esc(p.description)}</option>`).join("") : `<option value="">no console cable found</option>`;
+  $("adapter").innerHTML = i.adapters.length ? i.adapters.map(a => `<option value="${esc(a.id)}">${esc(a.label)}${a.addresses.length ? " (" + esc(a.addresses.join(", ")) + ")" : " (no address)"}</option>`).join("") : `<option value="">no wired port found</option>`;
+  $("fnet").innerHTML = i.factory_nets.map(n => `<option value="${esc(n.network)}">${esc(n.label)}</option>`).join("");
+  $("f_platform").innerHTML = Object.entries(i.platforms).map(([k,v]) => `<option value="${k}">${esc(v)}</option>`).join("");
+}
+
+$("scan").onclick = async () => {
+  $("scan").disabled = true; $("found").innerHTML = `<span class="spin"></span> Searching…`;
+  try{
+    const r = await runJob("/api/scan", {extra:$("extra").value}, null, p => $("scanprog").textContent = p || "");
+    $("scanprog").textContent = `${r.scanned} addresses searched`;
+    const notes = r.notes.map(n => `<div class="warn">${esc(n)}</div>`).join("");
+    if (!r.devices.length){
+      $("found").innerHTML = notes + `<div class="status bad"><b>No device answered on SSH or Telnet.</b><div class="muted">Check the cable and the link light. A brand-new device may only answer at its factory address: use "Join that network and search" above, or try the other factory network. Many routers (NE8000) have no factory address at all: connect the console cable and pick "Console cable" below.</div></div>`;
+    } else {
+      $("found").innerHTML = notes + `<table><tr><th>Address</th><th>Vendor</th><th>Open</th><th>Banner</th></tr>` + r.devices.map((d,i) =>
+        `<tr class="pick" data-i="${i}"><td><b>${esc(d.host)}</b>${d.factory?`<br><span class="muted">${esc(d.factory)}</span>`:""}</td><td>${d.huawei?`<span class="badge ok">${esc(d.vendor)}</span>`:esc(d.vendor)}</td><td>${d.ssh?"SSH ":""}${d.telnet?"Telnet":""}</td><td class="muted">${esc(d.banner)}</td></tr>`).join("") +
+        `</table><p class="muted">Click a device to use it.</p>`;
+      document.querySelectorAll("#found tr.pick").forEach(tr => tr.onclick = () => {
+        document.querySelectorAll("#found tr.sel").forEach(x => x.classList.remove("sel")); tr.classList.add("sel");
+        const d = r.devices[+tr.dataset.i]; $("host").value = d.host; $("method").value = d.method; $("method").onchange();
+        if (d.platform) $("f_platform").value = d.platform;
+        stepOn(2); $("s2").scrollIntoView({behavior:"smooth"}); $("user").focus();
+      });
+    }
+  }catch(e){ $("found").innerHTML = `<div class="bad">${esc(e.message)}</div>`; }
+  $("scan").disabled = false;
+};
+$("join").onclick = async () => {
+  $("join").disabled = true; $("joinmsg").innerHTML = `<span class="spin"></span> Waiting for the administrator prompt…`;
+  try{
+    const r = await runJob("/api/net/join", {adapter:$("adapter").value, network:$("fnet").value});
+    $("joinmsg").innerHTML = `<span class="ok">The laptop now also has ${esc(r.address)} on ${esc(r.adapter)}.</span>`;
+    $("unjoin").classList.remove("hidden");
+    $("scan").click();
+  }catch(e){ $("joinmsg").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  $("join").disabled = false;
+};
+$("unjoin").onclick = async () => {
+  try{ await runJob("/api/net/restore", {adapter:$("adapter").value}); $("joinmsg").textContent = "The laptop port is back to normal."; $("unjoin").classList.add("hidden"); }
+  catch(e){ $("joinmsg").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+};
+$("skip").onclick = () => { stepOn(2); $("s2").scrollIntoView({behavior:"smooth"}); $("host").focus(); };
+$("method").onchange = () => {
+  const m = $("method").value, con = m === "console";
+  document.querySelectorAll(".net").forEach(e => e.classList.toggle("hidden", con));
+  document.querySelectorAll(".con").forEach(e => e.classList.toggle("hidden", !con));
+  if (!con) $("port").value = m === "ssh" ? 22 : 23;
+  $("f_create_ssh_key").checked = m !== "ssh";
+};
+
+$("check").onclick = async () => {
+  $("check").disabled = true; device = null;
+  $("checkres").innerHTML = `<div class="status"><span class="spin"></span> Checking…<ul class="steps" id="cl"></ul></div>`;
+  try{
+    const r = await runJob("/api/check", {target:target()}, l => { const li = document.createElement("li"); li.textContent = l; $("cl") && $("cl").appendChild(li); });
+    if (r.connected){
+      device = r.device;
+      if (r.password_changed){ $("pass").value = $("newpw").value; $("newpw").value = ""; $("newpwwrap").classList.add("hidden"); }
+      $("checkres").innerHTML = `<div class="status ok"><b class="ok">Connected.</b> ${esc(device.model || "Huawei device")} · VRP ${esc(device.version)} · name <b>${esc(device.sysname)}</b>${device.esn?` · serial ${esc(device.esn)}`:""}${r.password_changed?`<div class="warn">The device's password was changed to the new one you entered.</div>`:""}${stepsHtml(r.steps)}</div>`;
+      $("f_platform").value = device.platform;
+      if (!$("f_hostname").value && device.sysname && !/^HUAWEI$/i.test(device.sysname)) $("f_hostname").value = device.sysname;
+      stepOn(3); setTimeout(() => $("s3").scrollIntoView({behavior:"smooth"}), 400);
+    } else {
+      if (r.need_new_password){ $("newpwwrap").classList.remove("hidden"); $("newpw").focus(); }
+      $("checkres").innerHTML = `<div class="status bad"><b class="bad">Not connected.</b> ${esc(r.reason)}<div>${esc(r.hint || "")}</div>${stepsHtml(r.steps)}</div>`;
+    }
+  }catch(e){
+    if (e.info && e.info.need_new_password){ $("newpwwrap").classList.remove("hidden"); }
+    $("checkres").innerHTML = `<div class="status bad"><b class="bad">Not connected.</b> ${esc(e.message)}<div>${esc(e.info?.hint || "")}</div></div>`;
+  }
+  $("check").disabled = false;
+};
+
+$("build").onclick = async () => {
+  $("builderr").textContent = "";
+  try{
+    const r = await api("/api/build", {fields:fields(), platform:$("f_platform").value, target:target()});
+    $("cfg").value = r.text; stepOn(4); $("s4").scrollIntoView({behavior:"smooth"});
+    $("checkcfg").disabled = $("f_platform").value !== "vrp8";
+  }catch(e){ $("builderr").textContent = e.message; }
+};
+
+async function push(path, label){
+  if (!device && !confirm("The connection has not been checked yet. Continue anyway?")) return;
+  $("apply").disabled = $("checkcfg").disabled = true; $("log").textContent = ""; logText = ""; $("applyres").innerHTML = "";
+  $("applyprog").innerHTML = `<span class="spin"></span> ${label}…`;
+  try{
+    const body = {target:target(), fields:fields(), text:$("cfg").value};
+    const r = await runJob(path, body, addLog);
+    if (path === "/api/check-config"){
+      $("applyres").innerHTML = r.ok ? `<div class="status ok"><b class="ok">The device accepts every line.</b> Nothing was changed.</div>`
+        : `<div class="status bad"><b class="bad">The device rejected some lines.</b> Nothing was changed.<pre class="log">${esc(r.errors.join("\n"))}</pre></div>`;
+    } else showReport(r);
+  }catch(e){
+    $("applyres").innerHTML = `<div class="status bad"><b class="bad">Stopped.</b> ${esc(e.message)}<div>${esc(e.info?.hint || "")}</div></div>`;
+  }
+  $("applyprog").textContent = ""; $("apply").disabled = false; $("checkcfg").disabled = $("f_platform").value !== "vrp8";
+}
+$("checkcfg").onclick = () => push("/api/check-config", "Checking the lines");
+$("apply").onclick = () => { if (confirm("Send these lines to the device, commit and save them?")) push("/api/apply", "Applying"); };
+
+function showReport(r){
+  lastReport = r; $("report").disabled = false; stepOn(5);
+  const w = (r.warnings||[]).map(x => `<div class="warn" style="white-space:pre-wrap">${esc(x)}</div>`).join("");
+  const err = r.errors ? `<pre class="log">${esc(r.errors.join("\n"))}</pre>` : "";
+  $("ready").innerHTML = (r.ready ? `<div class="status ok"><b class="ok">The device is ready.</b> Reach it at <b>${esc(r.host)}</b> with SSH as <b>${esc($("f_admin_user").value)}</b>.`
+                                  : `<div class="status bad"><b class="bad">Not finished.</b> See the steps below.`) + stepsHtml(r.steps) + err + w + `</div>`;
+  $("finishrow").classList.toggle("hidden", !r.pending_save);
+  if (r.pending_save) $("fin_host").value = r.pending_save;
+  $("s5").scrollIntoView({behavior:"smooth"});
+}
+$("finish").onclick = async () => {
+  $("finish").disabled = true;
+  try{ showReport(await runJob("/api/finish", {host:$("fin_host").value, username:$("f_admin_user").value, password:$("f_admin_password").value}, addLog)); }
+  catch(e){ $("ready").insertAdjacentHTML("beforeend", `<div class="bad">${esc(e.message)} ${esc(e.info?.hint||"")}</div>`); }
+  $("finish").disabled = false;
+};
+$("report").onclick = () => {
+  const d = lastReport && lastReport.device || device || {};
+  const txt = `Huawei device setup report\nDate: ${new Date().toString()}\nDevice: ${d.model||""}  VRP ${d.version||""}  serial ${d.esn||""}\nName: ${$("f_hostname").value}\nAddress: ${lastReport?.host||""}\nResult: ${lastReport?.ready?"READY":"NOT FINISHED"}\n\nSteps:\n` +
+    (lastReport?.steps||[]).map(s => `  [${s.ok?"OK":"FAIL"}] ${s.name} ${s.detail||""}`).join("\n") +
+    `\n\nCommands:\n${$("cfg").value.replace(/(password irreversible-cipher|cipher) \S+/g, "$1 ********")}\n\nSession log:\n${logText.replace(/(password irreversible-cipher|cipher) \S+/g, "$1 ********")}`;
+  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([txt], {type:"text/plain"}));
+  a.download = `setup-${($("f_hostname").value || "device").replace(/[^\w.-]/g,"_")}.txt`; a.click();
+};
+$("again").onclick = () => location.reload();
+$("quit").onclick = async () => { if (confirm("Stop Huawei Device Setup?")){ try{ await api("/api/quit", {}); }catch(e){} document.body.innerHTML = "<main><section><h2>Stopped.</h2><p>You can close this tab.</p></section></main>"; } };
+setInterval(() => api("/api/info").catch(() => {}), 60000);
+init().catch(e => $("nets").textContent = e.message);
+</script>
+</body>
+</html>

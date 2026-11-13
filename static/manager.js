@@ -218,3 +218,115 @@ PAGES.audit = async c => {
   table($('#adT'), [{ t: 'When', k: 'at', f: e => when(e.at) }, { t: 'User', k: 'user' }, { t: 'Event', k: 'event', f: e => `<span class="pill ${e.event === 'login_failed' ? 'p-bad' : e.event === 'action' || e.event === 'plan_execute' || e.event === 'config' ? 'p-warn' : 'p-off'}">${esc(AUDIT_TEXT[e.event] || e.event)}</span>` },
     { t: 'Details', k: 'host', cls: 'wrap', f: detail }], events, { sort: 'at', dir: -1, empty: 'Nothing logged yet' });
 };
+
+/* ----- set up a new device plugged into one of the router's ports, through the router ----- */
+async function psJob(path, body, onLine) {
+  const { job } = await post(path, body);
+  let since = 0;
+  for (;;) {
+    await new Promise(r => setTimeout(r, 700));
+    const v = await api(`/api/portsetup/job?id=${job}&since=${since}`);
+    since = v.next; (v.lines || []).forEach(l => onLine && onLine(l));
+    if (v.done) { if (v.error) { const e = new Error(v.error.reason); e.info = v.error; throw e; } return v.result; }
+  }
+}
+function portSetup(port) {
+  const d = $('#drawer'); d.classList.remove('hidden');
+  const lab = (k, t, v = '', x = '') => `<label>${t}</label><input id="ps_${k}" value="${esc(v)}" autocomplete="off" ${x}>`;
+  const mgr = /^\d+\.\d+\.\d+\.\d+$/.test(location.hostname) ? location.hostname : '';
+  d.innerHTML = `<h1>New device on ${esc(port)}<span style="flex:1"></span><button class="btn" id="psBack">Back to the port</button></h1>
+    <div class="faint" style="font-size:12.5px">The router reaches the device plugged into this port and sets it up from its own command line. <b>Nothing on the router is changed</b>: it only reads, pings and logs in to the device. That works when the port already has an address in the device's network. A brand-new box on a port with no address needs the laptop tool. While a step runs, the router's other pages wait for it.</div>
+    <div class="card"><h3>1. Check the port</h3>
+      <div class="actions" style="justify-content:flex-start"><button class="btn primary" id="psPlan">Check the port</button></div>
+      <div id="psPlanR"></div></div>
+    <div class="card hidden" id="psS2"><h3>2. Connect to the device</h3>
+      <div class="form">
+        <label>Device address</label><select id="ps_host"></select>
+        <label>Method</label><select id="ps_method"><option value="ssh">SSH (stelnet from the router)</option><option value="telnet">Telnet from the router</option></select>
+        ${lab('user', 'Username', 'admin')}<label>Password</label><input id="ps_pass" type="password" autocomplete="new-password" placeholder="current (often the factory) password">
+        <label class="psnew hidden">New password for this user</label><input id="ps_newpw" class="psnew hidden" type="password" autocomplete="new-password" placeholder="the device asks for one at first login"></div>
+      <details style="margin-top:6px"><summary class="faint">Common factory logins</summary><div class="faint" style="font-size:12.5px">S-series switches: admin / admin@huawei.com · NE / CE routers: root / Changeme_123 · AR routers: admin / Admin@huawei. Check the device's label or quick start guide if these do not work.</div></details>
+      <div class="actions" style="justify-content:flex-start"><button class="btn" id="psFind">Look again</button><button class="btn primary" id="psCheck">Check connection</button></div>
+      <div id="psCheckR"></div></div>
+    <div class="card hidden" id="psS3"><h3>3. Settings</h3>
+      <div class="form">
+        <label>Platform</label><select id="ps_platform"><option value="vrp5">S switch (VRP5, applies each line at once)</option><option value="vrp8">NE / CE router (VRP8, two-stage commit)</option></select>
+        ${lab('hostname', 'Device name', '', 'placeholder="SW-SITE-01"')}${lab('admin_user', 'New admin user', 'noc')}
+        <label>New admin password</label><input id="ps_admin_password" type="password" autocomplete="new-password" placeholder="8 to 64 characters, sent to the device only">
+        ${lab('mgmt_interface', 'Management interface', '', 'placeholder="Vlanif10 or GigabitEthernet0/0/1"')}${lab('mgmt_vlan', 'Management VLAN', '', 'placeholder="switch: e.g. 10"')}
+        ${lab('mgmt_ip', 'Management IP / prefix', '', 'placeholder="in this port\'s network (optional)"')}${lab('gateway', 'Default gateway', '', 'placeholder="this port\'s address"')}
+        ${lab('snmp_user', 'SNMPv3 user', 'ne8000mon')}<label>SNMP authentication password</label><input id="ps_snmp_auth_key" type="password" autocomplete="new-password" placeholder="8 to 64 characters">
+        <label>SNMP privacy password</label><input id="ps_snmp_priv_key" type="password" autocomplete="new-password" placeholder="8 to 64 characters">
+        ${lab('snmp_acl_source', 'Allow SNMP only from', mgr)}${lab('ntp', 'NTP server(s)', '')}${lab('syslog', 'Syslog server(s)', '')}
+        ${lab('dns', 'DNS server(s)', '')}${lab('tz_offset', 'Time zone (UTC offset)', '+03:00')}${lab('tz_name', 'Time zone name', 'EAT')}
+        ${lab('banner', 'Login banner', 'Authorised access only. Activity is logged.')}
+        <label>SSH only (telnet off)</label><input id="ps_ssh_only" type="checkbox" checked style="width:auto"></div>
+      <div class="actions" style="justify-content:flex-start"><button class="btn primary" id="psBuild">Show the commands</button><span class="err" id="psBuildErr"></span></div></div>
+    <div class="card hidden" id="psS4"><h3>4. Review and apply</h3>
+      <div class="faint" style="font-size:12.5px">Sent to the device in this order. The new management address goes last, after the new admin login has been tested through the router.</div>
+      <textarea id="psText" spellcheck="false" style="min-height:300px;margin-top:6px"></textarea>
+      <div class="actions" style="justify-content:flex-start"><button class="btn" id="psCheckCfg">Check only</button><button class="btn primary" id="psApply">Apply, save and verify</button></div>
+      <div id="psRes"></div><pre id="psLog" class="hidden" style="max-height:300px;overflow:auto"></pre></div>`;
+  const val = k => { const e = $('#ps_' + k); return e.type === 'checkbox' ? e.checked : e.value; };
+  const target = () => ({ method: val('method'), host: val('host'), username: val('user'), password: val('pass'), new_password: val('newpw') });
+  const fields = () => Object.fromEntries(['hostname', 'admin_user', 'admin_password', 'ssh_only', 'mgmt_interface', 'mgmt_vlan', 'mgmt_ip', 'gateway', 'snmp_user', 'snmp_auth_key', 'snmp_priv_key',
+    'snmp_acl_source', 'ntp', 'syslog', 'dns', 'tz_offset', 'tz_name', 'banner'].map(k => [k, val(k)]));
+  const steps = list => `<ul style="margin:6px 0;padding-left:18px">${list.map(c => `<li><span class="pill ${c.ok ? 'p-ok' : 'p-bad'}">${c.ok ? 'ok' : 'no'}</span> ${esc(c.name)}${c.detail ? ` <span class="faint">· ${esc(c.detail)}</span>` : ''}</li>`).join('')}</ul>`;
+  const busy = (b, on, label) => { b.disabled = on; if (label) b.textContent = label; };
+  const log = l => { const e = $('#psLog'); e.classList.remove('hidden'); e.textContent += l + '\n'; e.scrollTop = e.scrollHeight; };
+  $('#psBack').onclick = () => interfaceDrawer(port);
+  const fillHosts = (found, cands) => { $('#ps_host').innerHTML = [...new Set([...found, ...cands])].map(h => `<option value="${esc(h)}">${esc(h)}${found.includes(h) ? ' (answers)' : ''}</option>`).join(''); };
+  const look = async () => {
+    $('#psCheckR').innerHTML = '<span class="muted">Looking for the device from the router…</span>';
+    const r = await psJob('/api/portsetup/look', {}, l => $('#psCheckR').innerHTML = `<span class="muted">${esc(l)}</span>`);
+    fillHosts(r.found, r.candidates); $('#psS2').classList.remove('hidden');
+    $('#psCheckR').innerHTML = r.found.length ? `<span class="pill p-ok">found</span> ${esc(r.found.join(', '))} answers from the router.` :
+      `<span class="err">Nothing answers on this port's network.</span> <span class="faint">Check the cable and link light and give the device a minute to boot. A device still at its factory address (192.168.1.253) is not in this port's network: set it up with the laptop tool.</span>`;
+  };
+  $('#psPlan').onclick = async e => {
+    busy(e.target, true);
+    try {
+      const p = await post('/api/portsetup/plan', { port });
+      $('#psPlanR').innerHTML = steps(p.checks) + (p.lldp && p.lldp.name ? `<div class="faint">LLDP on this port: ${esc(p.lldp.name)} ${esc(p.lldp.description || '')}${p.lldp.address ? ' · ' + esc(p.lldp.address) : ''}</div>` : '') +
+        (p.ok ? `<div class="actions" style="justify-content:flex-start"><button class="btn primary" id="psLook">Look for the device</button></div>` :
+          `<div class="err">${esc(p.blockers.join(' '))}</div>`);
+      if (!p.first_time) $('#ps_method').value = 'telnet';
+      if (p.own && p.own[0] && !val('gateway')) $('#ps_gateway').value = p.own[0];
+      if (p.ok) $('#psLook').onclick = async ev => { busy(ev.target, true); try { await look(); } catch (x) { toast(x.message, true); } finally { busy(ev.target, false); } };
+    } catch (x) { $('#psPlanR').innerHTML = `<div class="err">${esc(x.message)}</div>`; } finally { busy(e.target, false); }
+  };
+  $('#psFind').onclick = () => look().catch(x => toast(x.message, true));
+  $('#psCheck').onclick = async e => {
+    busy(e.target, true); $('#psCheckR').innerHTML = '<span class="muted">Logging in through the router…</span>';
+    try {
+      const r = await psJob('/api/portsetup/check', { target: target() });
+      if (!r.connected) {
+        if (r.need_new_password) document.querySelectorAll('.psnew').forEach(x => x.classList.remove('hidden'));
+        $('#psCheckR').innerHTML = `<span class="pill p-bad">not connected</span> ${esc(r.reason)} <span class="faint">${esc(r.hint || '')}</span>`;
+      } else {
+        if (r.password_changed) { $('#ps_pass').value = $('#ps_newpw').value; $('#ps_newpw').value = ''; }
+        const dv = r.device; $('#ps_platform').value = dv.platform;
+        $('#psCheckR').innerHTML = `<span class="pill p-ok">connected</span> ${esc(dv.model || 'Huawei')} · VRP ${esc(dv.version)} · name <b>${esc(dv.sysname)}</b>${dv.esn ? ' · serial ' + esc(dv.esn) : ''}${r.password_changed ? ' · <b>its password was changed to the new one</b>' : ''}`;
+        $('#psS3').classList.remove('hidden'); $('#psS3').scrollIntoView({ behavior: 'smooth' });
+      }
+    } catch (x) { $('#psCheckR').innerHTML = `<span class="err">${esc(x.message)}</span>`; } finally { busy(e.target, false); }
+  };
+  $('#psBuild').onclick = async () => {
+    $('#psBuildErr').textContent = '';
+    try { const r = await post('/api/portsetup/build', { fields: fields(), platform: val('platform') }); $('#psText').value = r.text; $('#psS4').classList.remove('hidden'); $('#psCheckCfg').disabled = val('platform') !== 'vrp8'; $('#psS4').scrollIntoView({ behavior: 'smooth' }); }
+    catch (x) { $('#psBuildErr').textContent = x.message; }
+  };
+  const run = async (checkOnly, b) => {
+    if (!checkOnly && !confirm('Send these lines to the new device, commit and save them?')) return;
+    busy(b, true); $('#psLog').textContent = ''; $('#psRes').innerHTML = '<span class="muted">Working through the router…</span>';
+    try {
+      const r = await psJob('/api/portsetup/run', { target: target(), fields: fields(), text: $('#psText').value, check_only: checkOnly }, log);
+      if (checkOnly) $('#psRes').innerHTML = r.ok ? '<span class="pill p-ok">accepted</span> The device accepts every line. Nothing was changed.' : `<span class="pill p-bad">rejected</span><pre>${esc(r.errors.join('\n'))}</pre>`;
+      else $('#psRes').innerHTML = (r.ready ? `<div><span class="pill p-ok">ready</span> The device is set up and answers at <b>${esc(r.host)}</b>${r.saved ? `, and is saved in Manager › Routers as <b>${esc(r.saved)}</b>` : ''}.</div>`
+        : '<div><span class="pill p-bad">not finished</span> See the steps.</div>') + steps(r.steps || []) + (r.errors ? `<pre>${esc(r.errors.join('\n'))}</pre>` : '') +
+        (r.warnings || []).map(w => `<div class="faint" style="white-space:pre-wrap">${esc(w)}</div>`).join('');
+    } catch (x) { $('#psRes').innerHTML = `<span class="err">${esc(x.message)}</span> <span class="faint">${esc((x.info && x.info.hint) || '')}</span>`; } finally { busy(b, false); }
+  };
+  $('#psCheckCfg').onclick = e => run(true, e.target);
+  $('#psApply').onclick = e => run(false, e.target);
+}

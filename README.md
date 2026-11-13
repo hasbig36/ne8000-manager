@@ -75,6 +75,15 @@ Crop / straighten works on a saved photo too and keeps the port marks. All of th
 your own photo, coloured live; hover for traffic and optics, click for details. The photo (resized to 1600 px, JPEG or
 PNG only) and the positions are kept per router in `data/panel/`. Viewers can look but not change them.
 
+### Set up a new device from a port (admin)
+Click a physical port (Port view, or a port's row under Interfaces) and press **Set up a new device here**. The router reaches the device plugged into that port and sets it up from its own command line. **It never changes the router's configuration**: it only runs display commands, ping and `stelnet` / `telnet` to the device.
+1. **Check the port**: reads the port's addresses, LLDP on the port, and whether `ssh client first-time enable` is set (without it the router's SSH client will not log in to a device it has never seen, so Telnet is chosen instead). The router can only reach a device in a network the port already has; a port with no address cannot be used, and a brand-new box at its factory address needs the laptop tool (`setup-tool/`).
+2. **Look for the device**: pings the LLDP management address and the factory addresses that fall in the port's networks, and reads ARP on the port.
+3. **Connect**: logs in to the device through the router. The device's SSH key is accepted for the session but never stored on the router. A forced password change at first login is handled, and failures say why.
+4. **Settings, review, apply**: the same template as the laptop tool and Adopt devices. After commit and save, the new admin login is tested through the router, then the management address moves and the router pings it. A device that ends up ready is added to Manager › Routers.
+
+While a step runs it uses the router's SSH line, so the other pages wait for it. Demo mode does not offer it.
+
 ### Health check
 
 Every 5 minutes, for each saved router with an SNMP login, the manager looks for what makes customers
