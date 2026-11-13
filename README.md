@@ -80,6 +80,15 @@ slots, replaced parts, who to call). Each note shows who wrote it and when, can 
 and can be tied to a port, which then shows a 📝 badge with the note on hover. Notes are kept per router in
 `data/notes/` and every change is in the audit log. Viewers can read them.
 
+### Speed: router data from server memory
+
+Pages no longer wait for the router. `viewcache.py` keeps the last answer of every view per connected router in the
+server's memory and serves it at once (a few ms). A background thread refreshes the busy views ahead of time while
+someone uses that router: dashboard and interfaces every 5-8 s, ARP and BGP about every 20 s, QoS every minute,
+hardware every 5 minutes. Older data is served at once and refreshed behind it; nothing older than 10 minutes is shown
+without asking the router first. Any change made through the app drops the stored views, so the change shows at once.
+The `X-Data-Age` response header says how old a view is.
+
 ### Health check
 
 Every 5 minutes, for each saved router with an SNMP login, the manager looks for what makes customers

@@ -31,6 +31,7 @@ import netmap
 import panel
 import plans
 import routers
+import viewcache
 from device import DeviceError, RealRouter, is_read_only
 from snmp_router import SnmpRouter, SshRequired
 
@@ -59,6 +60,7 @@ NETMAP_CACHE = {}   # map key -> (time, response)
 DISABLED_IPS = ipdisabled.DisabledIPs(DATA_DIR)
 PANELS = panel.PanelStore(DATA_DIR)
 NOTES = panel.NotesStore(DATA_DIR)
+VIEWCACHE = viewcache.ViewCache()   # router views kept in server memory, so pages open without waiting for the router
 THROTTLE_IP = auth.Throttle(limit=5)        # per client address
 THROTTLE_USER = auth.Throttle(limit=20)     # per username, high enough that strangers cannot easily lock out a real user
 THROTTLE_ROUTER = auth.Throttle(limit=5)    # failed router SSH logins per app user (slows password guessing on the router)
@@ -164,6 +166,9 @@ def guard():
     return None
 
 
+KEEP_VIEWS_ON = ("notes_", "panel_", "health_", "auth_", "cli", "disconnect")   # POSTs that do not change the router (the console is read-only)
+
+
 @app.after_request
 def security_headers(resp):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -171,6 +176,12 @@ def security_headers(resp):
     resp.headers.setdefault("Referrer-Policy", "same-origin")
     resp.headers.setdefault("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
                             "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+    # a change made through the app: the stored router views are out of date
+    if request.method == "POST" and resp.status_code < 400 and request.path.startswith("/api/") and \
+            not (request.endpoint or "").startswith(KEEP_VIEWS_ON):
+        r = ROUTERS.get(session.get("sid"))
+        if r is not None:
+            VIEWCACHE.invalidate(r)
     if request.path.startswith("/api/") and request.path != "/api/panel/photo":   # the photo is versioned (?v=) and may be cached
         resp.headers["Cache-Control"] = "no-store"
     if request.is_secure:
@@ -553,6 +564,7 @@ def connect():
     session["sid"] = uuid.uuid4().hex
     session["router_id"] = "" if r.demo else (data.get("router_id") or "")
     ROUTERS[session["sid"]] = r
+    VIEWCACHE.start(r)    # start filling the views now, so the dashboard opens from memory
     start_billing(r)
     AUDIT.log(me(), "router_connect", host=r.host, demo=r.demo, via=r.via, ip=client_ip())
     return jsonify(ok=True, host=r.host, demo=r.demo, via=r.via, warning=warning)
@@ -600,10 +612,12 @@ def status():
 def view(name):
     if name not in VIEWS:
         raise DeviceError("Unknown view.")
-    data = getattr(router(), name)()
+    data, age = VIEWCACHE.get(router(), name)
     if name == "system" and current_user()["role"] == "viewer":
-        data["snmp"] = "(hidden for read-only accounts)"
-    return jsonify(data)
+        data = {**data, "snmp": "(hidden for read-only accounts)"}
+    resp = jsonify(data)
+    resp.headers["X-Data-Age"] = f"{age:.1f}"
+    return resp
 
 
 @app.get("/api/resources")
