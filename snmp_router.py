@@ -235,7 +235,7 @@ class SnmpRouter(Router):
             rows.append({"name": name, "phy": "*down" if r["admin"] == 2 else ("up" if up else "down"),
                          "protocol": "up" if up else "down", "in_util": ui, "out_util": uo,
                          "in_errors": r["in_err"] or 0, "out_errors": r["out_err"] or 0,
-                         "admin_down": r["admin"] == 2, "type": P.interface_type(name),
+                         "admin_down": r["admin"] == 2, "type": P.interface_type(name), "speed_mbps": r["speed"] or 0,
                          "parent": name.split(".")[0] if "." in name else "", "_idx": idx, "_r": r})
         return rows
 
@@ -290,8 +290,17 @@ class SnmpRouter(Router):
     def interfaces(self):
         ips = self._ip_map()
         cfg = self.interface_config() if self.ssh else {}
+        cli = {}
+        if self.ssh:    # with the CLI available, link and protocol state follow "display interface brief" (SNMP can say up while the protocol is down)
+            try:
+                cli = {r["name"]: r for r in P.parse_interface_brief(self.cached("display interface brief", 10))}
+            except DeviceError:
+                cli = {}
         rows = []
         for row in self._brief():
+            c = cli.get(row["name"])
+            if c:
+                row.update(phy=c["phy"], protocol=c["protocol"], admin_down=c["admin_down"])
             idx, r = row.pop("_idx"), row.pop("_r")
             addrs = ips.get(idx, [])
             lines = cfg.get(row["name"], [])

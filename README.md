@@ -58,6 +58,21 @@ The router counts traffic per interface only, so the primary and "sub" addresses
 
 **Router setup** on that page builds the NetStream lines (1-in-1000 sampling, inbound on each interface so a flow is counted once, NetFlow v9, 1-minute export) for you to review; press **Check only** first. Only routers saved under Manager > Routers with an SNMP login are accepted; other senders are dropped. Settings: `NE8000_NETFLOW_PORT` (2055, 0 = off), `NE8000_NETFLOW_SAMPLING` (1000, used when the router does not report its sampling rate).
 
+### Port view
+
+The dashboard and the Interfaces page show the router's ports as tiles. A front panel shows every physical port, coloured
+by state (green up, amber link up but protocol down, red down, grey disabled), with its speed, description and a traffic bar.
+Each port that has sub-interfaces gets its own row of tiles, one per sub-interface (customer VLAN). The filters (Up, Down,
+Busy 65%+, Errors) narrow the sub-interface tiles. Hover over a tile for its IP, VLAN, client MAC and traffic, and click it
+for the live drawer. When the router reports its boards, the front panel is drawn as the chassis: every slot by number
+(empty slots shown blank), each board with a status light, ports in their cages with the optic type, and the power, fan
+and clock boards along the bottom. On the Interfaces page, clicking a port lists it with its sub-interfaces in the table below.
+
+Switch the front view between **Drawing** and **Photo**. Photo asks for a straight-on picture of the router's front
+(on a phone it opens the camera), then asks you to tap where each port is, once. After that each port is a ring on
+your own photo, coloured live; hover for traffic and optics, click for details. The photo (resized to 1600 px, JPEG or
+PNG only) and the positions are kept per router in `data/panel/`. Viewers can look but not change them.
+
 ### Health check
 
 Every 5 minutes, for each saved router with an SNMP login, the manager looks for what makes customers
@@ -164,6 +179,6 @@ Follow the steps at the top of `deploy/ne8000.service`: copy the app to `/opt/ne
 - `billing.py`: Splynx billing sync
 - `plans.py`: network plans, versions and execution
 - `netflow.py`: NetFlow v5/v9/IPFIX collector for traffic per address
-- `health.py`: smart health check (errors, drops, full links, SFP light, flaps, latency and loss, CPU/memory/heat)
+- `health.py, panel.py`: smart health check (errors, drops, full links, SFP light, flaps, latency and loss, CPU/memory/heat)
 - `templates/`, `static/`: the browser UI
 - `Dockerfile`, `docker-compose.yml`, `.env.example`, `deploy/`: hosting (Caddy, nginx, systemd)

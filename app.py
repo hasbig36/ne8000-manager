@@ -28,6 +28,7 @@ import ipdisabled
 import netdesign
 import netflow
 import netmap
+import panel
 import plans
 import routers
 from device import DeviceError, RealRouter, is_read_only
@@ -56,6 +57,7 @@ FLOWS = netflow.FlowCollector(SAVED, HIST, default_sampling=os.environ.get("NE80
 NETMAP = netmap.NetMapStore(DATA_DIR)
 NETMAP_CACHE = {}   # map key -> (time, response)
 DISABLED_IPS = ipdisabled.DisabledIPs(DATA_DIR)
+PANELS = panel.PanelStore(DATA_DIR)
 THROTTLE_IP = auth.Throttle(limit=5)        # per client address
 THROTTLE_USER = auth.Throttle(limit=20)     # per username, high enough that strangers cannot easily lock out a real user
 THROTTLE_ROUTER = auth.Throttle(limit=5)    # failed router SSH logins per app user (slows password guessing on the router)
@@ -168,7 +170,7 @@ def security_headers(resp):
     resp.headers.setdefault("Referrer-Policy", "same-origin")
     resp.headers.setdefault("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
                             "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-    if request.path.startswith("/api/"):
+    if request.path.startswith("/api/") and request.path != "/api/panel/photo":   # the photo is versioned (?v=) and may be cached
         resp.headers["Cache-Control"] = "no-store"
     if request.is_secure:
         resp.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
@@ -835,6 +837,55 @@ def health_run():
         return jsonify(ok=True)
     threading.Thread(target=lambda: HEALTH.check(rid), daemon=True).start()
     return jsonify(ok=True)
+
+
+# ---- front panel photo: one photo per router and where each port is on it ----
+def panel_key():
+    r = router()
+    return "demo" if r.demo else (session.get("router_id") or "host-" + r.host)
+
+
+@app.get("/api/panel")
+def panel_get():
+    return jsonify(PANELS.get(panel_key()))
+
+
+@app.get("/api/panel/photo")
+def panel_photo():
+    path, mime = PANELS.photo(panel_key())
+    if not path:
+        return jsonify(error="No photo yet."), 404
+    with open(path, "rb") as f:
+        data = f.read()
+    return Response(data, mimetype=mime, headers={"Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff"})
+
+
+@app.post("/api/panel/photo")
+def panel_photo_set():
+    try:
+        out = PANELS.set_photo(panel_key(), (request.get_json(force=True) or {}).get("image"), by=me())
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "panel_photo", host=router().host)
+    return jsonify(out)
+
+
+@app.post("/api/panel/marks")
+def panel_marks():
+    body = request.get_json(force=True) or {}
+    try:
+        out = PANELS.set_marks(panel_key(), body.get("marks"), body.get("size"), by=me())
+    except (ValueError, TypeError) as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "panel_marks", host=router().host, ports=len(out["marks"]))
+    return jsonify(out)
+
+
+@app.post("/api/panel/delete")
+def panel_delete():
+    PANELS.delete(panel_key())
+    AUDIT.log(me(), "panel_delete", host=router().host)
+    return jsonify(PANELS.get(panel_key()))
 
 
 @app.post("/api/health/targets")
