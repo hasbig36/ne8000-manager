@@ -2,9 +2,16 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const attr = s => esc(JSON.stringify(s));
+let NAVSEQ = 0, NAVCTL = new AbortController();   // the page being shown (see go)
 
 async function api(path, opts = {}, retried = false) {
-  const res = await fetch(path, { headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'ne8000' }, credentials: 'same-origin', ...opts });
+  // reads belong to the page being shown: leaving the page cancels them (changes, POSTs, always finish)
+  // (opts.global: a read for the whole app, like the top bar, that a page change must not cancel)
+  const page = !opts.method && !opts.signal && !opts.global ? { signal: NAVCTL.signal } : {};
+  if (opts.global) { opts = { ...opts }; delete opts.global; }
+  let res;
+  try { res = await fetch(path, { headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'ne8000' }, credentials: 'same-origin', ...page, ...opts }); }
+  catch (e) { if (e.name === 'AbortError') { const x = new Error('Left the page.'); x.stale = true; throw x; } throw e; }
   const data = await res.json().catch(() => ({ error: 'Bad response from server (' + res.status + ')' }));
   if (res.status === 401 && data.login && path !== '/api/auth/me') { showAppLogin(); }
   // connected over SNMP and this needs the router CLI: ask for an SSH login once, then try again
@@ -168,23 +175,31 @@ $('#menuBtn').onclick = () => $('#side').classList.toggle('open');
 
 let MODEL = '';
 let timers = [], charts = [], current = null, DEMO = false, VIA = '', ME = null, AUTH = {}, ROUTER_LIST = [];
-function every(ms, fn) { timers.push(setInterval(() => { if (!document.hidden) fn().catch(e => console.warn(e)); }, ms)); }
+function every(ms, fn) { const my = typeof NAVSEQ === 'undefined' ? 0 : NAVSEQ; timers.push(setInterval(() => { if (!document.hidden && my === NAVSEQ) fn().catch(e => { if (!e.stale) console.warn(e); }); }, ms)); }
 function cleanup() { timers.forEach(clearInterval); timers = []; charts.forEach(c => c.destroy()); charts = []; }
 function chart(host, opts) { const c = new TimeChart(host, opts); charts.push(c); return c; }
 function refresh() { if (current) go(current, true); }
 
+/* Each click gets its own page box and its own request signal. Clicking on before a slow page has loaded cancels that
+   page's requests and leaves it drawing into a box nobody sees, so it can never cover the page you went to. */
 async function go(page, keepScroll) {
   const [base, arg] = (page || '').split('/');
   if (!PAGES[base]) page = 'dashboard';
   const key = PAGES[base] ? base : 'dashboard';
   if (window.planGuard && !window.planGuard(page)) return;
   cleanup(); closeDrawer(); current = page;
+  NAVCTL.abort(); NAVCTL = new AbortController(); const my = ++NAVSEQ;
   const navKey = key === 'plan' ? 'plans' : key;
   document.querySelectorAll('#side a').forEach(a => a.classList.toggle('active', a.dataset.p === navKey));
-  const c = $('#content'); const y = c.scrollTop;
-  if (!keepScroll) c.innerHTML = '<div class="muted">Loading…</div>';
-  try { await PAGES[key](c, arg); if (keepScroll) c.scrollTop = y; }
-  catch (e) { c.innerHTML = `<div class="card"><div class="err">${esc(e.message)}</div><button class="btn" onclick="refresh()">Retry</button></div>`; }
+  const host = $('#content'), y = host.scrollTop, old = [...host.querySelectorAll(':scope > .pagebox')];
+  const c = document.createElement('div'); c.className = 'pagebox';
+  // page state kept on the container (filters, chosen VPN) carries over to the new box
+  for (const src of [host, ...old]) for (const k of Object.keys(src)) if (k.startsWith('_') && k !== '_t' && k !== '_p' && k !== '_n') c[k] = src[k];
+  if (keepScroll && old.length) { c.style.display = 'none'; host.prepend(c); }   // build the refreshed page behind the old one: no flash
+  else { c.innerHTML = '<div class="muted">Loading…</div>'; host.replaceChildren(c); }
+  const show = () => { if (my !== NAVSEQ) { c.remove(); return; } for (const o of host.querySelectorAll(':scope > .pagebox')) if (o !== c) o.remove(); c.style.display = ''; };
+  try { await PAGES[key](c, arg); show(); if (keepScroll && my === NAVSEQ) host.scrollTop = y; }
+  catch (e) { if (my !== NAVSEQ || e.stale) { c.remove(); return; } show(); c.innerHTML = `<div class="card"><div class="err">${esc(e.message)}</div><button class="btn" onclick="refresh()">Retry</button></div>`; }
 }
 window.addEventListener('hashchange', () => go(location.hash.slice(1)));
 
@@ -193,7 +208,7 @@ const legend = items => `<div class="legend">${items.map(([n, c, v]) => `<span><
 
 /* ---------- top bar ---------- */
 async function topbar() {
-  const o = await api('/api/view/overview');
+  const o = await api('/api/view/overview', { global: true });
   MODEL = o.model || MODEL;
   $('#tName').textContent = o.sysname; $('#tHost').textContent = o.host + (o.via ? ' · ' + o.via : ''); $('#tCpu').textContent = Fmt.pct(o.cpu);
   $('#tMem').textContent = Fmt.pct(o.memory.percent); $('#tUp').textContent = (o.uptime || '').replace(/ minutes?/, 'm').replace(/ hours?,/, 'h').replace(/ days?,/, 'd');
@@ -380,7 +395,7 @@ function chassisHtml(rows, hw) {
 }
 /* ----- front panel photo: the router's own photo with each port marked on it, coloured live ----- */
 let PANEL = null;    // {photo, version, marks: {port: [x, y]}, size} for the connected router
-async function panelLoad() { try { PANEL = await api('/api/panel'); } catch (e) { PANEL = { error: e.message, marks: {} }; } await notesLoad(); return PANEL; }
+async function panelLoad() { try { PANEL = await api('/api/panel'); } catch (e) { if (e.stale) throw e; PANEL = { error: e.message, marks: {} }; } await notesLoad(); return PANEL; }
 /* ----- crop and straighten the front photo: find the router's front automatically, adjust the 4 corners, warp to a rectangle ----- */
 async function photoCanvas(file, max = 2000) {
   const url = await new Promise((ok, bad) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = () => bad(new Error('Could not read that file.')); f.readAsDataURL(file); }), img = new Image();
@@ -518,7 +533,7 @@ function photoHtml(phys, st) {
 }
 /* ----- device notes: what engineers need to know about this router, beside its picture ----- */
 let NOTES = null;
-async function notesLoad() { try { NOTES = (await api('/api/notes')).notes; } catch (e) { NOTES = []; } return NOTES; }
+async function notesLoad() { try { NOTES = (await api('/api/notes')).notes; } catch (e) { if (e.stale) throw e; NOTES = []; } return NOTES; }
 const notesFor = name => (NOTES || []).filter(n => n.port === name);
 const noteTip = name => notesFor(name).map(n => `\n📝 ${n.text.split('\n')[0].slice(0, 120)}`).join('');
 function noteWhen(t) { const d = new Date(t * 1000); return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: d.getFullYear() === new Date().getFullYear() ? undefined : 'numeric' }) + ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }); }
@@ -673,7 +688,7 @@ function ifIpForm(name) {
 }
 /* ----- every address on one interface, in a dropdown: change, remove, add ----- */
 let arpCache = { at: 0, rows: [] };    // the router's ARP table, to show the client (neighbour) behind each address
-async function arpLoad() { if (Date.now() - arpCache.at < 30000) return arpCache.rows; try { arpCache = { at: Date.now(), rows: (await api('/api/view/arp')).entries || [] }; } catch (e) { } return arpCache.rows; }
+async function arpLoad() { if (Date.now() - arpCache.at < 30000) return arpCache.rows; try { arpCache = { at: Date.now(), rows: (await api('/api/view/arp')).entries || [] }; } catch (e) { if (e.stale) throw e; } return arpCache.rows; }
 /* ARP entries in this address's subnet, other than the router's own address: the client side of the link */
 function ipNeighbours(cidr, ifname) {
   const x = ip4(cidr); if (!x) return [];
@@ -697,7 +712,7 @@ function clientsOf(r) { return [r.ip, ...(r.secondary || [])].filter(Boolean).fl
 /* searchable text: IP plus the MAC in colon, router and bare form, so the table filter finds any of them */
 function nbSearch(n) { return n.map(a => { const h = String(a.mac || '').replace(/[-:.]/g, ''); return `${a.ip} ${macColon(a.mac)} ${a.mac} ${h}`; }).join(' '); }
 let ipOff = {};    // addresses taken off with Disable, by interface: [{ip, sub, by, at, reason}]
-async function ipOffLoad() { try { ipOff = await api('/api/ip/disabled'); } catch (e) { ipOff = {}; } }
+async function ipOffLoad() { try { ipOff = await api('/api/ip/disabled'); } catch (e) { if (e.stale) throw e; ipOff = {}; } }
 function ipsOf(r, withOff) {
   const on = [...(r.ip ? [{ ip: r.ip, sub: false }] : []), ...(r.secondary || []).map(ip => ({ ip, sub: true })), ...(r.ipv6 || []).map(ip => ({ ip, v6: true }))];
   const off = withOff ? (ipOff[r.name] || []).filter(x => !on.some(y => y.ip === x.ip)).map(x => ({ ...x, off: true })) : [];
