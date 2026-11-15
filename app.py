@@ -32,7 +32,7 @@ import panel
 import plans
 import routers
 import viewcache
-from device import DeviceError, RealRouter, is_read_only
+from device import DeviceError, RealRouter, _cidr, is_read_only
 from snmp_router import SnmpRouter, SshRequired
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -667,8 +667,38 @@ def run_action():
     return jsonify(do_action(request.get_json(force=True)))
 
 
+def _yes(v):
+    return v in (True, "true", "1")
+
+
+def guard_primary(data):
+    """"ip address X M" without "sub" REPLACES the interface's primary address on VRP. Adding an address must never
+    do that by accident: refuse unless the interface has no primary yet, or the caller says replace_primary."""
+    if data.get("action") != "interface.ip_add":
+        return
+    p = data.get("params") or {}
+    if _yes(p.get("secondary")) or _yes(p.get("replace_primary")) or (p.get("vpn") or "").strip():
+        return
+    name = str(p.get("interface") or "")
+    try:
+        lines = router().interface_config().get(name, [])
+    except Exception:
+        raise actions.ActionError(f"Could not read the addresses on {name} to check for a primary. "
+                                  "Tick Secondary (sub), or try again.")
+    prim = [l for l in lines if l.startswith("ip address ") and len(l.split()) >= 4 and not l.endswith(" sub")]
+    if prim:
+        cur = _cidr(prim[0])
+        if cur.split("/")[0] == str(p.get("address") or "").split("/")[0]:
+            return
+        raise actions.ActionError(
+            f"{name} already has {cur} as its primary address. Without Secondary (sub) the new address would replace it "
+            f"and cut off whatever uses {cur}. Tick Secondary (sub) to add it beside the primary. "
+            f"To replace the primary on purpose, use Change on {cur}.")
+
+
 def do_action(data):
     built = actions.build(data.get("action", ""), data.get("params") or {})
+    guard_primary(data)
     if data.get("preview"):
         return dict(lines=built["preview"], mode=built["mode"])
     if current_user()["role"] == "viewer":

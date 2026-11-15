@@ -421,8 +421,9 @@ class DemoRouter(Router):
         elif w[:2] == ["ip", "address"]:
             entry = (w[2], mask_len(w[3]), "sub" in w)
             if not entry[2]:
-                i["ips"] = [x for x in i["ips"] if x[2]]
-            i["ips"].append(entry)
+                i["ips"] = [entry] + [x for x in i["ips"] if x[2]]   # the primary comes first, as on the router
+            else:
+                i["ips"].append(entry)
         elif w[:3] == ["undo", "ip", "address"]:
             before = len(i["ips"])
             i["ips"] = [x for x in i["ips"] if not (x[0] == w[3] and x[1] == mask_len(w[4]))]

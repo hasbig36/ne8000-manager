@@ -110,7 +110,7 @@ function change(o) {
     <form class="form" onsubmit="return false">${(o.fields || []).map(field).join('')}</form>
     <div class="preview hidden"><div class="lbl">Commands that will be sent:</div><pre class="cli"></pre></div>
     <div class="err"></div>
-    <div class="actions"><button class="btn" data-a="cancel">Cancel</button><button class="btn" data-a="check" title="send the lines, then abort instead of commit">Check only</button><button class="btn primary" data-a="preview">Review</button></div>`;
+    <div class="actions"><button class="btn" data-a="cancel">${o.block ? 'Close' : 'Cancel'}</button>${o.block ? '' : '<button class="btn" data-a="check" title="send the lines, then abort instead of commit">Check only</button><button class="btn primary" data-a="preview">Review</button>'}</div>`;
   $('#modalBg').classList.remove('hidden');
   const form = m.querySelector('form'), err = m.querySelector('.err'), pv = m.querySelector('.preview');
   const first = form.querySelector('input,select'); if (first) first.focus();
@@ -127,9 +127,16 @@ function change(o) {
       if (o.after) o.after(commit); else refresh();
     } catch (e) { err.textContent = e.message; }
   };
+  let busy = false;   // one request at a time: a second click while the router is still answering would send the change twice
+  const lock = on => { busy = on; m.querySelectorAll('.actions [data-a=check],.actions [data-a=preview]').forEach(b => b.disabled = on); };
   m.querySelector('.actions').onclick = async e => {
     const a = e.target.dataset.a; if (!a) return;
     if (a === 'cancel') return closeModal();
+    if (o.block || busy) return;
+    lock(true);
+    try { await step(a); } finally { if (m.contains(e.target)) lock(false); }
+  };
+  const step = async a => {
     if (a === 'check') return run(false);
     if (!reviewed) {
       err.textContent = '';
@@ -140,9 +147,10 @@ function change(o) {
       } catch (e2) { err.textContent = e2.message; }
       return;
     }
-    run(true);
+    return run(true);
   };
-  if (!(o.fields || []).length) m.querySelector('[data-a=preview]').click();
+  if (o.block) err.textContent = '⚠ ' + o.block;
+  else if (!(o.fields || []).length) m.querySelector('[data-a=preview]').click();
 }
 function showOutput(title, text) {
   const m = $('#modal'); m.innerHTML = `<h2>${esc(title)}</h2><pre>${esc(text)}</pre><div class="actions"><button class="btn primary">Close</button></div>`;
@@ -683,7 +691,7 @@ function ifEdit(name) {
 function ifIpForm(name) {
   const r = ifCache.find(x => x.name === name) || {};
   change({ title: `Add IP address to ${name}`, action: 'interface.ip_add', params: { interface: name }, warn: p => ipWarn(p.address, name),
-    intro: r.ip ? `${name} already has ${r.ip} as its primary address, so the new one is added as secondary (sub). Untick it only to replace the primary.` : '',
+    intro: r.ip ? `${name} already has ${r.ip} as its primary address, so the new one is added as secondary (sub). To replace the primary, use Change on ${r.ip}.` : '',
     fields: [{ k: 'address', label: 'Address/prefix', ph: '10.0.0.1/30' }, { k: 'secondary', label: 'Secondary (sub)', type: 'check', value: !!r.ip }, { k: 'vpn', label: 'Bind VPN instance', ph: 'optional', help: 'Binding a VPN instance removes existing IP addresses on the interface.' }] });
 }
 /* ----- every address on one interface, in a dropdown: change, remove, add ----- */
@@ -783,21 +791,26 @@ function ipDisableForm(name, ip, sub, use) {
   const r = ifCache.find(x => x.name === name) || {}, subs = (r.secondary || []).length;
   const notes = ['The router has no off switch for one address, so Disable takes it off the router and the manager keeps it listed here, so Enable can put it back.',
     use ? `${use} is in this subnet; that session will go down.` : '',
-    !sub && subs ? `${name} still has ${subs} secondary address${subs > 1 ? 'es' : ''}. The router refuses to take off the primary until they are disabled or removed.` : ''].filter(Boolean);
-  change({ title: `Disable ${ip} on ${name}`, action: 'interface.ip_remove', url: '/api/ip/toggle', params: { interface: name, address: ip, secondary: sub }, intro: notes.join(' '),
+    ].filter(Boolean);
+  change({ title: `Disable ${ip} on ${name}`, action: 'interface.ip_remove', url: '/api/ip/toggle', params: { interface: name, address: ip, secondary: sub }, intro: notes.join(' '), block: primaryBlock(name, ip, sub, subs),
     fields: [{ k: 'reason', label: 'Reason (optional)', ph: 'e.g. unpaid, migrated' }], after: ipAfter });
 }
 function ipEnableForm(name, ip, sub) {
   const r = ifCache.find(x => x.name === name) || {};
-  change({ title: `Enable ${ip} on ${name}`, action: 'interface.ip_add', url: '/api/ip/toggle', params: { interface: name, address: ip, secondary: sub },
+  change({ title: `Enable ${ip} on ${name}`, action: 'interface.ip_add', url: '/api/ip/toggle', params: { interface: name, address: ip, secondary: sub, replace_primary: !sub },
     intro: !sub && r.ip ? `This was the primary address. ${name} now has ${r.ip} as primary, which this replaces.` : `Puts ${ip} back on ${name} as ${sub ? 'a secondary' : 'the primary'} address.`, after: ipAfter });
 }
 function ipAfter() { ifCache = []; refresh(); }
 function ipRemoveForm(name, ip, sub, use) {
   const r = ifCache.find(x => x.name === name) || {}, subs = (r.secondary || []).length;
   const notes = [use ? `${use} is in this subnet; that session will go down.` : '',
-    !sub && subs ? `${name} still has ${subs} secondary address${subs > 1 ? 'es' : ''}. The router refuses to remove the primary until they are removed.` : ''].filter(Boolean);
-  change({ title: `Remove ${ip} from ${name}`, action: 'interface.ip_remove', params: { interface: name, address: ip, secondary: sub }, intro: notes.join(' ') });
+    ].filter(Boolean);
+  change({ title: `Remove ${ip} from ${name}`, action: 'interface.ip_remove', params: { interface: name, address: ip, secondary: sub }, intro: notes.join(' '), block: primaryBlock(name, ip, sub, subs) });
+}
+function primaryBlock(name, ip, sub, subs) {
+  return !sub && subs ? `${ip} is the primary address of ${name}, which still has ${subs} secondary address${subs > 1 ? 'es' : ''}. ` +
+    `The router will not take off a primary while secondaries exist. To put a different address in its place, use Change on ${ip}: ` +
+    `it swaps the primary in one step and keeps the secondaries. Otherwise remove the secondaries first.` : '';
 }
 function parentList() { return ifCache.filter(i => ['ethernet', 'eth-trunk'].includes(i.type)).map(i => i.name); }
 async function ensureIfs() { if (!ifCache.length) ifCache = await api('/api/view/interfaces'); }
@@ -948,7 +961,7 @@ PAGES.addresses = async c => {
       ...(r.ipv6 || []).map(ip => ({ ...r, ip, v6: true, description: (r.description ? r.description + ' · ' : '') + 'IPv6' }))])
       .map(r => { const n = r.v6 ? [] : ipNeighbours(r.ip, r.name); return { ...r, _nb: n, nb: nbSearch(n) }; }), { toolbar: `<button class="btn" onclick="addrForm()">+ Address</button>` });
 };
-function addrForm() { change({ title: 'Add IP address', action: 'interface.ip_add', fields: [{ k: 'interface', label: 'Interface', type: 'select', options: ifCache.filter(i => i.type !== 'null' && !i.l2).map(i => i.name) }, { k: 'address', label: 'Address/prefix', ph: '10.0.0.1/30' }, { k: 'secondary', label: 'Secondary (sub)', type: 'check' }] }); }
+function addrForm() { change({ title: 'Add IP address', action: 'interface.ip_add', fields: [{ k: 'interface', label: 'Interface', type: 'select', options: ifCache.filter(i => i.type !== 'null' && !i.l2).map(i => i.name) }, { k: 'address', label: 'Address/prefix', ph: '10.0.0.1/30' }, { k: 'secondary', label: 'Secondary (sub)', type: 'check', value: true, help: 'Untick only on an interface with no address yet. The manager refuses to replace an existing primary from here.' }] }); }
 
 PAGES.routes = async c => {
   const vpns = (await api('/api/view/vpn_instances')).instances.map(v => v.name);
