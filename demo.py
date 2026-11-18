@@ -247,7 +247,8 @@ class DemoRouter(Router):
         import copy
         return copy.deepcopy({k: v for k, v in self.__dict__.items()
                               if k in ("ifs", "vlan_db", "static", "arp_static", "bgp_peers", "bgp_networks", "ospf_networks", "isis_procs",
-                                       "users", "ntp", "snmp", "vpns", "policies", "queues", "profiles", "sysname_")})
+                                       "users", "ntp", "snmp", "vpns", "policies", "queues", "profiles", "sysname_",
+                                       "rpol", "prefix_lists", "peer_policy")})
 
     def _restore(self, snap):
         self.__dict__.update(snap)
@@ -257,6 +258,54 @@ class DemoRouter(Router):
         w = line.split()
         if line == "quit":
             return ("system", None)
+        if view == "rpolicy":
+            if w[0] in ("if-match", "apply") or line == "goto next-node":
+                name, n = self._rpcur
+                act, node, match, apply_ = next(x for x in self.rpol[name] if x[1] == n)
+                (match if w[0] == "if-match" else apply_).append(line)
+                return None
+            view, ctx = "system", None
+        if w[0] == "route-policy" and len(w) == 5 and w[2] in ("permit", "deny") and w[3] == "node" and w[4].isdigit():
+            nodes = self.rpol.setdefault(w[1], [])
+            n = int(w[4])
+            old = next((x for x in nodes if x[1] == n), None)
+            if old and old[0] != w[2]:
+                return "The node already exists with a different matching mode."
+            if not old:
+                nodes.append((w[2], n, [], []))
+                nodes.sort(key=lambda x: x[1])
+            self._rpcur = (w[1], n)
+            return ("rpolicy", f"route-policy-{w[1]}-{n}")
+        if w[:2] == ["undo", "route-policy"]:
+            if w[2] not in self.rpol:
+                return "The route-policy does not exist."
+            if len(w) == 5 and w[3] == "node":
+                before = len(self.rpol[w[2]])
+                self.rpol[w[2]] = [x for x in self.rpol[w[2]] if x[1] != int(w[4])]
+                if len(self.rpol[w[2]]) == before:
+                    return "The node does not exist."
+                if not self.rpol[w[2]]:
+                    del self.rpol[w[2]]
+            else:
+                del self.rpol[w[2]]
+            return None
+        if w[:2] == ["ip", "ip-prefix"] and len(w) >= 8 and w[3] == "index":
+            ge = int(w[w.index("greater-equal") + 1]) if "greater-equal" in w else None
+            le = int(w[w.index("less-equal") + 1]) if "less-equal" in w else None
+            rows = [x for x in self.prefix_lists.get(w[2], []) if x[0] != int(w[4])]
+            rows.append((int(w[4]), w[5], f"{w[6]}/{w[7]}", ge, le))
+            self.prefix_lists[w[2]] = sorted(rows)
+            return None
+        if w[:3] == ["undo", "ip", "ip-prefix"]:
+            if w[3] not in self.prefix_lists:
+                return "The prefix list does not exist."
+            if len(w) == 6 and w[4] == "index":
+                self.prefix_lists[w[3]] = [x for x in self.prefix_lists[w[3]] if x[0] != int(w[5])]
+                if not self.prefix_lists[w[3]]:
+                    del self.prefix_lists[w[3]]
+            else:
+                del self.prefix_lists[w[3]]
+            return None
         if view == "qosprofile":
             if w[:2] == ["car", "cir"]:
                 cir = int(w[2]); pir = int(w[w.index("pir") + 1]) if "pir" in w else cir
@@ -536,6 +585,14 @@ class DemoRouter(Router):
                 p["desc"] = rest.split(" ", 1)[1]
             elif rest.startswith("connect-interface"):
                 p["ci"] = rest.split()[1]
+            elif re.match(r"^route-policy \S+ (import|export)$", rest):
+                name, direction = rest.split()[1:]
+                imp, exp = self.peer_policy.get(peer, ("", ""))
+                if direction == "import":
+                    imp = "" if undo else name
+                else:
+                    exp = "" if undo else name
+                self.peer_policy[peer] = (imp, exp)
             elif rest == "ignore":
                 p["ignore"] = not undo
                 p["state"] = "Connect" if undo else "Idle(Admin)"     # back up shortly after it is enabled again

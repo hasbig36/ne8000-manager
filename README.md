@@ -210,6 +210,11 @@ counters (with the matches in the last hour and day), which BGP peers use it, an
 counters. "What would a policy do to a prefix?" walks the rules for one prefix the way the router does; rules about
 the AS path or communities depend on the route, and are shown as "depends".
 
+Policies can be edited on that page: add, edit or remove a rule, make a new policy, copy one under a new name,
+delete one, attach it to or take it off a BGP peer, and add, edit or remove prefix-list entries. Every change goes
+through the usual Review / Check only / Apply dialog. A policy used by a peer asks for its name to be typed and
+offers a soft refresh of those peers after the commit; a policy or prefix list in use cannot be deleted.
+
 ## Files
 - `app.py`: web server, API and login checks
 - `auth.py`: app users, roles, sign-in throttling, audit log

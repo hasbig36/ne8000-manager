@@ -571,6 +571,124 @@ def bgp_reset(p):
     return [f"reset bgp {peer}"]
 
 
+# ---- route-policies and prefix lists -----------------------------------------
+PNAME_RE = re.compile(r"^[A-Za-z0-9_.\-/]{1,64}$")
+CLAUSE_RE = re.compile(r"^(if-match|apply) [a-z0-9][a-z0-9\-]*( [A-Za-z0-9_.:/\-]+){0,24}$")
+
+
+def pname(p, key="name", label="Name"):
+    v = need(p, key, label)
+    if not PNAME_RE.match(v):
+        raise ActionError(f"{label} may only contain letters, digits and _ . - /")
+    return v
+
+
+def clauses(p, key, kind):
+    """Several clauses, one per line (or a list). kind: 'if-match' or 'apply'."""
+    raw = p.get(key) or []
+    items = raw if isinstance(raw, list) else str(raw).splitlines()
+    out = []
+    for c in (" ".join(str(x).split()) for x in items):
+        if not c:
+            continue
+        if not c.startswith(kind + " ") and c != "goto next-node":
+            c = f"{kind} {c}"          # "ip-prefix SAVENET" -> "if-match ip-prefix SAVENET"
+        if c != "goto next-node" and (not CLAUSE_RE.match(c) or not c.startswith(kind)):
+            raise ActionError(f"Not a valid {kind} clause: {c}")
+        out.append(c)
+    return out
+
+
+def node_lines(name, act, node, match, apply_):
+    if act not in ("permit", "deny"):
+        raise ActionError("Action is permit or deny.")
+    if act == "deny" and apply_:
+        raise ActionError("A deny rule rejects the route, so it cannot apply anything.")
+    return [f"route-policy {name} {act} node {node}"] + match + apply_ + ["quit"]
+
+
+@action("policy.node_set")
+def policy_node_set(p):
+    """Add a rule (node) to a route-policy, or replace one. A new name creates the policy."""
+    name = pname(p, "name", "Policy name")
+    node = integer(p, "node", 0, 65535, "Node")
+    lines = node_lines(name, s(p, "action") or "permit", node, clauses(p, "match", "if-match"), clauses(p, "apply", "apply"))
+    if p.get("replace") in (True, "true", "1"):
+        lines = [f"undo route-policy {name} node {node}"] + lines
+    return lines
+
+
+@action("policy.node_remove")
+def policy_node_remove(p):
+    return [f"undo route-policy {pname(p, 'name', 'Policy name')} node {integer(p, 'node', 0, 65535, 'Node')}"]
+
+
+@action("policy.remove")
+def policy_remove(p):
+    return [f"undo route-policy {pname(p, 'name', 'Policy name')}"]
+
+
+@action("policy.copy")
+def policy_copy(p):
+    """A new policy with the same rules as an existing one (the rules come from the page, as read from the router)."""
+    new = pname(p, "new_name", "New policy name")
+    nodes = p.get("nodes") or []
+    if not isinstance(nodes, list) or not nodes:
+        raise ActionError("The policy to copy has no rules.")
+    lines = []
+    for n in nodes:
+        lines += node_lines(new, str(n.get("action")), integer(n, "node", 0, 65535, "Node"),
+                            clauses(n, "match", "if-match"), clauses(n, "apply", "apply"))
+    return lines
+
+
+@action("prefix.entry_set")
+def prefix_entry_set(p):
+    """ip ip-prefix NAME index N permit|deny A.B.C.D LEN [greater-equal X] [less-equal Y]"""
+    name = pname(p, "name", "Prefix list name")
+    idx = integer(p, "index", 1, 4294967295, "Index")
+    act = s(p, "action") or "permit"
+    if act not in ("permit", "deny"):
+        raise ActionError("Action is permit or deny.")
+    net, plen = prefix(p)
+    ge = integer(p, "ge", 0, 32, "Greater-equal", required=False)
+    le = integer(p, "le", 0, 32, "Less-equal", required=False)
+    if ge is not None and ge < plen:
+        raise ActionError(f"Greater-equal must be at least the prefix length ({plen}).")
+    if le is not None and le < max(plen, ge or 0):
+        raise ActionError("Less-equal must be at least the prefix length and greater-equal.")
+    line = f"ip ip-prefix {name} index {idx} {act} {net} {plen}" + (f" greater-equal {ge}" if ge is not None else "") + \
+        (f" less-equal {le}" if le is not None else "")
+    return ([f"undo ip ip-prefix {name} index {idx}"] if p.get("replace") in (True, "true", "1") else []) + [line]
+
+
+@action("prefix.entry_remove")
+def prefix_entry_remove(p):
+    return [f"undo ip ip-prefix {pname(p, 'name', 'Prefix list name')} index {integer(p, 'index', 1, 4294967295, 'Index')}"]
+
+
+@action("prefix.remove")
+def prefix_remove(p):
+    return [f"undo ip ip-prefix {pname(p, 'name', 'Prefix list name')}"]
+
+
+@action("bgp.peer_policy")
+def bgp_peer_policy(p):
+    """Attach a route-policy to a peer (import or export), or take it off (empty policy)."""
+    peer = ip_addr(p, "peer", "Peer address")
+    direction = s(p, "direction")
+    if direction not in ("import", "export"):
+        raise ActionError("Direction is import or export.")
+    pol = s(p, "policy")
+    old = s(p, "old")
+    if pol and not PNAME_RE.match(pol) or old and not PNAME_RE.match(old):
+        raise ActionError("Invalid policy name.")
+    if not pol and not old:
+        raise ActionError("Nothing to change.")
+    line = f"peer {peer} route-policy {pol} {direction}" if pol else f"undo peer {peer} route-policy {old} {direction}"
+    return [_bgp_head(p), "ipv4-family unicast", line]
+
+
 # ---- OSPF --------------------------------------------------------------------
 @action("ospf.network_add")
 def ospf_network_add(p):

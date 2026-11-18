@@ -107,7 +107,7 @@ function field(f) {
 function change(o) {
   const m = $('#modal');
   m.innerHTML = `<h2>${esc(o.title)}</h2>${o.intro ? `<p class="muted" style="margin-top:-4px">${esc(o.intro)}</p>` : ''}
-    <form class="form" onsubmit="return false">${(o.fields || []).map(field).join('')}</form>
+    <form class="form" onsubmit="return false">${[...(o.fields || []), ...(o.confirm ? [{ k: '_confirm', label: `Type ${o.confirm} to confirm`, ph: o.confirm }] : [])].map(field).join('')}</form>
     <div class="preview hidden"><div class="lbl">Commands that will be sent:</div><pre class="cli"></pre></div>
     <div class="err"></div>
     <div class="actions"><button class="btn" data-a="cancel">${o.block ? 'Close' : 'Cancel'}</button>${o.block ? '' : '<button class="btn" data-a="check" title="send the lines, then abort instead of commit">Check only</button><button class="btn primary" data-a="preview">Review</button>'}</div>`;
@@ -116,15 +116,16 @@ function change(o) {
   const first = form.querySelector('input,select'); if (first) first.focus();
   const params = () => { const p = { ...(o.params || {}) }; form.querySelectorAll('[name]').forEach(el => p[el.name] = el.type === 'checkbox' ? el.checked : el.value); return p; };
   let reviewed = false;
-  form.addEventListener('input', () => { reviewed = false; pv.classList.add('hidden'); setPrimary('Review'); });
+  form.addEventListener('input', e => { if (e.target.name === '_confirm') return; reviewed = false; pv.classList.add('hidden'); setPrimary('Review'); });
   const setPrimary = t => { const b = m.querySelector('[data-a=preview]'); b.textContent = t; b.classList.toggle('danger', false); };
   const run = async (commit) => {
     err.textContent = '';
     try {
-      const r = await post(o.url || '/api/action', { action: o.action, params: params(), commit });
+      const sent = params();
+      const r = await post(o.url || '/api/action', { action: o.action, params: sent, commit });
       closeModal(); toast((commit ? 'Applied: ' : 'Syntax checked (not committed): ') + o.title);
       if (!commit) showOutput('Check result: ' + o.title, r.output);
-      if (o.after) o.after(commit); else refresh();
+      if (o.after) o.after(commit, sent); else refresh();
     } catch (e) { err.textContent = e.message; }
   };
   let busy = false;   // one request at a time: a second click while the router is still answering would send the change twice
@@ -147,10 +148,12 @@ function change(o) {
       } catch (e2) { err.textContent = e2.message; }
       return;
     }
+    const typed = form.querySelector('[name=_confirm]');
+    if (typed && typed.value.trim() !== o.confirm) { err.textContent = `Type ${o.confirm} in the box to confirm.`; return; }
     return run(true);
   };
   if (o.block) err.textContent = '⚠ ' + o.block;
-  else if (!(o.fields || []).length) m.querySelector('[data-a=preview]').click();
+  else if (!(o.fields || []).length && !o.confirm) m.querySelector('[data-a=preview]').click();
 }
 function showOutput(title, text) {
   const m = $('#modal'); m.innerHTML = `<h2>${esc(title)}</h2><pre>${esc(text)}</pre><div class="actions"><button class="btn primary">Close</button></div>`;
@@ -1138,11 +1141,14 @@ PAGES.policies = async c => {
   const users = {}; Object.entries(d.peers).forEach(([peer, x]) => [['import', 'in'], ['export', 'out']].forEach(([k, w]) => { if (x[k]) (users[x[k]] = users[x[k]] || []).push(`${peer} ${w}`); }));
   const delta = (k, key, now) => { const o = lat[k][key]; return o != null && now != null && (!lat.now[key] || o[0] < lat.now[key][0]) ? now - o[1] : null; };
   const pols = d.policies.slice().sort((a, b) => (b.name === POLSEL) - (a.name === POLSEL) || (!!users[b.name]) - (!!users[a.name]) || a.name.localeCompare(b.name));
-  c.innerHTML = head('Route policies', `${d.policies.length} route-policies · ${Object.keys(d.prefixes).length} prefix lists`) +
+  POLDATA = { d, users };
+  c.innerHTML = head('Route policies', `${d.policies.length} route-policies · ${Object.keys(d.prefixes).length} prefix lists`,
+    `<button class="btn" onclick="polRule()">+ New policy</button><button class="btn" onclick="plEntry()">+ Prefix list entry</button>`) +
     `<div class="card"><h3>What would a policy do to a prefix?</h3><div class="row" style="gap:6px;flex-wrap:wrap"><input id="ptP" placeholder="Prefix, e.g. 8.8.8.0/24" style="max-width:220px">
       <select id="ptN"><option value="">All policies in use</option>${d.policies.map(p => `<option ${p.name === POLSEL ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select><button class="btn" id="ptB">Check</button></div>
       <div class="muted" style="margin-top:6px">Worked out from the policy rules and prefix lists read from the router. Rules about AS path, communities and the like depend on the route itself, so they are shown as “depends”.</div><div id="ptR"></div></div>
-    ${pols.map((p, i) => `<div class="card" id="pol-${i}"><h3>${esc(p.name)} <span class="sp"></span><span class="muted" style="font-weight:400;font-size:12px">${users[p.name] ? 'used by ' + users[p.name].map(esc).join(', ') : 'not used by a BGP peer'}</span></h3><div class="polT"></div></div>`).join('')}
+    ${pols.map((p, i) => `<div class="card" id="pol-${i}"><h3>${esc(p.name)} <span class="sp"></span><span class="muted" style="font-weight:400;font-size:12px">${users[p.name] ? 'used by ' + users[p.name].map(u => `${esc(u)} <button class="btn sm" title="take it off this peer" onclick='polDetach(${attr(p.name)},${attr(u)})'>×</button>`).join(' ') : 'not used by a BGP peer'}</span>
+      <button class="btn sm" onclick='polRule(${attr(p.name)})'>+ Rule</button><button class="btn sm" onclick='polAttach(${attr(p.name)})'>Attach to peer</button><button class="btn sm" onclick='polCopy(${attr(p.name)})'>Copy as…</button><button class="btn sm danger" onclick='polDelete(${attr(p.name)})'>Delete</button></h3><div class="polT"></div></div>`).join('')}
     <div class="card"><h3>Prefix lists</h3><div id="plT"></div></div>
     ${d.as_path ? `<div class="card"><h3>AS-path filters</h3><pre>${esc(d.as_path)}</pre></div>` : ''}${d.community ? `<div class="card"><h3>Community filters</h3><pre>${esc(d.community)}</pre></div>` : ''}`;
   pols.forEach((p, i) => table(c.querySelector(`#pol-${i} .polT`), [
@@ -1150,11 +1156,15 @@ PAGES.policies = async c => {
     { t: 'Matches when', k: 'match', cls: 'mono wrap', f: n => n.match.length ? n.match.map(esc).join('<br>') : '<span class="faint">every route</span>' },
     { t: 'Then', k: 'apply', cls: 'mono wrap', f: n => n.action === 'deny' ? '<span class="faint">rejected</span>' : n.apply.length ? n.apply.map(esc).join('<br>') : '<span class="faint">accepted as is</span>' },
     { t: 'Matched (total)', k: 'matched', num: true, f: n => Fmt.num(n.matched) }, { t: 'Last hour', k: 'h', num: true, f: n => delta('hour', `${p.name} ${n.node}`, n.matched) == null ? '<span class="faint">-</span>' : Fmt.num(delta('hour', `${p.name} ${n.node}`, n.matched)) },
-    { t: 'Last 24 h', k: 'd', num: true, f: n => delta('day', `${p.name} ${n.node}`, n.matched) == null ? '<span class="faint">-</span>' : Fmt.num(delta('day', `${p.name} ${n.node}`, n.matched)) }],
+    { t: 'Last 24 h', k: 'd', num: true, f: n => delta('day', `${p.name} ${n.node}`, n.matched) == null ? '<span class="faint">-</span>' : Fmt.num(delta('day', `${p.name} ${n.node}`, n.matched)) },
+    { t: '', sort: false, cls: 'acts', f: n => `<button class="btn sm" onclick='polRule(${attr(p.name)},${n.node})'>Edit</button><button class="btn sm danger" onclick='polNodeRemove(${attr(p.name)},${n.node})'>Remove</button>` }],
     p.nodes, { filter: false, empty: 'No nodes' }));
-  table($('#plT'), [{ t: 'Prefix list', k: 'name', f: x => `<b>${esc(x.name)}</b>` }, { t: 'Entries', k: 'entries', cls: 'mono wrap', f: x => x.entries.map(e => `${e.index} ${e.action} ${e.prefix}${e.ge != null ? ' ge ' + e.ge : ''}${e.le != null ? ' le ' + e.le : ''}`).map(esc).join('<br>') },
-    { t: 'Permitted', k: 'permitted', num: true, f: x => Fmt.num(x.permitted) }, { t: 'Denied', k: 'denied', num: true, f: x => Fmt.num(x.denied) }],
-    Object.entries(d.prefixes).map(([name, x]) => ({ name, ...x })), { empty: 'No prefix lists' });
+  const plUse = name => d.policies.filter(p => p.nodes.some(n => n.match.includes('if-match ip-prefix ' + name))).map(p => p.name);
+  table($('#plT'), [{ t: 'Prefix list', k: 'name', f: x => `<b>${esc(x.name)}</b>` }, { t: 'Index', k: 'index', num: true }, { t: 'Action', k: 'action', f: x => `<span class="pill ${x.action === 'permit' ? 'p-ok' : 'p-bad'}">${esc(x.action)}</span>` },
+    { t: 'Prefix', k: 'prefix', cls: 'mono', f: x => `${esc(x.prefix)}${x.ge != null ? ' ge ' + x.ge : ''}${x.le != null ? ' le ' + x.le : ''}` },
+    { t: 'Used by', k: 'used', f: x => esc(plUse(x.name).join(', ') || '-') }, { t: 'Permitted / denied (list)', k: 'permitted', num: true, f: x => `${Fmt.num(x.permitted)} / ${Fmt.num(x.denied)}` },
+    { t: '', sort: false, cls: 'acts', f: x => `<button class="btn sm" onclick='plEntry(${attr(x.name)},${x.index})'>Edit</button><button class="btn sm" onclick='plEntry(${attr(x.name)})'>+ Entry</button><button class="btn sm danger" onclick='plRemove(${attr(x.name)},${x.index})'>Remove</button>` }],
+    Object.entries(d.prefixes).flatMap(([name, x]) => x.entries.map(e => ({ name, ...e, permitted: x.permitted, denied: x.denied, used: plUse(name).join(',') }))), { empty: 'No prefix lists' });
   const check = async () => {
     const pfx = $('#ptP').value.trim(); if (!pfx) return;
     const name = $('#ptN').value;
@@ -1168,6 +1178,79 @@ PAGES.policies = async c => {
   $('#ptB').onclick = check; $('#ptP').onkeydown = e => { if (e.key === 'Enter') check(); };
   if (POLSEL) { c.querySelector('#pol-0')?.scrollIntoView({ block: 'start' }); POLSEL = ''; }
 };
+
+/* editing: every change goes through the usual Review / Check only / Apply dialog */
+let POLDATA = { d: { policies: [], prefixes: {}, peers: {} }, users: {} };
+function polUsers(name) { return (POLDATA.users[name] || []).map(u => { const [peer, w] = u.split(' '); return { peer, dir: w === 'in' ? 'import' : 'export' }; }); }
+function polGuard(name) {   // a policy in use: say which peers, ask for the name, offer a soft refresh after the commit
+  const us = polUsers(name);
+  if (!us.length) return {};
+  return { confirm: name, intro: `${name} is in use by BGP peer ${us.map(u => `${u.peer} (${u.dir})`).join(', ')}. The change applies to ${us.length > 1 ? 'those sessions' : 'that session'} straight away. Use Check only first.`,
+    extra: [{ k: '_refresh', label: 'Refresh those peers\' routes after the commit (soft refresh: sessions stay up)', type: 'check', value: true }],
+    after: async (commit, sent) => {
+      if (commit && sent && sent._refresh) for (const u of us) {
+        try { await post('/api/action', { action: 'bgp.reset', params: { peer: u.peer, soft: u.dir }, commit: true }); toast(`Refreshed ${u.peer} ${u.dir}`); } catch (e) { toast(`Refresh ${u.peer}: ${e.message}`, true); }
+      }
+      refresh();
+    } };
+}
+function polRule(name, node) {
+  const pol = POLDATA.d.policies.find(p => p.name === name), n = pol && node != null ? pol.nodes.find(x => x.node === node) : null;
+  const next = pol && pol.nodes.length ? Math.max(...pol.nodes.map(x => x.node)) + 10 : 10;
+  const g = name ? polGuard(name) : {}, lists = Object.keys(POLDATA.d.prefixes);
+  change({ title: !name ? 'New route-policy' : n ? `Edit ${name} node ${node}` : `Add a rule to ${name}`, action: 'policy.node_set', params: { ...(name ? { name } : {}), ...(n ? { node, replace: true } : {}) },
+    intro: [g.intro, n ? 'The rule is replaced as a whole (its old clauses are removed in the same commit).' : '', 'Rules are checked from the lowest node number up; the first rule that matches decides. A route no rule matches is rejected.'].filter(Boolean).join(' '),
+    confirm: g.confirm, after: g.after,
+    fields: [...(name ? [] : [{ k: 'name', label: 'Policy name', ph: 'e.g. ACE-IN' }]), ...(n ? [] : [{ k: 'node', label: 'Node (order)', type: 'number', value: next }]),
+      { k: 'action', label: 'Action', type: 'select', options: [['permit', 'permit: accept (and apply the changes below)'], ['deny', 'deny: reject']], value: n ? n.action : 'permit' },
+      { k: 'match', label: 'Matches when (one per line, all must match; empty = every route)', type: 'textarea', value: n ? n.match.map(x => x.replace(/^if-match /, '')).join('\n') : '',
+        ph: `ip-prefix ${lists[0] || 'SAVENET'}\nas-path-filter 10\ncommunity-filter NAME\nlarge-community-filter NAME` },
+      { k: 'apply', label: 'Then set (permit only, one per line)', type: 'textarea', value: n ? n.apply.map(x => x.replace(/^apply /, '')).join('\n') : '',
+        ph: 'local-preference 200\ncost 50\ncommunity 329021:100 additive\nas-path 329021 329021 additive' }, ...(g.extra || [])] });
+}
+function polNodeRemove(name, node) {
+  const g = polGuard(name), pol = POLDATA.d.policies.find(p => p.name === name);
+  change({ title: `Remove node ${node} from ${name}`, action: 'policy.node_remove', params: { name, node }, confirm: g.confirm, after: g.after, fields: g.extra || [],
+    intro: [g.intro, pol && pol.nodes.length <= 1 ? 'This is its only rule: removing it deletes the policy.' : ''].filter(Boolean).join(' ') });
+}
+function polDelete(name) {
+  const us = polUsers(name);
+  change({ title: `Delete route-policy ${name}`, action: 'policy.remove', params: { name }, confirm: name,
+    block: us.length ? `${name} is used by BGP peer ${us.map(u => `${u.peer} (${u.dir})`).join(', ')}. Take it off with × next to each peer first.` : '' });
+}
+function polCopy(name) {
+  const pol = POLDATA.d.policies.find(p => p.name === name);
+  change({ title: `Copy ${name}`, action: 'policy.copy', params: { nodes: pol.nodes.map(n => ({ node: n.node, action: n.action, match: n.match, apply: n.apply })) },
+    intro: `Makes a new policy with the same ${pol.nodes.length} rules. It is not used by any peer until you attach it.`, fields: [{ k: 'new_name', label: 'New policy name', ph: name.replace(/-(IN|OUT)$/, '-COPY-$1') }] });
+}
+async function polAttach(name) {
+  const b = await api('/api/view/bgp');
+  change({ title: `Attach ${name} to a BGP peer`, action: 'bgp.peer_policy', params: { policy: name, local_as: b.local_as },
+    intro: 'Replaces the policy the peer has in that direction now. It applies to the session straight away.', confirm: name,
+    fields: [{ k: 'peer', label: 'Peer', type: 'select', options: b.peers.map(p => [p.peer, `${p.peer} (AS ${p.as})${POLDATA.d.peers[p.peer] ? ' · now ' + ['import', 'export'].map(k => POLDATA.d.peers[p.peer][k] || '-').join(' / ') : ''}`]) },
+      { k: 'direction', label: 'Direction', type: 'select', options: [['import', 'import: routes received from the peer'], ['export', 'export: routes sent to the peer']] }] });
+}
+async function polDetach(name, u) {
+  const [peer, w] = u.split(' '), dir = w === 'in' ? 'import' : 'export', b = await api('/api/view/bgp');
+  change({ title: `Take ${name} off ${peer} (${dir})`, action: 'bgp.peer_policy', params: { peer, direction: dir, old: name, local_as: b.local_as }, confirm: name,
+    intro: `Without a policy, ${dir === 'import' ? 'every route the peer sends is accepted' : 'every best route is announced to the peer'}. Make sure that is what you want.` });
+}
+function plEntry(name, index) {
+  const list = name ? POLDATA.d.prefixes[name] : null, e = list && index != null ? list.entries.find(x => x.index === index) : null;
+  const next = list && list.entries.length ? Math.max(...list.entries.map(x => x.index)) + 10 : 10;
+  const using = name ? POLDATA.d.policies.filter(p => p.nodes.some(n => n.match.includes('if-match ip-prefix ' + name))).map(p => p.name) : [];
+  change({ title: e ? `Edit ${name} index ${index}` : name ? `Add an entry to ${name}` : 'New prefix list entry', action: 'prefix.entry_set',
+    params: { ...(name ? { name } : {}), ...(e ? { index, replace: true } : {}) },
+    intro: (using.length ? `Used by ${using.join(', ')}: the change applies to the BGP sessions using those policies straight away. ` : '') + 'Without ge / le only this exact prefix length matches.',
+    fields: [...(name ? [] : [{ k: 'name', label: 'Prefix list name', ph: 'e.g. CUSTOMERS' }]), ...(e ? [] : [{ k: 'index', label: 'Index (order)', type: 'number', value: next }]),
+      { k: 'action', label: 'Action', type: 'select', options: ['permit', 'deny'], value: e ? e.action : 'permit' }, { k: 'prefix', label: 'Prefix', ph: '102.216.116.0/23', value: e ? e.prefix : '' },
+      { k: 'ge', label: 'Greater-equal (optional)', type: 'number', value: e && e.ge != null ? e.ge : '' }, { k: 'le', label: 'Less-equal (optional)', type: 'number', value: e && e.le != null ? e.le : '' }] });
+}
+function plRemove(name, index) {
+  const list = POLDATA.d.prefixes[name];
+  change({ title: `Remove ${name} index ${index}`, action: 'prefix.entry_remove', params: { name, index },
+    intro: list && list.entries.length <= 1 ? 'This is its only entry: removing it deletes the list.' : '' });
+}
 function peerForm() {
   change({ title: 'New BGP peer', action: 'bgp.peer_add', params: { local_as: bgpState.local_as }, fields: [
     { k: 'peer', label: 'Peer address', ph: '10.10.3.2' }, { k: 'remote_as', label: 'Remote AS', ph: bgpState.local_as + ' for iBGP' }, { k: 'description', label: 'Description' },

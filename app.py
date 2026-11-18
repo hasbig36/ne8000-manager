@@ -701,9 +701,37 @@ def guard_primary(data):
             f"To replace the primary on purpose, use Change on {cur}.")
 
 
+def guard_policy(data):
+    """Never delete a route-policy or prefix list that is in use: a BGP peer pointing at a policy that is gone, or a
+    policy matching on a prefix list that is gone, changes what is accepted or announced in ways nobody intended."""
+    act = data.get("action", "")
+    if act not in ("policy.remove", "policy.node_remove", "prefix.remove", "prefix.entry_remove"):
+        return
+    p = data.get("params") or {}
+    name = str(p.get("name") or "")
+    d, _ = VIEWCACHE.get(router(), "route_policies")
+    if act.startswith("policy."):
+        users = [f"{peer} {k}" for peer, x in d["peers"].items() for k in ("import", "export") if x.get(k) == name]
+        pol = next((x for x in d["policies"] if x["name"] == name), None)
+        last = act == "policy.node_remove" and pol is not None and len(pol["nodes"]) <= 1
+        if users and (act == "policy.remove" or last):
+            raise actions.ActionError(f"{name} is used by BGP peer {', '.join(users)}. Take it off "
+                                      f"{'those peers' if len(users) > 1 else 'that peer'} first"
+                                      + (" (removing its last rule would delete the policy)." if last else "."))
+        return
+    using = sorted({x["name"] for x in d["policies"] for n in x["nodes"] for c in n["match"]
+                    if re.match(rf"^if-match ip-prefix {re.escape(name)}$", c)})
+    plist = d["prefixes"].get(name)
+    last = act == "prefix.entry_remove" and plist is not None and len(plist["entries"]) <= 1
+    if using and (act == "prefix.remove" or last):
+        raise actions.ActionError(f"Prefix list {name} is used by route-policy {', '.join(using)}. Change those rules first"
+                                  + (" (removing its last entry would delete the list)." if last else "."))
+
+
 def do_action(data):
     built = actions.build(data.get("action", ""), data.get("params") or {})
     guard_primary(data)
+    guard_policy(data)
     if data.get("preview"):
         return dict(lines=built["preview"], mode=built["mode"])
     if current_user()["role"] == "viewer":
