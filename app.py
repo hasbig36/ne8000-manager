@@ -16,7 +16,7 @@ import threading
 import time
 import uuid
 
-from flask import Flask, Response, jsonify, render_template, request, session
+from flask import Flask, Response, g, jsonify, render_template, request, session
 
 import actions
 import auth
@@ -157,6 +157,11 @@ def client_ip():
 
 
 @app.before_request
+def started():
+    g.t0 = time.time()
+
+
+@app.before_request
 def guard():
     if request.endpoint in OPEN:
         return None
@@ -173,7 +178,6 @@ def guard():
     return None
 
 
-KEEP_VIEWS_ON = ("notes_", "panel_", "health_", "auth_", "cli", "disconnect")   # POSTs that do not change the router (the console is read-only)
 
 
 @app.after_request
@@ -183,11 +187,11 @@ def security_headers(resp):
     resp.headers.setdefault("Referrer-Policy", "same-origin")
     resp.headers.setdefault("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
                             "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
-    # a change made through the app: the stored router views are out of date
-    if request.method == "POST" and resp.status_code < 400 and request.path.startswith("/api/") and \
-            not (request.endpoint or "").startswith(KEEP_VIEWS_ON):
+    # a change made on the router through the app (a commit, a reset, a restore) or a new login: the stored views are
+    # out of date. Reviews, Check only, notes, backups, billing and the like leave them alone, so pages stay instant.
+    if request.method == "POST" and resp.status_code < 400 and request.path.startswith("/api/"):
         r = ROUTERS.get(session.get("sid"))
-        if r is not None:
+        if r is not None and (request.endpoint in ("connect", "connect_ssh") or getattr(r, "changed_at", 0) >= getattr(g, "t0", 0)):
             VIEWCACHE.invalidate(r)
     if request.path.startswith("/api/") and request.path != "/api/panel/photo":   # the photo is versioned (?v=) and may be cached
         resp.headers["Cache-Control"] = "no-store"
@@ -549,7 +553,7 @@ def connect():
                     r.attach_ssh(username, password)
             except DeviceError as exc:
                 THROTTLE_ROUTER.fail(me())
-                AUDIT.log(me(), "router_connect_failed", host=host, ip=client_ip())
+                AUDIT.log(me(), "router_connect_failed", host=host, ip=client_ip(), via="ssh", why=fail_reason(exc, password))
                 if r is None:
                     raise
                 warning = f"Connected over SNMP, but the SSH login failed: {exc}"
@@ -573,6 +577,7 @@ def connect():
     ROUTERS[session["sid"]] = r
     r.track_id = netmap_key(r)
     VIEWCACHE.start(r)    # start filling the views now, so the dashboard opens from memory
+    netmap_background(r, netmap_key(r))     # the map takes the longest to read: start it now too
     start_billing(r)
     AUDIT.log(me(), "router_connect", host=r.host, demo=r.demo, via=r.via, ip=client_ip())
     return jsonify(ok=True, host=r.host, demo=r.demo, via=r.via, warning=warning)
@@ -590,11 +595,12 @@ def connect_ssh():
     THROTTLE_ROUTER.check(me())
     try:
         r.attach_ssh(data["username"], data["password"])
-    except DeviceError:
+    except DeviceError as exc:
         THROTTLE_ROUTER.fail(me())
-        AUDIT.log(me(), "router_connect_failed", host=r.host, ip=client_ip())
+        AUDIT.log(me(), "router_connect_failed", host=r.host, ip=client_ip(), via="ssh", why=fail_reason(exc, data.get("password")))
         raise
     THROTTLE_ROUTER.ok(me())
+    netmap_background(r, netmap_key(r))
     start_billing(r)
     AUDIT.log(me(), "router_ssh_added", host=r.host, ip=client_ip())
     return jsonify(ok=True, via=r.via)
@@ -828,6 +834,12 @@ def save():
 BACKUP_BUSY = {}      # router key -> Lock: one automatic copy at a time per router
 
 
+def fail_reason(exc, password=""):
+    """Why a router login failed, for the audit log: one line, never the password."""
+    t = " ".join(str(exc).split())[:300]
+    return t.replace(password, "********") if password else t
+
+
 def backup_key(r):
     return getattr(r, "track_id", "") or netmap_key(r)
 
@@ -881,7 +893,7 @@ def backup_reader():
 @app.get("/api/backups")
 def backups_list():
     r = backup_reader()
-    return jsonify(backups=BACKUPS.list(backup_key(r)), ssh=bool(r.can_configure), host=r.host, restore=bool(r.can_configure))
+    return jsonify(backups=BACKUPS.list(backup_key(r)), ssh=bool(r.can_configure), host=r.host, restore=True)
 
 
 @app.post("/api/backups")
@@ -1013,7 +1025,7 @@ def billing_usage():
     r = router()
     rows = [x for x in ((r.billing.last or {}).get("rows") or []) if x.get("interface")]
     names = sorted({x["interface"] for x in rows})
-    ifs = {i["name"]: i for i in r.interfaces()} if names else {}
+    ifs = {i["name"]: i for i in VIEWCACHE.get(r, "interfaces")[0]} if names else {}
     plan = {}
     try:   # the QoS profile speed on each port, when it has one
         for q in r.qos()["rules"]:
@@ -1406,14 +1418,88 @@ def netmap_key(r):
     return "demo" if r.demo else (session.get("router_id") or "host-" + r.host)
 
 
-@app.get("/api/netmap")
-def netmap_view():
-    """The live as-built map of the connected router. Rebuilt at most once a minute unless refresh=1."""
+@app.get("/api/search")
+def search():
+    """Search everything the server already holds for the connected router (never waits for the router):
+    interfaces, addresses, ARP, BGP peers, VLANs, VPNs, policies and prefix lists, QoS, LLDP neighbours,
+    billing customers, the map, notes, backups and the change log. -> {results: [{group, title, sub, go}]}"""
+    q = (request.args.get("q") or "").strip()
+    if len(q) < 2:
+        return jsonify(results=[])
     r = router()
-    key = netmap_key(r)
-    hit = NETMAP_CACHE.get(key)
-    if hit and time.time() - hit[0] < 60 and request.args.get("refresh") != "1":
-        return jsonify({**hit[1], "changes": NETMAP.load(key)["changes"][-100:][::-1]})
+    ql, out = q.lower(), []
+    viewer = current_user()["role"] == "viewer"
+
+    def hit(*vals):
+        return any(ql in str(v).lower() for v in vals if v not in (None, ""))
+
+    def add(group, title, sub, go, limit=8):
+        if sum(1 for x in out if x["group"] == group) < limit:
+            out.append({"group": group, "title": str(title), "sub": str(sub or ""), "go": go})
+
+    peek = lambda n: VIEWCACHE.peek(r, n)
+    for i in peek("interfaces") or []:
+        if hit(i.get("name"), i.get("description"), i.get("ip"), i.get("vlan"), i.get("vpn")):
+            add("Interfaces", i["name"], " · ".join(x for x in (i.get("description"), i.get("ip"), i.get("phy")) if x), {"page": "interfaces", "q": i["name"]})
+    for e in (peek("arp") or {}).get("entries", []):
+        if hit(e.get("ip"), e.get("mac")):
+            add("ARP", e["ip"], f"{e.get('mac', '')} on {e.get('interface', '')}", {"page": "arp", "q": e["ip"]})
+    b = peek("bgp") or {}
+    desc = {}
+    for lines in (b.get("config") or {}).values():
+        for l in lines:
+            m = re.match(r"^peer (\S+) description (.+)$", l)
+            if m:
+                desc[m.group(1)] = m.group(2)
+    for p in b.get("peers", []):
+        if hit(p.get("peer"), p.get("as"), desc.get(p.get("peer")), "as" + str(p.get("as", ""))):
+            add("BGP peers", p["peer"], f"AS {p.get('as', '')} · {desc.get(p['peer'], '')} · {p.get('state', '')}", {"page": "bgp", "peer": p["peer"]})
+    v = peek("vlans") or {}
+    for x in v.get("vlans", []):
+        if hit(x.get("id"), x.get("description")):
+            add("VLANs", f"VLAN {x['id']}", x.get("description", ""), {"page": "vlan", "q": str(x["id"])})
+    for x in (peek("vpn_instances") or {}).get("instances", []):
+        if hit(x.get("name"), x.get("rd")):
+            add("VPN instances", x["name"], x.get("rd", ""), {"page": "vpn", "q": x["name"]})
+    rp = peek("route_policies") or {}
+    for x in rp.get("policies", []):
+        if hit(x.get("name")):
+            add("Route policies", x["name"], f"{len(x.get('nodes', []))} rules", {"page": "policies", "policy": x["name"]})
+    for name, pl in (rp.get("prefixes") or {}).items():
+        ents = pl.get("entries", []) if isinstance(pl, dict) else []
+        if hit(name) or any(hit(e.get("prefix")) for e in ents):
+            add("Prefix lists", name, ", ".join(str(e.get("prefix", "")) for e in ents[:4]), {"page": "policies", "q": name})
+    qos = peek("qos") or {}
+    for x in qos.get("profiles", []) if isinstance(qos.get("profiles"), list) else []:
+        if hit(x.get("name") if isinstance(x, dict) else x):
+            add("QoS", x.get("name") if isinstance(x, dict) else x, "QoS profile", {"page": "queues", "q": x.get("name") if isinstance(x, dict) else x})
+    for x in (peek("neighbors") or {}).get("lldp", []):
+        if hit(x.get("neighbor"), x.get("local")):
+            add("Neighbours (LLDP)", x.get("neighbor", ""), f"{x.get('local', '')} → {x.get('neighbor_port', '')}", {"page": "neighbors", "q": x.get("neighbor", "")})
+    eng = getattr(r, "billing", None)
+    for c in ((eng.last if eng else None) or {}).get("rows", []) or []:
+        if hit(c.get("name"), c.get("login"), c.get("ips"), c.get("id")):
+            add("Customers (Splynx)", c.get("name", ""), " · ".join(str(x) for x in (c.get("login"), c.get("interface") or "no port", c.get("status")) if x), {"page": "billing", "q": c.get("name", "")})
+    hitmap = NETMAP_CACHE.get(netmap_key(r))
+    for n in (hitmap[1]["diagram"]["nodes"] if hitmap else []):
+        if hit(n.get("label"), *(n.get("props") or {}).values()):
+            add("Network map", n.get("label", ""), (n.get("props") or {}).get("location") or n.get("type", ""), {"page": "netmap"})
+    for n in NOTES.list(panel_key()):
+        if hit(n.get("text"), n.get("port")):
+            add("Notes", (n.get("text") or "")[:80], n.get("port") or n.get("by", ""), {"page": "dashboard"})
+    if not viewer:
+        for m in BACKUPS.list(backup_key(r)):
+            if hit(m.get("note"), m.get("id"), m.get("by")):
+                add("Backups", m["id"], m.get("note") or m.get("kind", ""), {"page": "backup"})
+    for e in TRACK.events(netmap_key(r), None, time.time() - 30 * 86400, q[:100], 6):
+        add("Change log", f"{e['key']} {e['change']}", f"{time.strftime('%d %b %H:%M', time.localtime(e['ts']))} · {e.get('info') or ''}", {"page": "changes", "q": e["key"]})
+    return jsonify(results=out)
+
+
+NETMAP_BUSY = set()       # map keys being rebuilt in the background
+
+
+def build_netmap(r, key):
     eng = getattr(r, "billing", None)
     snap = netdesign.snapshot(r, ((eng.last if eng else None) or {}).get("rows"))
     diagram, summary, m = netdesign.discover(snap)
@@ -1421,7 +1507,38 @@ def netmap_view():
     out = {"key": key, "diagram": diagram, "summary": summary, "at": rec["at"], "warnings": snap["warnings"],
            "rates": isinstance(r, SnmpRouter) or r.demo}
     NETMAP_CACHE[key] = (time.time(), out)
-    return jsonify({**out, "changes": rec["changes"][-100:][::-1]})
+    return out
+
+
+def netmap_background(r, key):
+    """Rebuild the map without anyone waiting for it (at connect, and when a stored map is over a minute old)."""
+    if key in NETMAP_BUSY:
+        return
+    NETMAP_BUSY.add(key)
+
+    def work():
+        try:
+            build_netmap(r, key)
+        except Exception as exc:
+            print(f"network map ({key}): {exc}", flush=True)
+        finally:
+            NETMAP_BUSY.discard(key)
+    threading.Thread(target=work, daemon=True).start()
+
+
+@app.get("/api/netmap")
+def netmap_view():
+    """The live as-built map of the connected router. A stored map up to 10 minutes old is shown at once and rebuilt
+    in the background when it is over a minute old; refresh=1 (Refresh now) waits for a new one."""
+    r = router()
+    key = netmap_key(r)
+    hit = NETMAP_CACHE.get(key)
+    if hit and request.args.get("refresh") != "1" and time.time() - hit[0] < 600:
+        if time.time() - hit[0] >= 60:
+            netmap_background(r, key)
+        return jsonify({**hit[1], "changes": NETMAP.load(key)["changes"][-100:][::-1]})
+    out = build_netmap(r, key)
+    return jsonify({**out, "changes": NETMAP.load(key)["changes"][-100:][::-1]})
 
 
 @app.get("/api/netmap/traffic")
@@ -1432,7 +1549,7 @@ def netmap_traffic():
     if not hit:
         return jsonify(ifs={}, peers={})
     names = sorted({l["props"]["iface"] for l in hit[1]["diagram"]["links"] if l["props"].get("iface")})
-    ifs = {i["name"]: i for i in r.interfaces()}
+    ifs = {i["name"]: i for i in VIEWCACHE.get(r, "interfaces")[0]}   # from memory: the map asks every 5 s
     series = r.traffic(names) if r.demo else {n: r.series("bps:" + n) for n in names} if isinstance(r, SnmpRouter) else {}
     out = {}
     for n in names:
@@ -1441,7 +1558,7 @@ def netmap_traffic():
                   "rx": pts[-1][1] if pts else None, "tx": pts[-1][2] if pts else None}
     peers = {}
     try:
-        peers = {p["peer"]: p["state"] for p in r.bgp()["peers"]}
+        peers = {p["peer"]: p["state"] for p in VIEWCACHE.get(r, "bgp")[0]["peers"]}
     except Exception:
         pass
     return jsonify(ifs=out, peers=peers, at=time.time())

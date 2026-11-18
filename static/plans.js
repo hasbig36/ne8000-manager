@@ -349,7 +349,7 @@ PAGES.netmap = async c => {
     <div class="glay2"><div class="card"><h3>What changed</h3><div id="nmCh" class="faint">—</div></div><div class="card" id="nmSel"><h3>Selection</h3><div class="faint">Click a device or a line. Click a line again to open its graphs.</div></div></div>`;
   const load = async refresh => {
     try { NM.data = await api('/api/netmap' + (refresh ? '?refresh=1' : '')); } catch (e) { $('#nmInfo').innerHTML = `<span class="err">${esc(e.message)}</span>`; return; }
-    $('#nmInfo').textContent = `${NM.data.summary} Updated ${new Date(NM.data.at * 1000).toLocaleTimeString()}.` + (NM.data.rates ? ' Traffic refreshes every 15 s.' : ' Over SSH only, lines show port utilisation instead of rates.');
+    $('#nmInfo').textContent = `${NM.data.summary} Updated ${new Date(NM.data.at * 1000).toLocaleTimeString()}.` + (NM.data.rates ? ' Traffic refreshes every 5 s.' : ' Over SSH only, lines show port utilisation instead of rates.');
     $('#nmCh').innerHTML = NM.data.changes.length ? `<table class="tbl"><tbody>${NM.data.changes.slice(0, 40).map(x => `<tr><td class="faint" style="white-space:nowrap">${fmtDate(x.at)}</td><td>${esc(x.text)}</td></tr>`).join('')}</tbody></table>` : 'No changes yet.';
     await nmTraffic(); 
   };
@@ -364,7 +364,7 @@ PAGES.netmap = async c => {
   $('#nmZr').onclick = () => { nmSavePos({}); nmDraw(); };
   $('#nmFs').onclick = () => toggleFull($('#nmBox'));
   await load(false);
-  every(15000, nmTraffic);
+  every(5000, nmTraffic);
   every(60000, () => load(false));
 };
 async function nmTraffic() {

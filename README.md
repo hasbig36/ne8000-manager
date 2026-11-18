@@ -185,6 +185,13 @@ Follow the steps at the top of `deploy/ne8000.service`: copy the app to `/opt/ne
 - Parsers follow standard VRP8 output. If a table is empty on your software release, the raw command output is shown instead (or run the command in Console), and the parser in `parsers.py` can be adjusted from a sample.
 - Some features depend on the line cards and licences in your chassis (for example bridge VLANs, port-queue). The router's own error message is shown if it rejects a command.
 
+### Search, NOC view and live data
+
+- **Search everything** (top bar; press / or Ctrl+K): interfaces, addresses, ARP, BGP peers (by IP, AS or description), VLANs, VPNs, route-policies and prefix lists, QoS, LLDP neighbours, Splynx customers, the network map, notes, backups, the change log and the app's pages. It searches what the server already holds, so it never waits for the router. A result opens the right page, filtered to it (a BGP peer opens its statistics).
+- **NOC** (top bar): the live network map full screen and dark, for a wall screen: BGP sessions up, links and interfaces down (down links flash red), CPU, memory, and a ticker of the latest changes. Esc leaves it.
+- **Live data:** ports, interfaces and map traffic update every 5 s. The slower router reads (the map, System, Route policies, VLANs, OSPF, IS-IS, MPLS, VPNs, logs, LLDP) are kept fresh in the background, so pages open from memory. Stored router data is only dropped after a real change on the router (a commit, reset, save or restore), not after a Review, Check only, note or backup.
+- **SSH stays connected:** the app sends SSH keep-alives and a harmless Enter when the session has been idle for 4 minutes (so the router's vty idle-timeout never closes it), and logs in again by itself with the login held in memory if the router or the network drops the session. After the app restarts (a deploy), sign in to SSH again: the password is never written to disk.
+
 ### Backups and restore (Tools › Backup)
 
 Copies of the running configuration are kept on the manager's server, in `<data>/backups/<router>/` as plain `.cfg` text with a small `.json` beside each, so any backup of the data folder covers them.

@@ -14,12 +14,16 @@ next answer comes from the router again.
 import threading
 import time
 
-TTL = {"overview": 8, "interfaces": 8, "arp": 25, "bgp": 20, "ospf": 30, "isis": 30, "mpls": 30, "neighbors": 60,
-       "vlans": 30, "qos": 60, "vpn_instances": 60, "system": 120, "hardware": 300, "logs": 15,
-       "track": 240, "route_policies": 60}
+TTL = {"overview": 8, "interfaces": 8, "arp": 25, "bgp": 20, "ospf": 60, "isis": 120, "mpls": 120, "neighbors": 120,
+       "vlans": 60, "qos": 60, "vpn_instances": 300, "system": 300, "hardware": 300, "logs": 15,
+       "track": 240, "route_policies": 120}
 MAX_STALE = 600          # never show data older than this without fetching it first
 IDLE = 300               # stop warming a router nobody has looked at for this long
-WARM = (("overview", 1), ("interfaces", 1), ("arp", 3), ("bgp", 3), ("hardware", 30), ("qos", 12), ("track", 60))   # (view, every N rounds of 5 s)
+# (view, every N rounds of 5 s): the busy views first, then the slower ones (each takes the router 1-7 s), so that no page
+# waits for the router the first time it is opened.
+WARM = (("overview", 1), ("interfaces", 1), ("arp", 3), ("bgp", 3), ("hardware", 30), ("qos", 12), ("track", 60),
+        ("logs", 6), ("vlans", 12), ("route_policies", 24), ("neighbors", 24), ("ospf", 12), ("isis", 24), ("mpls", 24),
+        ("vpn_instances", 60), ("system", 60))
 
 
 class ViewCache:
@@ -92,6 +96,11 @@ class ViewCache:
                 self._background(r, name)
                 return hit[1], age
         return self._fetch(r, name), 0.0
+
+    def peek(self, r, name):
+        """The stored answer of a view, or None: never asks the router."""
+        hit = self.data.get((id(r), name))
+        return hit[1] if hit else None
 
     def invalidate(self, r):
         rid = id(r)

@@ -85,8 +85,10 @@ function ubar(pct) {
 }
 
 /* ---------- generic table with sort + filter ---------- */
+let GOQ = null;      // a filter from the search box, given to the first table the opened page draws
 function table(host, cols, rows, opts = {}) {
   const st = host._t || (host._t = { sort: opts.sort || null, dir: opts.dir || 1, q: '' });
+  if (GOQ && opts.filter !== false && Date.now() - GOQ.at < 8000) { st.q = GOQ.q; GOQ = null; }
   host.innerHTML = (opts.filter !== false ? `<div class="bar">${opts.toolbar || ''}<span class="sp"></span><input placeholder="Filter" class="tf" value="${esc(st.q)}"></div>` : (opts.toolbar ? `<div class="bar">${opts.toolbar}</div>` : '')) +
     `<div class="tw"><table><thead><tr>${cols.map(c => `<th class="${c.sort === false ? 'nosort' : ''} ${c.num ? 'num' : ''}" data-k="${c.k || ''}">${esc(c.t)}${st.sort === c.k ? (st.dir > 0 ? ' ▲' : ' ▼') : ''}</th>`).join('')}</tr></thead><tbody></tbody></table></div><div class="count"></div>`;
   const body = host.querySelector('tbody');
@@ -108,7 +110,7 @@ function table(host, cols, rows, opts = {}) {
 /* ---------- change flow: form -> preview CLI -> commit / check ---------- */
 function closeModal() { $('#modalBg').classList.add('hidden'); $('#modal').innerHTML = ''; $('#modal').classList.remove('wide'); if (sshCancel) sshCancel(); if (cropCancel) cropCancel(); }
 $('#modalBg').addEventListener('mousedown', e => { if (e.target.id === 'modalBg') closeModal(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeModal(); closeDrawer(); } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (current === 'noc' && $('#modalBg').classList.contains('hidden')) { nocLeave(); location.hash = 'netmap'; } closeModal(); closeDrawer(); } });
 
 function field(f) {
   const v = f.value ?? '';
@@ -217,6 +219,7 @@ async function go(page, keepScroll) {
   if (!PAGES[base]) page = 'dashboard';
   const key = PAGES[base] ? base : 'dashboard';
   if (window.planGuard && !window.planGuard(page)) return;
+  if (base !== 'noc') nocLeave();
   cleanup(); closeDrawer(); current = page;
   NAVCTL.abort(); NAVCTL = new AbortController(); const my = ++NAVSEQ;
   const navKey = key === 'plan' ? 'plans' : key;
@@ -277,11 +280,11 @@ PAGES.dashboard = async c => {
   let hw = null;
   const pv = async () => { const rows = await api('/api/view/interfaces'); ifCache = rows; await arpLoad(); if (!hw) [hw] = await Promise.all([api('/api/view/hardware').catch(() => ({})), panelLoad()]); portPanel($('#dPorts'), withClients(rows), { hw }); };
   pv().catch(e => { const el = $('#dPorts'); if (el) el.innerHTML = `<span class="muted">${esc(e.message)}</span>`; });
-  every(15000, pv);
+  every(5000, pv);
   hl().catch(() => { const el = $('#dHealth'); if (el) el.remove(); });
   every(60000, hl);
   every(5000, async () => draw(await api('/api/resources')));
-  every(15000, async () => { Object.assign(o, await topbar()); tops(); });
+  every(10000, async () => { Object.assign(o, await topbar()); tops(); });
 };
 
 /* ----- smart health check: what is wrong or unusual, and what to do about it ----- */
@@ -693,7 +696,7 @@ PAGES.interfaces = async c => {
   let hw = null; Promise.all([api('/api/view/hardware').catch(() => null), panelLoad()]).then(([h]) => { hw = h; ports(ifCache); });
   const ports = rows => portPanel($('#ifPorts'), rows, { hw, onPort: name => { const t = $('#ifTable'); t._t.q = name; draw(ifCache); t.scrollIntoView({ behavior: 'smooth', block: 'start' }); } });
   draw(rows); ports(rows);
-  every(10000, async () => { if (!$('#modalBg').classList.contains('hidden')) return; ifCache = await api('/api/view/interfaces'); await arpLoad(); draw(ifCache); ports(ifCache); });
+  every(5000, async () => { if (!$('#modalBg').classList.contains('hidden')) return; ifCache = await api('/api/view/interfaces'); await arpLoad(); draw(ifCache); ports(ifCache); });
 };
 /* adds the clients behind each row (for display) and their IP/MACs as text (so the filter box finds a MAC in any format) */
 function withClients(rows) { return rows.map(r => { const n = r.ip ? clientsOf(r) : []; return Object.assign(r, { _nb: n, client: nbSearch(n) }); }); }
@@ -1664,9 +1667,9 @@ PAGES.backup = async c => {
   const KIND = { manual: 'by hand', daily: 'daily', 'after-change': 'after a change', 'after-save': 'after Save', 'before-restore': 'before a restore', upload: 'uploaded' };
   c.innerHTML = head('Backup', 'copies of the router configuration kept on this server', `<a class="btn" href="/api/running-config?download=1">Download running config</a><button class="btn" onclick="saveCfg()">Save configuration</button>`) +
     `<div class="card"><h3>Copies on the server</h3>
-      <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px"><input id="bkNote" placeholder="Note (optional), e.g. before ACE peering" style="max-width:320px"><button class="btn primary" id="bkTake" ${r.ssh ? '' : 'disabled'}>Back up now</button>
+      <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px"><input id="bkNote" placeholder="Note (optional), e.g. before ACE peering" style="max-width:320px"><button class="btn primary" id="bkTake">Back up now</button>
         <label class="btn" style="cursor:pointer">Upload a .cfg<input type="file" id="bkFile" accept=".cfg,.txt,.dat,text/plain" style="display:none"></label></div>
-      <p class="muted" style="margin:0 0 10px">A copy is also kept automatically after every change and every Save made in this app, and once a day while someone is signed in with SSH. An automatic copy is only kept when the configuration really changed. Pinned, by-hand and uploaded copies are kept until you delete them; the newest 60 automatic ones are kept.${r.ssh ? '' : ' <b>Sign in with SSH to take copies.</b>'}</p>
+      <p class="muted" style="margin:0 0 10px">A copy is also kept automatically after every change and every Save made in this app, and once a day while someone is signed in with SSH. An automatic copy is only kept when the configuration really changed. Pinned, by-hand and uploaded copies are kept until you delete them; the newest 60 automatic ones are kept.${r.ssh ? '' : ' <b>Copying or restoring reads the router over SSH: you are asked for your SSH login the first time. The daily copy runs only while someone is signed in with SSH.</b>'}</p>
       <div id="bkT"></div></div><div class="card hidden" id="bkD"><h3 id="bkDt">Differences</h3><div id="bkDs"></div><pre id="bkDu" class="diff"></pre></div>`;
   table($('#bkT'), [{ t: 'Taken', k: 'time', f: m => `<b>${esc(new Date(m.time * 1000).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</b>${m.pinned ? ' 📌' : ''}` },
     { t: 'How', k: 'kind', f: m => esc(KIND[m.kind] || m.kind) }, { t: 'By', k: 'by' }, { t: 'Note', k: 'note', cls: 'wrap' }, { t: 'Lines', k: 'lines', num: true, f: m => Fmt.num(m.lines) },
@@ -1728,6 +1731,88 @@ async function bkDiff(id) {
 async function saveCfg() { if (!confirm('Save the running configuration to startup?')) return; try { const r = await post('/api/save'); toast(r.output.split('\n').filter(Boolean).pop() || 'Saved');
     done(r.saved === false ? { fail: true, head: 'Save may not have finished', title: 'Save configuration', text: r.output } : { head: 'Saved successfully', title: 'Running configuration saved to startup', time: r.time }); if (current === 'backup') setTimeout(refresh, 2500); } catch (e) { toast(e.message, true); } }
 $('#saveBtn').onclick = saveCfg;
+
+/* ---------- NOC: the live network map full screen, for a wall screen ---------- */
+let NOC_THEME = null;
+function nocLeave() {
+  if (NOC_THEME === null) return;
+  if (NOC_THEME) document.documentElement.dataset.theme = NOC_THEME; else delete document.documentElement.dataset.theme;
+  NOC_THEME = null; if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+$('#nocBtn').onclick = () => { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {}); location.hash = 'noc'; };
+PAGES.noc = async c => {
+  if (NOC_THEME === null) NOC_THEME = document.documentElement.dataset.theme || '';
+  document.documentElement.dataset.theme = 'dark';
+  c.innerHTML = `<div class="noc"><div class="nh"><span class="ttl">NOC · ${esc($('#tName').textContent)}</span><span class="muted" id="ncInfo">Reading the network…</span>
+      <span class="clk" id="ncClk"></span><button class="btn sm" id="ncFs" title="full screen">⛶ Full screen</button><button class="btn sm" id="ncX" title="leave the NOC view (Esc)">✕ Exit</button></div>
+    <div class="tiles"><div class="tile"><div class="l">BGP sessions up</div><div class="v" id="ncB">-</div></div><div class="tile"><div class="l">Links down on the map</div><div class="v" id="ncD">-</div></div>
+      <div class="tile"><div class="l">Interfaces down</div><div class="v" id="ncI">-</div></div><div class="tile"><div class="l">CPU</div><div class="v" id="ncC">-</div></div><div class="tile"><div class="l">Memory</div><div class="v" id="ncM">-</div></div>
+      <div class="tile"><div class="l">Changes, last hour</div><div class="v" id="ncE">-</div></div></div>
+    <div class="mapw"><div class="canvas nmap" id="nmC"></div></div><div class="tick"><div class="run" id="ncT">Loading the latest events…</div></div></div>`;
+  $('#ncX').onclick = () => { nocLeave(); location.hash = 'netmap'; };
+  $('#ncFs').onclick = () => { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {}); };
+  const clock = () => { const el = $('#ncClk'); if (el) el.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); };
+  clock(); timers.push(setInterval(clock, 1000));
+  const fit = () => { const host = $('#nmC'); if (!host || !NM.data) return; const pos = nmLoadPos();
+    const ns = NM.data.diagram.nodes.map(n => pos[n.id] || [n.x, n.y]); const W = Math.max(1000, ...ns.map(p => p[0] + NW + 60)), H = Math.max(560, ...ns.map(p => p[1] + NH + 60));
+    NM.zoom = Math.max(0.3, Math.min(2, (host.clientWidth - 8) / W, (host.clientHeight - 8) / H)); };
+  const map = async () => { try { NM.data = await api('/api/netmap'); if ($('#ncInfo')) $('#ncInfo').textContent = NM.data.summary; fit(); } catch (e) { if ($('#ncInfo')) $('#ncInfo').textContent = e.message; } };
+  const traffic = async () => { await nmTraffic(); const down = document.querySelectorAll('#nmC .link.nm-down, #nmC .link.nm-bgpdown').length; const d = $('#ncD'); if (d) { d.textContent = down; d.className = 'v ' + (down ? 'bad' : 'okc'); } };
+  const tiles = async () => {
+    const [b, o, i, ev] = await Promise.all([api('/api/view/bgp').catch(() => null), api('/api/view/overview').catch(() => null), api('/api/view/interfaces').catch(() => null), api('/api/changes?days=1&limit=40').catch(() => null)]);
+    if (!$('#ncB')) return;
+    if (b) { const up = b.peers.filter(p => p.state === 'Established').length; $('#ncB').textContent = `${up} / ${b.peers.length}`; $('#ncB').className = 'v ' + (up < b.peers.length ? 'bad' : 'okc'); }
+    if (o) { const cpu = o.cpu ?? (o.resources || {}).cpu, mem = o.memory && typeof o.memory === 'object' ? o.memory.percent : o.memory; $('#ncC').textContent = cpu != null ? cpu + '%' : '-'; $('#ncM').textContent = mem != null ? mem + '%' : '-'; }
+    if (i) { const dn = i.filter(x => !x.admin_down && x.description && x.phy && x.phy !== 'up' && !String(x.phy).startsWith('*')).length; $('#ncI').textContent = dn; $('#ncI').className = 'v ' + (dn ? 'bad' : 'okc'); }
+    if (ev) { const hr = ev.events.filter(e => e.ts > Date.now() / 1000 - 3600).length; $('#ncE').textContent = hr;
+      $('#ncT').innerHTML = ev.events.length ? ev.events.slice(0, 25).map(e => `<span class="${['down', 'removed', 'dropped'].includes(e.change) ? 'bad' : ['up', 'added', 'back'].includes(e.change) ? 'okc' : ''}">${esc(new Date(e.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))} · ${esc((CHG_LABEL[e.kind] || e.kind) + ' ' + e.key + ' ' + e.change)}${e.info ? ' · ' + esc(e.info) : ''}</span>`).join('') : '<span>No changes in the last 24 hours.</span>'; }
+  };
+  await map(); await traffic(); tiles();
+  every(5000, traffic); every(10000, tiles); every(60000, map);
+  let rt = null; const ro = new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if ($('#nmC')) { fit(); nmDraw(); } else ro.disconnect(); }, 150); }); ro.observe($('#nmC'));
+};
+
+/* ---------- search everything (top bar; press / or Ctrl+K) ---------- */
+const GS = { res: [], on: -1, t: null, seq: 0 };
+function gsPages(q) {
+  const out = []; q = q.toLowerCase();
+  NAV.forEach(([grp, items]) => items.forEach(([p, label]) => { if (label.toLowerCase().includes(q) || p.includes(q)) out.push({ group: 'Pages', title: label, sub: grp || '', go: { page: p } }); }));
+  return out.slice(0, 6);
+}
+function gsShow() {
+  const box = $('#gqR'); box.classList.remove('hidden');
+  if (!GS.res.length) { box.innerHTML = `<div class="none">${$('#gq').value.trim().length < 2 ? 'Type at least 2 letters: a port, IP, MAC, peer, AS, VLAN, customer, policy…' : 'Nothing found.'}</div>`; return; }
+  let last = '', html = '';
+  GS.res.forEach((x, i) => { if (x.group !== last) { html += `<div class="g">${esc(x.group)}</div>`; last = x.group; } html += `<a data-i="${i}" class="${i === GS.on ? 'on' : ''}" role="option"><b>${esc(x.title)}</b>${x.sub ? `<span>${esc(x.sub)}</span>` : ''}</a>`; });
+  box.innerHTML = html;
+}
+function gsHide() { $('#gqR').classList.add('hidden'); GS.on = -1; }
+function gsOpen(x) {
+  if (!x) return; gsHide(); $('#gq').blur(); const g = x.go || {};
+  if (g.q) GOQ = { q: g.q, at: Date.now() };
+  if (g.policy) POLSEL = g.policy;
+  const after = g.peer ? () => { let n = 0; const t = setInterval(() => { if (++n > 30 || ($('#bP table') && current === 'bgp')) { clearInterval(t); if (n <= 30) peerHistory(g.peer, ((bgpState.peers || []).find(p => p.peer === g.peer) || {}).description || ''); } }, 300); } : null;
+  if (location.hash.slice(1) === g.page) refresh(); else location.hash = g.page;
+  if (after) after();
+}
+$('#gq').oninput = () => {
+  clearTimeout(GS.t); const q = $('#gq').value.trim();
+  GS.res = gsPages(q); GS.on = GS.res.length ? 0 : -1; gsShow();
+  if (q.length < 2) return;
+  GS.t = setTimeout(async () => { const my = ++GS.seq; try { const r = await api('/api/search?q=' + encodeURIComponent(q)); if (my !== GS.seq) return; GS.res = [...gsPages(q), ...r.results]; GS.on = GS.res.length ? 0 : -1; gsShow(); } catch (e) { } }, 180);
+};
+$('#gq').onfocus = () => { if ($('#gq').value.trim()) gsShow(); };
+$('#gq').onkeydown = e => {
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (!GS.res.length) return; GS.on = (GS.on + (e.key === 'ArrowDown' ? 1 : -1) + GS.res.length) % GS.res.length; gsShow(); const a = $('#gqR a.on'); if (a) a.scrollIntoView({ block: 'nearest' }); }
+  if (e.key === 'Enter') { e.preventDefault(); gsOpen(GS.res[GS.on] || GS.res[0]); }
+  if (e.key === 'Escape') { gsHide(); $('#gq').blur(); }
+};
+$('#gqR').onmousedown = e => { const a = e.target.closest('a[data-i]'); if (a) { e.preventDefault(); gsOpen(GS.res[+a.dataset.i]); } };
+document.addEventListener('mousedown', e => { if (!e.target.closest('#gs')) gsHide(); });
+document.addEventListener('keydown', e => {
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName) || document.activeElement.isContentEditable;
+  if ((e.key === '/' && !typing) || (e.key.toLowerCase() === 'k' && (e.ctrlKey || e.metaKey))) { e.preventDefault(); $('#gq').focus(); $('#gq').select(); }
+});
 
 /* ---------- login ---------- */
 async function connect(demo) {

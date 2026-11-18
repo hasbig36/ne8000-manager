@@ -104,6 +104,7 @@ class SnmpRouter(Router):
 
     def attach_ssh(self, username, password):
         ssh = RealRouter(self.host, username, password, self.ssh_port, poll=False)
+        ssh.lock = self.lock          # commands come through this router's lock; the SSH keep-alive must wait for the same one
         old, self.ssh, self.ssh_user = self.ssh, ssh, username
         self.via = "SNMP + SSH"
         if old:

@@ -85,6 +85,9 @@ class Router:
                 raise
             except Exception as exc:
                 raise DeviceError(str(exc)) from exc
+            finally:
+                if commit:
+                    self.changed_at = time.time()     # the app's stored views of this router are now out of date
         self.cache.clear()
         if "Error:" in out:
             raise DeviceError("The router rejected part of the change:\n" + out)
@@ -97,6 +100,8 @@ class Router:
                 out = self._exec(command)
             except Exception as exc:
                 raise DeviceError(str(exc)) from exc
+            finally:
+                self.changed_at = time.time()
         self.cache.clear()
         return out
 
@@ -111,6 +116,9 @@ class Router:
                 raise
             except Exception as exc:
                 raise DeviceError(str(exc)) from exc
+            finally:
+                if commit:
+                    self.changed_at = time.time()
         self.cache.clear()
         return out
 
@@ -464,19 +472,71 @@ class Router:
 
 
 class RealRouter(Router):
+    KEEP_EVERY = 60          # seconds between checks that the SSH session is still there
+    NUDGE_AFTER = 240        # idle seconds before a harmless Enter, so the router's vty idle-timeout never closes the session
+
     def __init__(self, host, username, password, port=22, poll=True):
         super().__init__(host)
-        try:
-            from netmiko import ConnectHandler
-            self.conn = ConnectHandler(device_type="huawei_vrpv8", host=host, port=int(port), username=username,
-                                       password=password, timeout=30, conn_timeout=15, fast_cli=False)
-        except Exception as exc:
-            raise DeviceError(f"Could not connect to {host}:{port}: {exc}") from exc
-        self._login = (username, password)      # kept in memory only, for copying a restore file over SFTP
+        self.port = int(port)
+        self._login = (username, password)      # kept in memory only: for reconnecting and for SFTP; never written to disk
+        self.conn = self._connect()
+        self.last_used = time.time()
+        self.reconnects = 0
+        threading.Thread(target=self._keep_loop, daemon=True).start()
         if poll:
             self.start_poller()
 
+    def _connect(self):
+        try:
+            from netmiko import ConnectHandler
+            conn = ConnectHandler(device_type="huawei_vrpv8", host=self.host, port=self.port, username=self._login[0],
+                                  password=self._login[1], timeout=30, conn_timeout=15, fast_cli=False)
+        except Exception as exc:
+            raise DeviceError(f"Could not connect to {self.host}:{self.port}: {exc}") from exc
+        try:
+            conn.remote_conn.get_transport().set_keepalive(30)      # SSH keep-alive packets through firewalls and NAT
+        except Exception:
+            pass
+        return conn
+
+    def _alive(self):
+        try:
+            return bool(self.conn.remote_conn.get_transport().is_active())
+        except Exception:
+            return False
+
+    def _ensure(self):
+        """Called with the lock held before every command: a session the router or the network closed is opened
+        again with the same login, so the user never has to sign in again while the app is running."""
+        self.last_used = time.time()
+        if self._alive():
+            return
+        try:
+            self.conn.disconnect()
+        except Exception:
+            pass
+        self.conn = self._connect()
+        self.reconnects += 1
+        print(f"SSH to {self.host} was closed; logged in again ({self.reconnects})", flush=True)
+
+    def _keep_loop(self):
+        while not self.stop.wait(self.KEEP_EVERY):
+            if not self.lock.acquire(timeout=5):
+                continue                       # busy with a command: the session is in use anyway
+            try:
+                if not self._alive():
+                    self._ensure()
+                elif time.time() - self.last_used > self.NUDGE_AFTER:
+                    self.conn.write_channel("\n")
+                    self.conn.read_until_prompt(read_timeout=15)
+                    self.last_used = time.time()
+            except Exception as exc:
+                print(f"SSH keep-alive to {self.host}: {exc}", flush=True)
+            finally:
+                self.lock.release()
+
     def _run(self, command, read_timeout):
+        self._ensure()
         try:
             return self.conn.send_command(command, read_timeout=read_timeout)
         except Exception:
@@ -499,6 +559,7 @@ class RealRouter(Router):
             pass
 
     def _configure(self, lines, commit):
+        self._ensure()
         out = self.conn.send_config_set(lines, exit_config_mode=False, read_timeout=90, cmd_verify=False)
         if commit and "Error:" in out:
             # a rejected line: abort, so a half-done change is never committed
@@ -566,6 +627,7 @@ class RealRouter(Router):
             pass        # a left-over copy on cfcard: does no harm; the next restore overwrites it
 
     def _load_replace(self, text, commit, description):
+        self._ensure()
         self._put_file(text)
         try:
             self.conn.config_mode()
@@ -595,6 +657,7 @@ class RealRouter(Router):
             self._drop_file()
 
     def _exec(self, command):
+        self._ensure()
         out = self.conn.send_command_timing(command, read_timeout=60)
         if "[Y/N]" in out or "y/n" in out.lower():
             out += self.conn.send_command_timing("Y", read_timeout=60)

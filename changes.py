@@ -139,6 +139,7 @@ class Tracker:
         self.lock = threading.Lock()
         self.clients = {}
         self.status = {}              # router id -> {"time", "error"}
+        self.memo = {}                # cached answers of latest() / spark()
         self.stop = threading.Event()
         self.thread = None
         with self._db() as db:
@@ -266,7 +267,19 @@ class Tracker:
             return [list(r) for r in db.execute("SELECT ts, a, b, c FROM stats WHERE rid=? AND kind=? AND key=? AND ts>=? ORDER BY ts",
                                                  (rid, kind, key, since))]
 
+    def _memo(self, k, fn, ttl=60):
+        """The numbers change every 5 minutes: keep an answer for a minute so pages do not wait on the database."""
+        hit = self.memo.get(k)
+        if hit and time.time() - hit[0] < ttl:
+            return hit[1]
+        v = fn()
+        self.memo[k] = (time.time(), v)
+        return v
+
     def spark(self, rid, kind, rng="day", points=48):
+        return self._memo(("spark", rid, kind, rng), lambda: self._spark(rid, kind, rng, points))
+
+    def _spark(self, rid, kind, rng, points):
         """{key: [[ts, a], ...]}: every key's first number, thinned to about `points` per key."""
         since = int(time.time()) - RANGES.get(rng, 86400)
         out = {}
@@ -280,6 +293,9 @@ class Tracker:
         return out
 
     def latest(self, rid, kind, ago=0):
+        return self._memo(("latest", rid, kind, ago), lambda: self._latest(rid, kind, ago), 30)
+
+    def _latest(self, rid, kind, ago=0):
         """{key: (ts, a, b, c)}: the newest sample of every key, or the newest one at least `ago` seconds old."""
         cut = int(time.time()) - ago
         with self._db() as db:
