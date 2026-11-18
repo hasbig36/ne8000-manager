@@ -185,6 +185,16 @@ Follow the steps at the top of `deploy/ne8000.service`: copy the app to `/opt/ne
 - Parsers follow standard VRP8 output. If a table is empty on your software release, the raw command output is shown instead (or run the command in Console), and the parser in `parsers.py` can be adjusted from a sample.
 - Some features depend on the line cards and licences in your chassis (for example bridge VLANs, port-queue). The router's own error message is shown if it rejects a command.
 
+### Backups and restore (Tools › Backup)
+
+Copies of the running configuration are kept on the manager's server, in `<data>/backups/<router>/` as plain `.cfg` text with a small `.json` beside each, so any backup of the data folder covers them.
+
+- **Back up now** keeps a copy by hand, with an optional note. **Upload a .cfg** keeps a file from your PC (up to 8 MB).
+- **Automatic copies**: after every change committed in the app (actions, config editor, restore), after every Save, once a day while someone is signed in with SSH, and before every restore. An automatic copy is kept only when the configuration really changed (time stamps and comments are ignored). The newest 60 automatic copies are kept; pinned, by-hand and uploaded copies stay until deleted.
+- The app **never saves to startup and never restores by itself**. Save stays a button press.
+- **Compare with router** shows which sections differ and a line-by-line diff.
+- **Restore…** replaces the whole running configuration with the copy, the router's own way: the copy is copied to `cfcard:ne8000mgr-restore.cfg` over SFTP (over the open SSH session, or a second login on the router's `sftp server port`; the password is held in memory only), then `load configuration file … replace` in system view. **Check only** shows the router's own `display configuration candidate changes` and throws the candidate away. To commit, type the copy's id. A before-restore copy of the router is kept first, and the commit carries the description `ne8000-manager restore <id>`. The file on cfcard: is removed afterwards. Press Save to keep the restored configuration over a reboot.
+
 ### Change log and route policies
 
 **Change log** (top of the menu) records what changed on the router and when, in `data/changes.db`

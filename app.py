@@ -20,6 +20,7 @@ from flask import Flask, Response, jsonify, render_template, request, session
 
 import actions
 import auth
+import backups
 import billing
 import changes
 import adopt
@@ -62,9 +63,11 @@ NETMAP_CACHE = {}   # map key -> (time, response)
 DISABLED_IPS = ipdisabled.DisabledIPs(DATA_DIR)
 PANELS = panel.PanelStore(DATA_DIR)
 NOTES = panel.NotesStore(DATA_DIR)
+BACKUPS = backups.BackupStore(DATA_DIR)
 VIEWCACHE = viewcache.ViewCache()   # router views kept in server memory, so pages open without waiting for the router
 TRACK = changes.Tracker(DATA_DIR, SAVED)   # change log: ARP, MAC, routes, protocol sessions, BGP counts, policy counters
 VIEWCACHE.observers.append(lambda r, name, value: TRACK.feed_view(getattr(r, "track_id", ""), name, value))
+VIEWCACHE.observers.append(lambda r, name, value: daily_backup(r) if name == "track" else None)
 THROTTLE_IP = auth.Throttle(limit=5)        # per client address
 THROTTLE_USER = auth.Throttle(limit=20)     # per username, high enough that strangers cannot easily lock out a real user
 THROTTLE_ROUTER = auth.Throttle(limit=5)    # failed router SSH logins per app user (slows password guessing on the router)
@@ -743,6 +746,8 @@ def do_action(data):
         out = "\n".join(r.execute(c) for c in built["lines"])
     else:
         out = r.configure(built["lines"], commit=data.get("commit", True))
+        if data.get("commit", True):
+            auto_backup(r, "after-change", me(), data.get("action", ""))
     for secret in [str(v) for k, v in (data.get("params") or {}).items() if k in actions.SECRET_KEYS and v]:
         out = out.replace(secret, "********")
     return dict(output=out, lines=built["preview"])
@@ -793,14 +798,175 @@ def config():
     r = router()
     lines = (data.get("config") or "").splitlines()
     AUDIT.log(me(), "config", host=r.host, demo=r.demo, commit=bool(data.get("commit", True)), lines=len(lines))
-    return jsonify(output=r.configure(lines, commit=bool(data.get("commit", True))))
+    out = r.configure(lines, commit=bool(data.get("commit", True)))
+    if data.get("commit", True):
+        auto_backup(r, "after-change", me(), "config editor")
+    return jsonify(output=out)
 
 
 @app.post("/api/save")
 def save():
     r = router()
     AUDIT.log(me(), "save", host=r.host, demo=r.demo)
-    return jsonify(output=r.execute("save"))
+    out = r.execute("save")
+    auto_backup(r, "after-save", me())
+    return jsonify(output=out)
+
+
+# ---- configuration backups on the server ----------------------------------------------------------------------
+BACKUP_BUSY = {}      # router key -> Lock: one automatic copy at a time per router
+
+
+def backup_key(r):
+    return getattr(r, "track_id", "") or netmap_key(r)
+
+
+def running_text(r):
+    return r.run("display current-configuration", read_timeout=180)
+
+
+def auto_backup(r, kind, by, note="", wait=False):
+    """Keep a copy of the running configuration on the server, in the background (or now with wait=True).
+    Skipped when it is the same as the newest copy, so only real changes add to the list."""
+    if not r.can_configure:
+        return None
+    key = backup_key(r)
+
+    def work():
+        lock = BACKUP_BUSY.setdefault(key, threading.Lock())
+        with lock:
+            try:
+                text = running_text(r)
+                last = BACKUPS.last(key)
+                if last and kind != "before-restore" and backups.clean(BACKUPS.text(key, last["id"])) == backups.clean(text):
+                    return last
+                return BACKUPS.add(key, text, by, kind, note, host=r.host)
+            except Exception as exc:          # a copy must never break the change it follows
+                print(f"backup ({kind}) failed: {exc}", flush=True)
+                if wait:
+                    raise
+                return None
+    if wait:
+        return work()
+    threading.Thread(target=work, daemon=True).start()
+    return None
+
+
+def daily_backup(r):
+    """Once a day while someone is signed in with SSH (the router's password is never stored, so it cannot run alone)."""
+    if not r.can_configure:
+        return
+    last = BACKUPS.last(backup_key(r), backups.AUTO + ("manual",))
+    if not last or time.time() - last["time"] > 23 * 3600:
+        auto_backup(r, "daily", "automatic")
+
+
+def backup_reader():
+    if current_user()["role"] == "viewer":
+        raise auth.AuthError("Viewers cannot read the full configuration.")
+    return router()
+
+
+@app.get("/api/backups")
+def backups_list():
+    r = backup_reader()
+    return jsonify(backups=BACKUPS.list(backup_key(r)), ssh=bool(r.can_configure), host=r.host, restore=bool(r.can_configure))
+
+
+@app.post("/api/backups")
+def backups_take():
+    r = router()
+    d = request.get_json(force=True) or {}
+    m = BACKUPS.add(backup_key(r), running_text(r), me(), "manual", d.get("note", ""), host=r.host)
+    AUDIT.log(me(), "backup_take", host=r.host, backup=m["id"])
+    return jsonify(m)
+
+
+@app.post("/api/backups/upload")
+def backups_upload():
+    r = router()
+    d = request.get_json(force=True) or {}
+    text = str(d.get("text") or "")
+    if "\x00" in text:
+        raise DeviceError("That is not a text configuration file.")
+    try:
+        m = BACKUPS.add(backup_key(r), text, me(), "upload", (d.get("note") or d.get("name") or "")[:200], host=r.host)
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "backup_upload", host=r.host, backup=m["id"], name=str(d.get("name") or "")[:100])
+    return jsonify(m)
+
+
+@app.get("/api/backups/<bid>/download")
+def backups_download(bid):
+    r = backup_reader()
+    try:
+        text = BACKUPS.text(backup_key(r), bid)
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    safe_host = re.sub(r"[^A-Za-z0-9.-]", "_", r.host)
+    return Response(text, mimetype="text/plain", headers={"Content-Disposition": f"attachment; filename={safe_host}-{bid}.cfg"})
+
+
+@app.post("/api/backups/<bid>")
+def backups_update(bid):
+    r = router()
+    d = request.get_json(force=True) or {}
+    try:
+        if d.get("delete"):
+            BACKUPS.delete(backup_key(r), bid)
+            AUDIT.log(me(), "backup_delete", host=r.host, backup=bid)
+            return jsonify(ok=True)
+        return jsonify(BACKUPS.update(backup_key(r), bid, d.get("pinned"), d.get("note")))
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+
+
+RESTORING = threading.Lock()
+
+
+@app.post("/api/backups/<bid>/restore")
+def backups_restore(bid):
+    """Put a server copy back on the router. commit=false is Check only: the router loads the file, lists what it
+    would change, and throws it away. commit=true needs the copy's id typed back, takes a before-restore copy of
+    the router as it is now, then commits. The router's startup configuration is not touched (Save stays manual)."""
+    r = router()
+    d = request.get_json(force=True) or {}
+    key = backup_key(r)
+    try:
+        meta, text = BACKUPS.meta(key, bid), BACKUPS.text(key, bid)
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    commit = bool(d.get("commit"))
+    if commit and str(d.get("confirm") or "").strip() != bid:
+        raise DeviceError(f"Type {bid} to confirm the restore.")
+    if not RESTORING.acquire(blocking=False):
+        raise DeviceError("A restore is already running.")
+    try:
+        if commit:
+            auto_backup(r, "before-restore", me(), f"before restoring {bid}", wait=True)
+        AUDIT.log(me(), "backup_restore" if commit else "backup_restore_check", host=r.host, demo=r.demo, backup=bid)
+        out = r.load_replace(text, commit=commit, description=f"ne8000-manager restore {bid}")
+        if commit:
+            VIEWCACHE.invalidate(r)
+            auto_backup(r, "after-change", me(), f"restored {bid}")
+        return jsonify(output=out, committed=commit, backup=meta)
+    finally:
+        RESTORING.release()
+
+
+@app.get("/api/backups/<bid>/diff")
+def backups_diff(bid):
+    """Compare a copy with the router now (against=running) or with another copy (against=<id>)."""
+    r = backup_reader()
+    key = backup_key(r)
+    against = request.args.get("against", "running")
+    try:
+        old = BACKUPS.text(key, bid)
+        new, name = (running_text(r), "router now") if against == "running" else (BACKUPS.text(key, against), against)
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    return jsonify(backups.diff(old, new, bid, name))
 
 
 @app.get("/api/running-config")

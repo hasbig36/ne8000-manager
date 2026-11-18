@@ -8,7 +8,7 @@ import random
 import re
 import time
 
-from device import Router
+from device import DeviceError, Router
 import parsers as P
 
 BOOT = time.time() - (42 * 86400 + 7 * 3600 + 13 * 60)
@@ -892,7 +892,27 @@ Statistics last cleared:never
         out += ["snmp-agent"] + [f"snmp-agent community {a} cipher %^%#demo%^%#" for a, _ in self.snmp] + ["#", "return"]
         return "\n".join(l for l in out if l is not None)
 
-    show_current_configuration = show_config
+    def show_current_configuration(self):
+        text = self.show_config()
+        import backups as B
+        if not hasattr(self, "_seen_cfg"):
+            self._seen_cfg = {}
+        self._seen_cfg["\n".join(B.clean(text))] = self._snapshot()
+        return text
+
+    def _load_replace(self, text, commit, description):
+        """Demo: a configuration this demo printed before can be put back (its state was remembered then)."""
+        import backups as B
+        snap = getattr(self, "_seen_cfg", {}).get("\n".join(B.clean(text)))
+        if snap is None:
+            raise DeviceError("The demo can only restore a configuration it printed itself.")
+        d = B.diff(self.show_config(), text)
+        changes = "\n".join(l for l in d["unified"].splitlines() if l[:1] in "+-" and l[:3] not in ("+++", "---"))
+        if commit:
+            self._restore(snap)
+            self.log("CFG/4/CFG_COMMIT", f"The configuration was replaced from a file ({description}).")
+            return changes + f"\n[*{self.sysname_}]commit"
+        return changes + "\nInfo: The configuration was not committed (check only)."
 
     def show_vlan(self):
         out = ["The total number of vlans is : %d" % len(self.vlan_db),

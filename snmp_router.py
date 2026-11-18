@@ -124,6 +124,9 @@ class SnmpRouter(Router):
     def _exec(self, command):
         return self._need_ssh()._exec(command)
 
+    def _load_replace(self, text, commit, description):
+        return self._need_ssh()._load_replace(text, commit, description)
+
     def execute(self, command):
         self._need_ssh()
         return super().execute(command)

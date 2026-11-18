@@ -1607,11 +1607,72 @@ PAGES.config = async c => {
 };
 
 PAGES.backup = async c => {
-  c.innerHTML = head('Backup') + `<div class="grid g2"><div class="card"><h3>Download running configuration</h3><p class="muted">Saves <span class="mono">display current-configuration</span> as a .cfg file on this computer.</p><a class="btn primary" href="/api/running-config?download=1">Download</a></div>
-    <div class="card"><h3>Save to startup</h3><p class="muted">Runs <span class="mono">save</span> so the committed configuration survives a reboot.</p><button class="btn" onclick="saveCfg()">Save configuration</button></div></div>`;
+  const r = await api('/api/backups'); RESTORE_ON = !!r.restore;
+  const KIND = { manual: 'by hand', daily: 'daily', 'after-change': 'after a change', 'after-save': 'after Save', 'before-restore': 'before a restore', upload: 'uploaded' };
+  c.innerHTML = head('Backup', 'copies of the router configuration kept on this server', `<a class="btn" href="/api/running-config?download=1">Download running config</a><button class="btn" onclick="saveCfg()">Save configuration</button>`) +
+    `<div class="card"><h3>Copies on the server</h3>
+      <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:8px"><input id="bkNote" placeholder="Note (optional), e.g. before ACE peering" style="max-width:320px"><button class="btn primary" id="bkTake" ${r.ssh ? '' : 'disabled'}>Back up now</button>
+        <label class="btn" style="cursor:pointer">Upload a .cfg<input type="file" id="bkFile" accept=".cfg,.txt,.dat,text/plain" style="display:none"></label></div>
+      <p class="muted" style="margin:0 0 10px">A copy is also kept automatically after every change and every Save made in this app, and once a day while someone is signed in with SSH. An automatic copy is only kept when the configuration really changed. Pinned, by-hand and uploaded copies are kept until you delete them; the newest 60 automatic ones are kept.${r.ssh ? '' : ' <b>Sign in with SSH to take copies.</b>'}</p>
+      <div id="bkT"></div></div><div class="card hidden" id="bkD"><h3 id="bkDt">Differences</h3><div id="bkDs"></div><pre id="bkDu" class="diff"></pre></div>`;
+  table($('#bkT'), [{ t: 'Taken', k: 'time', f: m => `<b>${esc(new Date(m.time * 1000).toLocaleString([], { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</b>${m.pinned ? ' 📌' : ''}` },
+    { t: 'How', k: 'kind', f: m => esc(KIND[m.kind] || m.kind) }, { t: 'By', k: 'by' }, { t: 'Note', k: 'note', cls: 'wrap' }, { t: 'Lines', k: 'lines', num: true, f: m => Fmt.num(m.lines) },
+    { t: '', sort: false, cls: 'acts', f: m => `<a class="btn sm" href="/api/backups/${m.id}/download">Download</a><button class="btn sm" onclick='bkDiff(${attr(m.id)})'>Compare with router</button>
+      <button class="btn sm" onclick='bkPin(${attr(m.id)},${!m.pinned})'>${m.pinned ? 'Unpin' : 'Pin'}</button><button class="btn sm" onclick='bkNoteEdit(${attr(m.id)},${attr(m.note || '')})'>Note</button>
+      ${RESTORE_ON ? `<button class="btn sm" onclick='bkRestore(${attr(m.id)})'>Restore…</button>` : ''}<button class="btn sm danger" onclick='bkDelete(${attr(m.id)})'>Delete</button>` }],
+    r.backups, { empty: 'No copies yet. Press Back up now.' });
+  $('#bkTake').onclick = async () => { $('#bkTake').disabled = true; try { await post('/api/backups', { note: $('#bkNote').value }); toast('Copy kept on the server'); PAGES.backup(c); } catch (e) { toast(e.message, true); $('#bkTake').disabled = false; } };
+  $('#bkFile').onchange = async () => { const f = $('#bkFile').files[0]; if (!f) return;
+    if (f.size > 8 * 1024 * 1024) return toast('That file is larger than 8 MB.', true);
+    try { await post('/api/backups/upload', { text: await f.text(), name: f.name, note: $('#bkNote').value || f.name }); toast('Uploaded ' + f.name); PAGES.backup(c); } catch (e) { toast(e.message, true); } };
 };
-
-async function saveCfg() { if (!confirm('Save the running configuration to startup?')) return; try { const r = await post('/api/save'); toast(r.output.split('\n').filter(Boolean).pop() || 'Saved'); } catch (e) { toast(e.message, true); } }
+let RESTORE_ON = false;
+/* Restore a server copy: compare, Check only on the router (it loads the file, lists its own changes, throws it away),
+   then type the copy's id to commit. A copy of the router as it is now is kept first. Save stays manual. */
+async function bkRestore(id) {
+  const m = $('#modal');
+  m.innerHTML = `<h2>Restore copy ${esc(id)}</h2>
+    <p class="muted" style="margin-top:-4px">The router's whole running configuration is replaced by this copy (load configuration file … replace, then commit). A copy of the router as it is now is kept on the server first, so this can be undone the same way. The startup configuration is not touched: press Save afterwards to keep it over a reboot.</p>
+    <div id="rsSum" class="muted">Comparing with the router…</div><pre id="rsOut" class="diff hidden" style="max-height:320px"></pre>
+    <form class="form hidden" id="rsF" onsubmit="return false"><label>Type ${esc(id)} to confirm</label><input name="_confirm" placeholder="${esc(id)}" autocomplete="off"></form>
+    <div class="err"></div>
+    <div class="actions"><button class="btn" data-a="cancel">Cancel</button><button class="btn" data-a="check">Check only</button><button class="btn primary danger" data-a="apply" disabled>Restore &amp; commit</button></div>`;
+  $('#modalBg').classList.remove('hidden');
+  const err = m.querySelector('.err'), out = $('#rsOut');
+  const paint = t => { out.classList.remove('hidden'); out.innerHTML = t.split('\n').map(l => `<span class="${l.startsWith('+') ? 'dadd' : l.startsWith('-') ? 'ddel' : ''}">${esc(l)}</span>`).join('\n'); };
+  api(`/api/backups/${id}/diff?against=running`).then(d => { if (!m.contains($('#rsSum'))) return;
+    $('#rsSum').textContent = d.added || d.removed ? `Restoring takes back ${d.added} line${d.added === 1 ? '' : 's'} that are on the router now and puts back ${d.removed} from the copy, in ${d.sections.length} section${d.sections.length === 1 ? '' : 's'}: ${d.sections.slice(0, 8).map(x => x.section).join(', ')}${d.sections.length > 8 ? ', …' : ''}. Press Check only to see what the router itself would change.` : 'This copy is the same as the router now; there is nothing to restore.';
+  }).catch(e => { $('#rsSum').textContent = e.message; });
+  let busy = false;
+  m.querySelector('.actions').onclick = async e => {
+    const a = e.target.dataset.a; if (!a) return;
+    if (a === 'cancel') return closeModal();
+    if (busy) return; err.textContent = '';
+    if (a === 'apply' && m.querySelector('[name=_confirm]').value.trim() !== id) { err.textContent = `Type ${id} in the box to confirm.`; return; }
+    busy = true; m.querySelectorAll('.actions [data-a=check],.actions [data-a=apply]').forEach(b => b.disabled = true);
+    $('#rsSum').textContent = a === 'check' ? 'The router is loading the copy (nothing is committed)…' : 'Keeping a copy of the router as it is now, then restoring…';
+    try {
+      const r = await post(`/api/backups/${id}/restore`, a === 'check' ? { commit: false } : { commit: true, confirm: id });
+      if (a === 'check') {
+        $('#rsSum').textContent = 'Check only: the router loaded the copy and threw it away. This is what it would change (+ added, - removed):';
+        paint(r.output || '(no changes listed)'); $('#rsF').classList.remove('hidden'); m.querySelector('[name=_confirm]').focus();
+      } else { closeModal(); toast(`Restored copy ${id}. Press Save to keep it over a reboot.`); showOutput('Restore result: ' + id, r.output); if (current === 'backup') refresh(); return; }
+    } catch (e2) { err.textContent = e2.message; $('#rsSum').textContent = ''; }
+    busy = false; m.querySelector('[data-a=check]').disabled = false; m.querySelector('[data-a=apply]').disabled = $('#rsF').classList.contains('hidden');
+  };
+}
+async function bkPin(id, pinned) { try { await post('/api/backups/' + id, { pinned }); refresh(); } catch (e) { toast(e.message, true); } }
+async function bkNoteEdit(id, note) { const v = prompt('Note for this copy', note); if (v == null) return; try { await post('/api/backups/' + id, { note: v }); refresh(); } catch (e) { toast(e.message, true); } }
+async function bkDelete(id) { if (!confirm('Delete this copy from the server?')) return; try { await post('/api/backups/' + id, { delete: true }); refresh(); } catch (e) { toast(e.message, true); } }
+async function bkDiff(id) {
+  const box = $('#bkD'); box.classList.remove('hidden'); $('#bkDt').textContent = 'Comparing…'; $('#bkDs').innerHTML = ''; $('#bkDu').textContent = ''; box.scrollIntoView({ behavior: 'smooth' });
+  let d; try { d = await api(`/api/backups/${id}/diff?against=running`); } catch (e) { $('#bkDt').textContent = e.message; return; }
+  $('#bkDt').textContent = d.added || d.removed ? `Copy ${id} compared with the router now: ${d.removed} line${d.removed === 1 ? '' : 's'} only in the copy, ${d.added} only on the router` : `Copy ${id} is the same as the router now`;
+  $('#bkDs').innerHTML = d.sections.length ? `<table class="tbl" style="margin-bottom:10px"><thead><tr><th>Section</th><th>Change</th><th>Only on the router</th><th>Only in the copy</th></tr></thead><tbody>${d.sections.map(x =>
+    `<tr><td class="mono">${esc(x.section)}</td><td>${{ added: 'new on the router', removed: 'gone from the router', changed: 'changed' }[x.change]}</td><td class="num">${x.added}</td><td class="num">${x.removed}</td></tr>`).join('')}</tbody></table>` : '';
+  $('#bkDu').innerHTML = d.unified.split('\n').map(l => `<span class="${l.startsWith('+') && !l.startsWith('+++') ? 'dadd' : l.startsWith('-') && !l.startsWith('---') ? 'ddel' : l.startsWith('@@') ? 'dhunk' : ''}">${esc(l)}</span>`).join('\n');
+}
+async function saveCfg() { if (!confirm('Save the running configuration to startup?')) return; try { const r = await post('/api/save'); toast(r.output.split('\n').filter(Boolean).pop() || 'Saved'); if (current === 'backup') setTimeout(refresh, 2500); } catch (e) { toast(e.message, true); } }
 $('#saveBtn').onclick = saveCfg;
 
 /* ---------- login ---------- */

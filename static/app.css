@@ -234,3 +234,5 @@ a.tile:hover{border-color:var(--accent,var(--s1))}
 .nmeta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:5px;font-size:11px;color:var(--faint)}
 .lnk{background:none;border:0;padding:0;color:var(--s1);cursor:pointer;font:inherit}
 .nempty{font-size:12px}
+
+pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);display:inline}pre.diff .dhunk{color:var(--muted);display:inline}

@@ -100,6 +100,23 @@ class Router:
         self.cache.clear()
         return out
 
+    def load_replace(self, text, commit=False, description=""):
+        """Put a whole saved configuration in place of the running one, the router's own way:
+        "load configuration file X replace" in system view, then show the router's own list of what that changes
+        ("display configuration candidate changes"). commit=False throws it away again (Check only)."""
+        with self.lock:
+            try:
+                out = self._load_replace(text, commit, description)
+            except DeviceError:
+                raise
+            except Exception as exc:
+                raise DeviceError(str(exc)) from exc
+        self.cache.clear()
+        return out
+
+    def _load_replace(self, text, commit, description):
+        raise DeviceError("Restoring a whole configuration needs an SSH connection.")
+
     def cached(self, command, ttl=4):
         hit = self.cache.get(command)
         if hit and time.time() - hit[0] < ttl:
@@ -455,6 +472,7 @@ class RealRouter(Router):
                                        password=password, timeout=30, conn_timeout=15, fast_cli=False)
         except Exception as exc:
             raise DeviceError(f"Could not connect to {host}:{port}: {exc}") from exc
+        self._login = (username, password)      # kept in memory only, for copying a restore file over SFTP
         if poll:
             self.start_poller()
 
@@ -506,6 +524,75 @@ class RealRouter(Router):
             if ask(o):
                 self.conn.send_command_timing("N")
         return "\nInfo: The configuration was not committed (check only)."
+
+    RESTORE_FILE = "ne8000mgr-restore.cfg"
+
+    def _sftp(self):
+        """SFTP to the router: over the open SSH session if the router allows it there, otherwise a short
+        second login on the router's SFTP port (\"sftp server port N\", 22 when not set)."""
+        import paramiko
+        try:
+            return paramiko.SFTPClient.from_transport(self.conn.remote_conn.get_transport()), None
+        except Exception:
+            pass
+        port = 22
+        m = re.search(r"sftp server port (\d+)", self.conn.send_command("display current-configuration | include sftp server port"))
+        if m:
+            port = int(m.group(1))
+        t = paramiko.Transport((self.host, port))
+        t.connect(username=self._login[0], password=self._login[1])
+        return paramiko.SFTPClient.from_transport(t), t
+
+    def _put_file(self, text):
+        import io
+        sftp, t = self._sftp()
+        try:
+            sftp.putfo(io.BytesIO(text.replace("\r\n", "\n").encode()), self.RESTORE_FILE)
+        finally:
+            sftp.close()
+            if t:
+                t.close()
+
+    def _drop_file(self):
+        try:
+            sftp, t = self._sftp()
+            try:
+                sftp.remove(self.RESTORE_FILE)
+            finally:
+                sftp.close()
+                if t:
+                    t.close()
+        except Exception:
+            pass        # a left-over copy on cfcard: does no harm; the next restore overwrites it
+
+    def _load_replace(self, text, commit, description):
+        self._put_file(text)
+        try:
+            self.conn.config_mode()
+            out = self.conn.send_command_timing(f"load configuration file {self.RESTORE_FILE} replace", read_timeout=300, last_read=3)
+            if "[Y/N]" in out or "y/n" in out.lower():
+                out += self.conn.send_command_timing("Y", read_timeout=300, last_read=3)
+            if "Error" in out:
+                self._discard()
+                raise DeviceError("The router did not accept the file, nothing was changed:\n" + out)
+            changes = self.conn.send_command_timing("display configuration candidate changes", read_timeout=300, last_read=4)
+            if not commit:
+                return changes + self._discard()
+            desc = re.sub(r"[^A-Za-z0-9 ._:-]", "", description)[:60]
+            done = self.conn.send_command_timing(f"commit description {desc}" if desc else "commit", read_timeout=300, last_read=3)
+            if "Error" in done:
+                self._discard()
+                raise DeviceError("The router refused the commit, nothing was changed:\n" + done)
+            self.conn.exit_config_mode()
+            return changes + "\n" + done
+        except Exception:
+            try:
+                self._discard()
+            except Exception:
+                pass
+            raise
+        finally:
+            self._drop_file()
 
     def _exec(self, command):
         out = self.conn.send_command_timing(command, read_timeout=60)
