@@ -48,6 +48,24 @@ function toast(msg, err) {
   $('#toast').appendChild(d); setTimeout(() => d.remove(), err ? 9000 : 4000);
 }
 
+/* A clear result after a change: green ✓ committed, blue ✓ checked only, red ✗ nothing committed. Stays until closed. */
+function done(o) {
+  let d = $('#done'); if (!d) { d = document.createElement('div'); d.id = 'done'; document.body.appendChild(d); }
+  const kind = o.fail ? 'fail' : o.check ? 'check' : 'ok';
+  const when = new Date((o.time || Date.now() / 1000) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const head = o.head || (o.fail ? 'Not applied: nothing was committed' : o.check ? 'Checked: nothing was committed' : 'Applied successfully');
+  d.className = kind; d.setAttribute('role', 'status');
+  d.innerHTML = `<div class="hd"><div class="tick">${o.fail ? '✗' : '✓'}</div><div><div class="t">${esc(head)}</div><div class="s">${esc(o.title || '')}${o.title ? ' · ' : ''}${esc(when)}${o.commit_id ? ' · commit ' + esc(o.commit_id) : ''}${$('#tName') ? ' · ' + esc($('#tName').textContent) : ''}</div></div><button class="x" title="close" aria-label="close">×</button></div>` +
+    (o.lines && o.lines.length ? `<pre>${esc(o.lines.join('\n'))}</pre>` : o.text ? `<pre>${esc(o.text)}</pre>` : '');
+  d.querySelector('.x').onclick = () => { d.remove(); clearTimeout(done.t); };
+  // the card lets clicks through to the page; after a while it shrinks to a small note in the top bar (click it to see it again)
+  const old = $('#doneMini'); if (old) old.remove();
+  clearTimeout(done.t); done.t = setTimeout(() => { d.remove();
+    const b = document.createElement('button'); b.id = 'doneMini'; b.className = 'btn sm done-mini ' + kind; b.title = head + (o.title ? ': ' + o.title : '');
+    b.textContent = (o.fail ? '✗ ' : '✓ ') + (o.fail ? 'Not applied' : o.check ? 'Checked' : 'Applied') + ' ' + when.slice(0, 5); b.onclick = () => { b.remove(); done(o); };
+    const r = $('#top .right'); if (r) r.prepend(b); }, o.fail ? 30000 : 12000);
+}
+
 function pill(state) {
   const s = String(state ?? '').toLowerCase();
   let c = 'p-bad';
@@ -124,9 +142,10 @@ function change(o) {
       const sent = params();
       const r = await post(o.url || '/api/action', { action: o.action, params: sent, commit });
       closeModal(); toast((commit ? 'Applied: ' : 'Syntax checked (not committed): ') + o.title);
+      if (commit) done({ title: o.title, lines: r.lines, commit_id: r.commit_id, time: r.time, head: r.committed === false ? 'Done successfully' : '' });
       if (!commit) showOutput('Check result: ' + o.title, r.output);
       if (o.after) o.after(commit, sent); else refresh();
-    } catch (e) { err.textContent = e.message; }
+    } catch (e) { err.textContent = '✗ ' + e.message; if (commit) done({ fail: true, title: o.title, text: e.message }); }
   };
   let busy = false;   // one request at a time: a second click while the router is still answering would send the change twice
   const lock = on => { busy = on; m.querySelectorAll('.actions [data-a=check],.actions [data-a=preview]').forEach(b => b.disabled = on); };
@@ -1020,7 +1039,7 @@ PAGES.bgp = async c => {
   const desc = {}; cfg.forEach(l => { const m = l.match(/^peer (\S+) description (.+)$/); if (m) desc[m[1]] = m[2]; });
   const ign = new Set(cfg.filter(l => / ignore$/.test(l)).map(l => l.split(' ')[1]));
   const pol = {}; cfg.forEach(l => { const m = l.match(/^peer (\S+) route-policy (\S+) (import|export)$/); if (m) (pol[m[1]] = pol[m[1]] || {})[m[3]] = m[2]; });
-  const lat = await api('/api/changes/latest?kind=peer').catch(() => ({ now: {}, hour: {}, day: {} }));
+  const [lat, sp] = await Promise.all([api('/api/changes/latest?kind=peer').catch(() => ({ now: {}, hour: {}, day: {} })), api('/api/changes/spark?kind=peer&range=day').catch(() => ({ series: {} }))]);
   b.peers.forEach(p => { p.description = desc[p.peer] || ''; p.ignored = ign.has(p.peer); p.pin = (pol[p.peer] || {}).import || ''; p.pout = (pol[p.peer] || {}).export || '';
     const n = lat.now[p.peer];   // the CLI summary has no active/advertised: use the tracker's last read if it is about the same table
     if (p.active == null && n && p.state === 'Established' && Math.abs(n[1] - p.prefixes) <= Math.max(10, p.prefixes / 100)) { p.active = n[2]; p.advertised = n[3]; }
@@ -1036,11 +1055,11 @@ PAGES.bgp = async c => {
     <div class="card" id="bRcard"><h3 id="bRt">BGP routing table</h3><div class="row" style="gap:6px;margin-bottom:10px"><input id="bLk" placeholder="Lookup: 8.8.8.8 or 8.8.8.0/24" style="max-width:260px"><button class="btn sm" id="bLkBtn">Look up</button></div><div id="bR" class="muted">Pick a peer’s Received / Advertised, look up an address, or <button class="btn sm" onclick="bgpRoutes()">load the full BGP table</button></div></div>`;
   $('#bLkBtn').onclick = () => bgpRoutes(null, null, $('#bLk').value.trim()); $('#bLk').onkeydown = e => { if (e.key === 'Enter') $('#bLkBtn').click(); };
   table($('#bP'), [{ t: 'Peer', k: 'peer', f: p => `<b>${esc(p.peer)}</b>` }, { t: 'Description', k: 'description' }, { t: 'Remote AS', k: 'as' }, { t: 'Type', sort: false, f: p => p.as === b.local_as ? 'iBGP' : 'eBGP' },
-    { t: 'State', k: 'state', f: p => bgpPill(p.state) }, { t: 'Up/Down', k: 'up_down' }, { t: 'Received', k: 'prefixes', num: true }, { t: 'Active', k: 'active', num: true },
+    { t: 'State', k: 'state', f: p => bgpPill(p.state) }, { t: 'Up/Down', k: 'up_down' }, { t: 'Received', k: 'prefixes', num: true }, { t: 'Last 24 h', sort: false, f: p => `<a href="javascript:void 0" onclick='peerHistory(${attr(p.peer)},${attr(p.description)})' title="statistics and graphs">${spark(sp.series[p.peer])}</a>` }, { t: 'Active', k: 'active', num: true },
     { t: 'Advertised', k: 'advertised', num: true }, { t: 'Δ 1 h', k: 'd1h', num: true, f: p => delta(p.d1h) }, { t: 'Δ 24 h', k: 'd24h', num: true, f: p => delta(p.d24h) },
     { t: 'Policy in / out', k: 'pin', f: p => [p.pin, p.pout].map(x => x ? `<a href="#policies" onclick='POLSEL=${attr(x)}'>${esc(x)}</a>` : '<span class="faint">-</span>').join(' / ') },
     { t: 'Msg in/out', k: 'msg_rcvd', num: true, f: p => `${Fmt.num(p.msg_rcvd)} / ${Fmt.num(p.msg_sent)}` }, { t: 'OutQ', k: 'out_q', num: true },
-    { t: '', sort: false, cls: 'acts', f: p => `<button class="btn sm" onclick='peerHistory(${attr(p.peer)},${attr(p.description)})'>History</button><button class="btn sm" onclick='bgpRoutes(${attr(p.peer)},"received")'>Received</button><button class="btn sm" onclick='bgpRoutes(${attr(p.peer)},"advertised")'>Advertised</button>
+    { t: '', sort: false, cls: 'acts', f: p => `<button class="btn sm" onclick='peerHistory(${attr(p.peer)},${attr(p.description)})'>Stats &amp; graphs</button><button class="btn sm" onclick='bgpRoutes(${attr(p.peer)},"received")'>Received</button><button class="btn sm" onclick='bgpRoutes(${attr(p.peer)},"advertised")'>Advertised</button>
       <button class="btn sm" onclick='change({title:"Reset BGP session ${esc(p.peer)}",action:"bgp.reset",fields:[{k:"soft",label:"Type",type:"select",options:[["","Hard reset (session drops)"],["import","Soft refresh inbound"],["export","Soft refresh outbound"]]}],params:{peer:${attr(p.peer)}}})'>Reset</button>
       <button class="btn sm" onclick='change({title:"${p.ignored ? 'Enable' : 'Disable'} peer ${esc(p.peer)}",action:"bgp.peer_enable",params:{local_as:${attr(b.local_as)},peer:${attr(p.peer)},enabled:${p.ignored}}})'>${p.ignored ? 'Enable' : 'Disable'}</button>
       <button class="btn sm danger" onclick='change({title:"Remove peer ${esc(p.peer)}",action:"bgp.peer_remove",params:{local_as:${attr(b.local_as)},peer:${attr(p.peer)}}})'>Remove</button>` }],
@@ -1051,21 +1070,53 @@ PAGES.bgp = async c => {
   every(15000, async () => { if ($('#modalBg').classList.contains('hidden') && !$('#bR table')) PAGES.bgp(c); });
 };
 function delta(d) { return d == null ? '<span class="faint">-</span>' : d === 0 ? '<span class="faint">0</span>' : `<span style="color:${d < 0 ? 'var(--bad)' : 'var(--ok)'}">${d > 0 ? '+' : ''}${Fmt.num(d)}</span>`; }
+function spark(v, w = 90, h = 22) {
+  if (!v || v.length < 2) return '<span class="faint">-</span>';
+  const ys = v.map(p => p[1]), lo = Math.min(...ys), hi = Math.max(...ys), t0 = v[0][0], t1 = v[v.length - 1][0] || t0 + 1;
+  const X = t => (t - t0) / Math.max(1, t1 - t0) * (w - 2) + 1, Y = y => hi === lo ? h / 2 : h - 2 - (y - lo) / (hi - lo) * (h - 4);
+  const last = ys[ys.length - 1], dropped = hi > 0 && last < hi * 0.8;
+  return `<svg class="spark" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" role="img" aria-label="received routes, ${Fmt.num(lo)} to ${Fmt.num(hi)}"><title>${Fmt.num(lo)} – ${Fmt.num(hi)} routes</title><polyline fill="none" stroke="var(${dropped ? '--bad' : '--s1'})" stroke-width="1.5" points="${v.map(p => X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1)).join(' ')}"/></svg>`;
+}
+/* One peer: its numbers now, routes over time, and when the session was up or down (and why). */
 async function peerHistory(peer, desc) {
-  const m = $('#modal');
-  m.innerHTML = `<h2>Routes from and to ${esc(peer)}${desc ? ' · ' + esc(desc) : ''}</h2><div class="seg" id="phR">${['day', 'week', 'month', 'quarter'].map(k => `<button data-r="${k}">${{ day: '1 day', week: '1 week', month: '1 month', quarter: '3 months' }[k]}</button>`).join('')}</div>
-    <div class="muted" style="margin:8px 0">Received, active (used) and advertised route counts, sampled about every 5 minutes.</div>
-    <div id="phC" style="height:240px"></div><div id="phA" style="height:120px;margin-top:10px"></div><div class="muted" id="phN"></div><div class="actions"><button class="btn primary" data-a="x">Close</button></div>`;
+  const m = $('#modal'); m.classList.add('wide');
+  const p = ((bgpState && bgpState.peers) || []).find(x => x.peer === peer) || { peer };
+  const tile = (l, v, extra = '') => `<div class="tile"><div class="l">${l}</div><div class="v" ${extra}>${v}</div></div>`;
+  m.innerHTML = `<h2>BGP peer ${esc(peer)}${desc ? ' · ' + esc(desc) : ''} ${bgpPill(p.state || '')}</h2>
+    <div class="tiles sm">${tile('Remote AS', esc(p.as || '-'))}${tile('Up / down for', esc(p.up_down || '-'))}${tile('Received', Fmt.num(p.prefixes))}${tile('Active', p.active == null ? '-' : Fmt.num(p.active))}
+      ${tile('Advertised', p.advertised == null ? '-' : Fmt.num(p.advertised))}${tile('Δ 1 h / 24 h', `${delta(p.d1h)} / ${delta(p.d24h)}`)}${tile('Messages in / out', `${Fmt.num(p.msg_rcvd)} / ${Fmt.num(p.msg_sent)}`)}
+      ${tile('Policy in / out', `${esc(p.pin || '-')} / ${esc(p.pout || '-')}`, 'style="font-size:13px"')}</div>
+    <div class="row" style="gap:10px;align-items:center;margin:4px 0 6px"><div class="seg" id="phR">${['hour', 'day', 'week', 'month', 'quarter'].map(k => `<button data-r="${k}">${{ hour: '1 hour', day: '1 day', week: '1 week', month: '1 month', quarter: '3 months' }[k]}</button>`).join('')}</div><span class="muted" id="phS"></span></div>
+    <div class="lbl muted">Session up / down</div><div class="tl" id="phT"></div><div class="muted" id="phTx" style="font-size:12px"></div>
+    <div class="lbl muted" style="margin-top:10px">Routes received and active (used)</div><div id="phC" style="height:220px"></div>
+    <div class="lbl muted" style="margin-top:6px">Routes advertised to the peer</div><div id="phA" style="height:110px"></div><div class="muted" id="phN"></div>
+    <div id="phE" style="margin-top:8px"></div>
+    <div class="actions"><button class="btn" onclick='closeModal();bgpRoutes(${attr(peer)},"received")'>Received routes</button><button class="btn" onclick='closeModal();bgpRoutes(${attr(peer)},"advertised")'>Advertised routes</button><button class="btn primary" data-a="x">Close</button></div>`;
   $('#modalBg').classList.remove('hidden'); m.querySelector('[data-a=x]').onclick = closeModal;
   const show = async rng => {
     m.querySelectorAll('#phR button').forEach(b => b.classList.toggle('on', b.dataset.r === rng));
-    const r = await api(`/api/changes/series?kind=peer&key=${encodeURIComponent(peer)}&range=${rng}`), pts = r.points;
-    const span = { day: 86400, week: 604800, month: 2592000, quarter: 7776000 }[rng], vals = pts.flatMap(p => [p[1], p[2]]).filter(v => v != null);
+    const span = { hour: 3600, day: 86400, week: 604800, month: 2592000, quarter: 7776000 }[rng], now = Date.now() / 1000, t0 = now - span;
+    const [r, ev] = await Promise.all([api(`/api/changes/series?kind=peer&key=${encodeURIComponent(peer)}&range=${rng}`),
+      api(`/api/changes?kind=bgp&key=${encodeURIComponent(peer)}&days=${Math.max(span / 86400, 0.05)}&limit=1000`).catch(() => ({ events: [] }))]);
+    if (!m.contains($('#phC'))) return;
+    const pts = r.points, vals = pts.flatMap(x => [x[1], x[2]]).filter(v => v != null);
     const lo = vals.length ? Math.min(...vals) : 0, hi = vals.length ? Math.max(...vals) : 0;
     new TimeChart($('#phC'), { fmt: Fmt.num, span, min: lo > 1000 && hi - lo < lo * 0.2 ? Math.floor(lo * 0.98) : 0 }).set([
-      { name: 'Received', color: '--s1', values: pts.map(p => [p[0], p[1]]) }, { name: 'Active', color: '--s3', values: pts.filter(p => p[2] != null).map(p => [p[0], p[2]]) }]);
-    new TimeChart($('#phA'), { fmt: Fmt.num, span, small: true }).set([{ name: 'Advertised', color: '--s2', values: pts.filter(p => p[3] != null).map(p => [p[0], p[3]]) }]);
-    $('#phN').textContent = pts.length ? '' : 'No numbers kept yet for this peer. They are sampled about every 5 minutes, so the first points show up shortly.';
+      { name: 'Received', color: '--s1', values: pts.map(x => [x[0], x[1]]) }, { name: 'Active', color: '--s3', values: pts.filter(x => x[2] != null).map(x => [x[0], x[2]]) }]);
+    new TimeChart($('#phA'), { fmt: Fmt.num, span, small: true }).set([{ name: 'Advertised', color: '--s2', values: pts.filter(x => x[3] != null).map(x => [x[0], x[3]]) }]);
+    $('#phN').textContent = pts.length ? '' : 'No numbers kept yet for this range. They are sampled about every 5 minutes, so the first points show up shortly.';
+    // session timeline: walk the up/down events oldest first; the state before the first one is the opposite of it
+    const es = (ev.events || []).filter(e => e.change === 'up' || e.change === 'down').sort((x, y) => x.ts - y.ts);
+    const est = String(p.state || '').toLowerCase() === 'established';
+    let st = es.length ? (es[0].change === 'up' ? 'd' : 'u') : (est ? 'u' : 'd'), at = t0; const segs = [];
+    for (const e of es) { segs.push([st, Math.max(at, t0), e.ts]); st = e.change === 'up' ? 'u' : 'd'; at = e.ts; }
+    segs.push([st, Math.max(at, t0), now]);
+    const upT = segs.filter(x => x[0] === 'u').reduce((a, x) => a + x[2] - x[1], 0), downs = es.filter(e => e.change === 'down');
+    $('#phT').innerHTML = segs.filter(x => x[2] > x[1]).map(([k, a, b]) => `<i class="${k}" style="width:${((b - a) / span * 100).toFixed(3)}%" title="${k === 'u' ? 'up' : 'down'} ${esc(new Date(a * 1000).toLocaleString())} – ${esc(new Date(b * 1000).toLocaleString())}"></i>`).join('');
+    $('#phS').innerHTML = `Up <b>${(upT / span * 100).toFixed(upT === span ? 0 : 2)}%</b> of this range · <b>${downs.length}</b> drop${downs.length === 1 ? '' : 's'}`;
+    $('#phTx').textContent = es.length ? '' : (est ? 'No drops recorded in this range.' : 'Down, and no change recorded in this range.');
+    $('#phE').innerHTML = downs.length ? `<table class="tbl"><thead><tr><th>Went down</th><th>Reason</th><th>Back up</th></tr></thead><tbody>${downs.slice().reverse().slice(0, 20).map(d => { const u = es.find(e => e.change === 'up' && e.ts > d.ts);
+      return `<tr><td>${esc(new Date(d.ts * 1000).toLocaleString())}</td><td>${esc(d.info || '-')}</td><td>${u ? esc(new Date(u.ts * 1000).toLocaleString()) + (u.info ? ' · ' + esc(u.info) : '') : '<span class="pill p-bad">still down</span>'}</td></tr>`; }).join('')}</tbody></table>` : '';
   };
   $('#phR').onclick = e => { const b = e.target.closest('button[data-r]'); if (b) show(b.dataset.r); };
   show('day');
@@ -1601,7 +1652,9 @@ PAGES.config = async c => {
   $('#eT').oninput = () => c._draft = $('#eT').value;
   const go = async commit => { const config = $('#eT').value; if (!config.trim()) return; if (commit && !confirm('Apply and commit these lines on ' + $('#tName').textContent + '?')) return;
     $('#eErr').textContent = ''; const o = $('#eOut'); o.classList.remove('hidden'); o.textContent = commit ? 'Applying…' : 'Checking…';
-    try { o.textContent = (await post('/api/config', { config, commit })).output; toast(commit ? 'Committed' : 'Checked, nothing committed'); } catch (e) { o.classList.add('hidden'); $('#eErr').textContent = e.message; } };
+    try { const r = await post('/api/config', { config, commit }); o.textContent = r.output; toast(commit ? 'Committed' : 'Checked, nothing committed');
+      done({ check: !commit, title: 'Config editor', commit_id: r.commit_id, time: r.time, lines: config.split('\n').filter(l => l.trim()) }); }
+    catch (e) { o.classList.add('hidden'); $('#eErr').textContent = '✗ ' + e.message; if (commit) done({ fail: true, title: 'Config editor', text: e.message }); } };
   $('#eCheck').onclick = () => go(false); $('#eApply').onclick = () => go(true);
   $('#eLoad').onclick = async () => { const o = $('#eOut'); o.classList.remove('hidden'); o.textContent = 'Loading…'; o.textContent = (await api('/api/running-config')).output; };
 };
@@ -1656,8 +1709,8 @@ async function bkRestore(id) {
       if (a === 'check') {
         $('#rsSum').textContent = 'Check only: the router loaded the copy and threw it away. This is what it would change (+ added, - removed):';
         paint(r.output || '(no changes listed)'); $('#rsF').classList.remove('hidden'); m.querySelector('[name=_confirm]').focus();
-      } else { closeModal(); toast(`Restored copy ${id}. Press Save to keep it over a reboot.`); showOutput('Restore result: ' + id, r.output); if (current === 'backup') refresh(); return; }
-    } catch (e2) { err.textContent = e2.message; $('#rsSum').textContent = ''; }
+      } else { closeModal(); toast(`Restored copy ${id}. Press Save to keep it over a reboot.`); done({ head: 'Restored successfully', title: `Copy ${id} (press Save to keep it over a reboot)`, commit_id: r.commit_id, time: r.time }); showOutput('Restore result: ' + id, r.output); if (current === 'backup') refresh(); return; }
+    } catch (e2) { err.textContent = '✗ ' + e2.message; $('#rsSum').textContent = ''; if (a === 'apply') done({ fail: true, title: 'Restore ' + id, text: e2.message }); }
     busy = false; m.querySelector('[data-a=check]').disabled = false; m.querySelector('[data-a=apply]').disabled = $('#rsF').classList.contains('hidden');
   };
 }
@@ -1672,7 +1725,8 @@ async function bkDiff(id) {
     `<tr><td class="mono">${esc(x.section)}</td><td>${{ added: 'new on the router', removed: 'gone from the router', changed: 'changed' }[x.change]}</td><td class="num">${x.added}</td><td class="num">${x.removed}</td></tr>`).join('')}</tbody></table>` : '';
   $('#bkDu').innerHTML = d.unified.split('\n').map(l => `<span class="${l.startsWith('+') && !l.startsWith('+++') ? 'dadd' : l.startsWith('-') && !l.startsWith('---') ? 'ddel' : l.startsWith('@@') ? 'dhunk' : ''}">${esc(l)}</span>`).join('\n');
 }
-async function saveCfg() { if (!confirm('Save the running configuration to startup?')) return; try { const r = await post('/api/save'); toast(r.output.split('\n').filter(Boolean).pop() || 'Saved'); if (current === 'backup') setTimeout(refresh, 2500); } catch (e) { toast(e.message, true); } }
+async function saveCfg() { if (!confirm('Save the running configuration to startup?')) return; try { const r = await post('/api/save'); toast(r.output.split('\n').filter(Boolean).pop() || 'Saved');
+    done(r.saved === false ? { fail: true, head: 'Save may not have finished', title: 'Save configuration', text: r.output } : { head: 'Saved successfully', title: 'Running configuration saved to startup', time: r.time }); if (current === 'backup') setTimeout(refresh, 2500); } catch (e) { toast(e.message, true); } }
 $('#saveBtn').onclick = saveCfg;
 
 /* ---------- login ---------- */

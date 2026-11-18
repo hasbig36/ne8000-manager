@@ -236,3 +236,15 @@ a.tile:hover{border-color:var(--accent,var(--s1))}
 .nempty{font-size:12px}
 
 pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);display:inline}pre.diff .dhunk{color:var(--muted);display:inline}
+/* the "applied" note after a commit: stays until closed, never blocks the page */
+#done{position:fixed;top:64px;right:18px;z-index:98;pointer-events:none;width:min(440px,calc(100vw - 32px));background:var(--panel);border:1px solid var(--line);border-left:6px solid var(--ok);border-radius:8px;box-shadow:0 10px 30px rgba(0,0,0,.18);padding:12px 14px 12px 14px}
+#done.check{border-left-color:var(--s1)}#done.fail{border-left-color:var(--bad)}
+#done .hd{display:flex;align-items:center;gap:10px}#done .tick{flex:none;width:34px;height:34px;border-radius:50%;background:var(--ok);color:#fff;display:flex;align-items:center;justify-content:center;font-size:20px;font-weight:700}
+#done.check .tick{background:var(--s1)}#done.fail .tick{background:var(--bad)}
+#done .t{font-weight:700;font-size:15px}#done .s{color:var(--muted);font-size:12.5px;margin-top:2px}#done .x{pointer-events:auto;margin-left:auto;border:0;background:none;color:var(--muted);font-size:20px;cursor:pointer;line-height:1}
+#done pre{margin:10px 0 0;max-height:160px;overflow:auto;font-size:12px}
+/* BGP peer statistics */
+.spark{display:block}.tl{display:flex;height:16px;border-radius:4px;overflow:hidden;background:var(--grid);margin:6px 0 2px}.tl i{display:block;height:100%}
+.tl i.u{background:var(--ok)}.tl i.d{background:var(--bad)}.tl i.n{background:var(--grid)}
+.tiles.sm .tile{padding:8px 10px}.tiles.sm .tile .v{font-size:17px}
+.done-mini{border-color:var(--ok)!important;color:var(--ok)!important;font-weight:600}.done-mini.fail{border-color:var(--bad)!important;color:var(--bad)!important}.done-mini.check{border-color:var(--s1)!important;color:var(--s1)!important}

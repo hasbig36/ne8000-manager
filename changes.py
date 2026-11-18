@@ -35,7 +35,7 @@ GONE_AFTER = 3                # a table row must be missing this many checks in 
 UP = {"Established", "Full", "Up", "Operational", "up", "full"}
 SESSION_KINDS = ("bgp", "ospf", "isis", "ldp")
 TABLE_KINDS = ("arp", "mac", "route")
-RANGES = {"day": 86400, "week": 7 * 86400, "month": 30 * 86400, "quarter": 90 * 86400}
+RANGES = {"hour": 3600, "day": 86400, "week": 7 * 86400, "month": 30 * 86400, "quarter": 90 * 86400}
 
 # SNMP
 IFX_NAME = "1.3.6.1.2.1.31.1.1.1.1"
@@ -240,8 +240,11 @@ class Tracker:
                        "ORDER BY ts DESC LIMIT 1) AND (info='' OR info IS NULL)", (why, rid, kind, key))
 
     # ---- reading --------------------------------------------------------------------------------------------
-    def events(self, rid, kinds=None, since=0, q="", limit=500):
+    def events(self, rid, kinds=None, since=0, q="", limit=500, key=""):
         sql, args = "SELECT ts, kind, key, change, old, new, info FROM events WHERE rid=? AND ts>=?", [rid, int(since or 0)]
+        if key:
+            sql += " AND key=?"
+            args.append(key)
         if kinds:
             sql += f" AND kind IN ({','.join('?' * len(kinds))})"
             args += list(kinds)
@@ -262,6 +265,19 @@ class Tracker:
         with self._db() as db:
             return [list(r) for r in db.execute("SELECT ts, a, b, c FROM stats WHERE rid=? AND kind=? AND key=? AND ts>=? ORDER BY ts",
                                                  (rid, kind, key, since))]
+
+    def spark(self, rid, kind, rng="day", points=48):
+        """{key: [[ts, a], ...]}: every key's first number, thinned to about `points` per key."""
+        since = int(time.time()) - RANGES.get(rng, 86400)
+        out = {}
+        with self._db() as db:
+            for k, ts, a in db.execute("SELECT key, ts, a FROM stats WHERE rid=? AND kind=? AND ts>=? ORDER BY ts", (rid, kind, since)):
+                out.setdefault(k, []).append([ts, a])
+        for k, v in out.items():
+            if len(v) > points:
+                step = len(v) / points
+                out[k] = [v[int(i * step)] for i in range(points)] + [v[-1]]
+        return out
 
     def latest(self, rid, kind, ago=0):
         """{key: (ts, a, b, c)}: the newest sample of every key, or the newest one at least `ago` seconds old."""

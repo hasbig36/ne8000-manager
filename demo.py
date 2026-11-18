@@ -237,6 +237,7 @@ class DemoRouter(Router):
             out.append(f"[*{self.sysname_}]abort\nInfo: Nothing was committed because a line was rejected.")
         elif commit:
             out.append(f"[*{self.sysname_}]commit\n[~{self.sysname_}]")
+            self.commit_no = getattr(self, "commit_no", 1000000221) + 1
             self.log("CFG/4/CFG_COMMIT", "The configuration was committed by the GUI user.")
         else:
             self._restore(snapshot)
@@ -900,6 +901,11 @@ Statistics last cleared:never
         self._seen_cfg["\n".join(B.clean(text))] = self._snapshot()
         return text
 
+    def show_configuration_commit_list_1(self):
+        n = getattr(self, "commit_no", 1000000221)
+        return ("-" * 60 + "\nNo.  CommitId     Label   User       TimeStamp\n" + "-" * 60 +
+                f"\n1    {n}   -       admin      {time.strftime('%Y-%m-%d %H:%M:%S+03:00')}\n" + "-" * 60)
+
     def _load_replace(self, text, commit, description):
         """Demo: a configuration this demo printed before can be put back (its state was remembered then)."""
         import backups as B
@@ -910,6 +916,7 @@ Statistics last cleared:never
         changes = "\n".join(l for l in d["unified"].splitlines() if l[:1] in "+-" and l[:3] not in ("+++", "---"))
         if commit:
             self._restore(snap)
+            self.commit_no = getattr(self, "commit_no", 1000000221) + 1
             self.log("CFG/4/CFG_COMMIT", f"The configuration was replaced from a file ({description}).")
             return changes + f"\n[*{self.sysname_}]commit"
         return changes + "\nInfo: The configuration was not committed (check only)."

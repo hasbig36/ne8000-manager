@@ -750,7 +750,17 @@ def do_action(data):
             auto_backup(r, "after-change", me(), data.get("action", ""))
     for secret in [str(v) for k, v in (data.get("params") or {}).items() if k in actions.SECRET_KEYS and v]:
         out = out.replace(secret, "********")
-    return dict(output=out, lines=built["preview"])
+    done = built["mode"] == "config" and bool(data.get("commit", True))
+    return dict(output=out, lines=built["preview"], committed=done, commit_id=commit_id(r) if done else "", time=time.time())
+
+
+def commit_id(r):
+    """The router's id of the newest commit (display configuration commit list 1), for the "applied" note. "" if unknown."""
+    try:
+        m = re.search(r"^\s*1\s+(\d{6,})\s", r.run("display configuration commit list 1", read_timeout=20), re.M)
+        return m.group(1) if m else ""
+    except Exception:
+        return ""
 
 
 @app.get("/api/ip/disabled")
@@ -799,9 +809,10 @@ def config():
     lines = (data.get("config") or "").splitlines()
     AUDIT.log(me(), "config", host=r.host, demo=r.demo, commit=bool(data.get("commit", True)), lines=len(lines))
     out = r.configure(lines, commit=bool(data.get("commit", True)))
-    if data.get("commit", True):
+    done = bool(data.get("commit", True))
+    if done:
         auto_backup(r, "after-change", me(), "config editor")
-    return jsonify(output=out)
+    return jsonify(output=out, committed=done, commit_id=commit_id(r) if done else "", time=time.time())
 
 
 @app.post("/api/save")
@@ -810,7 +821,7 @@ def save():
     AUDIT.log(me(), "save", host=r.host, demo=r.demo)
     out = r.execute("save")
     auto_backup(r, "after-save", me())
-    return jsonify(output=out)
+    return jsonify(output=out, saved="successfully" in out.lower() or "succeeded" in out.lower(), time=time.time())
 
 
 # ---- configuration backups on the server ----------------------------------------------------------------------
@@ -947,10 +958,12 @@ def backups_restore(bid):
             auto_backup(r, "before-restore", me(), f"before restoring {bid}", wait=True)
         AUDIT.log(me(), "backup_restore" if commit else "backup_restore_check", host=r.host, demo=r.demo, backup=bid)
         out = r.load_replace(text, commit=commit, description=f"ne8000-manager restore {bid}")
+        cid = ""
         if commit:
             VIEWCACHE.invalidate(r)
             auto_backup(r, "after-change", me(), f"restored {bid}")
-        return jsonify(output=out, committed=commit, backup=meta)
+            cid = commit_id(r)
+        return jsonify(output=out, committed=commit, backup=meta, commit_id=cid, time=time.time())
     finally:
         RESTORING.release()
 
@@ -1332,7 +1345,7 @@ def changes_list():
     since = time.time() - days * 86400
     st = TRACK.status.get(session.get("router_id", "")) or {}
     return jsonify(events=TRACK.events(rid, kinds, since, (request.args.get("q") or "").strip()[:100],
-                                       min(int(request.args.get("limit") or 500), 5000)),
+                                       min(int(request.args.get("limit") or 500), 5000), (request.args.get("key") or "").strip()[:100]),
                    counts=TRACK.counts(rid, time.time() - 86400), tracked={k: v[0] for k, v in TRACK.tracked(rid).items()},
                    poller=dict(on=TRACK.polled(session.get("router_id", "")), last=st.get("time"), error=st.get("error", ""),
                                saved=bool(session.get("router_id")), snmp=bool((SAVED.get(session.get("router_id", "")) or {}).get("snmp"))),
@@ -1348,6 +1361,18 @@ def changes_series():
     if rng not in changes.RANGES:
         raise DeviceError("Unknown range.")
     return jsonify(points=TRACK.series(netmap_key(router()), kind, request.args.get("key", ""), rng))
+
+
+@app.get("/api/changes/spark")
+def changes_spark():
+    """Small trend lines for every key of a kind: {key: [[ts, a], ...]} (at most 48 points each)."""
+    kind = request.args.get("kind", "peer")
+    if kind not in ("peer", "routes", "policy"):
+        raise DeviceError("Unknown series.")
+    rng = request.args.get("range", "day")
+    if rng not in changes.RANGES:
+        raise DeviceError("Unknown range.")
+    return jsonify(series=TRACK.spark(netmap_key(router()), kind, rng))
 
 
 @app.get("/api/changes/latest")
