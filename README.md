@@ -185,6 +185,31 @@ Follow the steps at the top of `deploy/ne8000.service`: copy the app to `/opt/ne
 - Parsers follow standard VRP8 output. If a table is empty on your software release, the raw command output is shown instead (or run the command in Console), and the parser in `parsers.py` can be adjusted from a sample.
 - Some features depend on the line cards and licences in your chassis (for example bridge VLANs, port-queue). The router's own error message is shown if it rejects a command.
 
+### Change log and route policies
+
+**Change log** (top of the menu) records what changed on the router and when, in `data/changes.db`
+(events kept 6 months, numbers 3 months):
+- ARP: hosts that appear, disappear (after 3 missed checks) or change MAC (a moved host, an IP clash or spoofing);
+- MAC table: new, gone or moved entries (empty on a pure layer-3 router);
+- routes: every direct and static route added, removed or with a new next hop. A full Internet table is never
+  compared route by route: routes per protocol are counted about every 5 minutes, shown as a graph, and a jump or
+  drop of 5% or more is logged;
+- protocol sessions (BGP, OSPF, IS-IS, LDP): every time one goes down or comes back up, with the router's reason
+  (from `display bgp peer X log-info`, or the BGP error code over SNMP) and how long it was down;
+- BGP route counts: received, active and advertised per peer, kept as numbers; a 20% drop or jump is logged.
+
+For every saved router with an SNMP login it checks ARP, BGP, OSPF, IS-IS, LDP and the route total every minute,
+around the clock (`NE8000_CHANGES=0` turns this off). Routes, the MAC table and route-policy counters need the CLI,
+so they are checked about every 5 minutes while someone is signed in with SSH, and after every change made in the app.
+
+The BGP page shows active and advertised routes per peer, the change in received routes over 1 hour and 24 hours,
+each peer's import / export policy, a History graph per peer and the recent session changes.
+
+**Route policies** lists every route-policy with its nodes, what each matches, what it applies, the router's match
+counters (with the matches in the last hour and day), which BGP peers use it, and the prefix lists with their
+counters. "What would a policy do to a prefix?" walks the rules for one prefix the way the router does; rules about
+the AS path or communities depend on the route, and are shown as "depends".
+
 ## Files
 - `app.py`: web server, API and login checks
 - `auth.py`: app users, roles, sign-in throttling, audit log
@@ -195,6 +220,7 @@ Follow the steps at the top of `deploy/ne8000.service`: copy the app to `/opt/ne
 - `billing.py`: Splynx billing sync
 - `plans.py`: network plans, versions and execution
 - `netflow.py`: NetFlow v5/v9/IPFIX collector for traffic per address
+- `changes.py`: change log (ARP, MAC, routes, sessions, BGP counts, policy counters); `policy.py`: route-policy check for one prefix
 - `health.py, panel.py`: smart health check (errors, drops, full links, SFP light, flaps, latency and loss, CPU/memory/heat)
 - `templates/`, `static/`: the browser UI
 - `Dockerfile`, `docker-compose.yml`, `.env.example`, `deploy/`: hosting (Caddy, nginx, systemd)

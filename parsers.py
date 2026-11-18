@@ -654,3 +654,125 @@ def parse_port_queue(text):
         elif rt and "discard rate" in label:
             cur["discard_bps"] = int(rt.group(2))
     return rows
+
+
+# ---- BGP detail, route-policies, prefix lists, MAC table (change tracker and policy page) ----------------------
+def parse_bgp_verbose(text):
+    """`display bgp peer X verbose` -> counts, state and policies (None for what the router did not print)."""
+    g = lambda pat: first_str(pat, text)
+    n = lambda pat: first_int(pat, text)
+    return {"received": n(r"Received total routes:\s*(\d+)"), "active": n(r"Received active routes total:\s*(\d+)"),
+            "advertised": n(r"Advertised total routes:\s*(\d+)"), "state": g(r"BGP current state:\s*([^,\n]+)"),
+            "up_for": g(r"Up for\s+(\S+)"), "last_state": g(r"BGP last state:\s*(\S+)"), "up_count": n(r"BGP Peer Up count:\s*(\d+)"),
+            "import_policy": g(r"Import route policy is:\s*(\S+)"), "export_policy": g(r"Export route policy is:\s*(\S+)"),
+            "description": g(r"Peer's description:\s*\"?([^\"\n]+)")}
+
+
+def parse_bgp_log_info(text):
+    """`display bgp peer X log-info` -> [{time, state, error, notification}], newest first as printed."""
+    rows, cur = [], None
+    for line in text.splitlines():
+        m = re.match(r"^\s*(Date/Time|State|Error Code|Error Subcode|Notification)\s*:\s*(.*?)\s*$", line)
+        if not m:
+            continue
+        k, v = m.groups()
+        if k == "Date/Time":
+            cur = {"time": v, "state": "", "error": "", "subcode": "", "notification": ""}
+            rows.append(cur)
+        elif cur is not None:
+            cur[{"State": "state", "Error Code": "error", "Error Subcode": "subcode", "Notification": "notification"}[k]] = v
+    return rows
+
+
+def bgp_down_reason(entry):
+    """One log-info entry -> short words: 'Receive Tcp Fail (Finite State Machine Error)'."""
+    if not entry:
+        return ""
+    err = re.sub(r"^\d+\(|\)$", "", entry.get("error") or "")
+    sub = re.sub(r"^\d+\(|\)$", "", entry.get("subcode") or "")
+    note = entry.get("notification") or ""
+    words = note or err
+    extra = [x for x in (err if note and err.lower() != note.lower() else "", sub if sub.lower() not in ("unspecific", "") else "") if x]
+    return words + (f" ({', '.join(extra)})" if extra else "")
+
+
+def parse_route_policies(text):
+    """`display route-policy` -> [{name, nodes: [{action, node, matched, match: [...], apply: [...]}]}]"""
+    out, pol, node, part = [], None, None, None
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r"^Route-policy\s*:\s*(\S+)", s)
+        if m:
+            pol = {"name": m.group(1), "nodes": []}
+            out.append(pol)
+            node = None
+            continue
+        m = re.match(r"^(permit|deny)\s*:\s*(\d+)\s*(?:\(matched counts?:\s*(\d+)\))?", s)
+        if m and pol is not None:
+            node = {"action": m.group(1), "node": int(m.group(2)), "matched": int(m.group(3)) if m.group(3) else None,
+                    "match": [], "apply": [], "goto_next": False}
+            pol["nodes"].append(node)
+            part = None
+            continue
+        if node is None:
+            continue
+        if s.startswith("Match clauses"):
+            part = "match"
+        elif s.startswith("Apply clauses"):
+            part = "apply"
+        elif s.startswith("goto next-node"):
+            node["goto_next"] = True
+        elif s and part:
+            node[part].append(s)
+    return out
+
+
+def parse_ip_prefixes(text):
+    """`display ip ip-prefix` -> {name: {"permitted", "denied", "entries": [{index, action, prefix, len, ge, le}]}}"""
+    out, cur = {}, None
+    for line in text.splitlines():
+        s = line.strip()
+        m = re.match(r"^(?:Prefix-list|ip-prefix)\s+(\S+)", s)
+        if m:
+            cur = out.setdefault(m.group(1), {"permitted": None, "denied": None, "entries": []})
+            continue
+        if cur is None:
+            continue
+        m = re.match(r"^(Permitted|Denied)\s+(\d+)", s)
+        if m:
+            cur[m.group(1).lower()] = int(m.group(2))
+            continue
+        m = re.match(r"^index:\s*(\d+)\s+(permit|deny)\s+(" + IPV4 + r")/(\d+)(?:\s+ge\s+(\d+))?(?:\s+le\s+(\d+))?", s)
+        if m:
+            ln = int(m.group(4))
+            cur["entries"].append({"index": int(m.group(1)), "action": m.group(2), "prefix": f"{m.group(3)}/{ln}", "len": ln,
+                                   "ge": int(m.group(5)) if m.group(5) else None, "le": int(m.group(6)) if m.group(6) else None})
+    return out
+
+
+def parse_peer_policies(config_text):
+    """BGP config lines -> {peer: {"import": name, "export": name}} (route-policy and ip-prefix filters)."""
+    out = {}
+    for line in config_text.splitlines():
+        m = re.match(r"^\s*peer\s+(\S+)\s+(route-policy|ip-prefix)\s+(\S+)\s+(import|export)\s*$", line)
+        if m:
+            d = out.setdefault(m.group(1), {})
+            d[m.group(4) if m.group(2) == "route-policy" else m.group(4) + "_prefix"] = m.group(3)
+    return out
+
+
+MAC_RE = re.compile(r"^\s*([0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4})\s+(\S+)\s+(\S+)\s+(\S+)")
+
+
+def parse_mac_table(text):
+    """`display mac-address` rows: MAC, VLAN/VSI/BD, port, type. Empty on a pure layer-3 router."""
+    rows = []
+    for line in text.splitlines():
+        m = MAC_RE.match(line)
+        if m:
+            a, b, c = m.group(2), m.group(3), m.group(4)
+            # "MAC  VLAN/VSI  Learned-From  Type" or "MAC  VLAN  PEVLAN CEVLAN Port Type": the port is the token with a slash
+            port = next((t for t in line.split()[1:] if re.match(r"^[A-Za-z].*\d+/\d+", t)), c)
+            typ = line.split()[-1] if line.split()[-1] != port else ""
+            rows.append({"mac": m.group(1).lower(), "vlan": a.split("/")[0], "port": port, "type": typ})
+    return rows

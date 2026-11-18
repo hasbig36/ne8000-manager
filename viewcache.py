@@ -15,10 +15,11 @@ import threading
 import time
 
 TTL = {"overview": 8, "interfaces": 8, "arp": 25, "bgp": 20, "ospf": 30, "isis": 30, "mpls": 30, "neighbors": 60,
-       "vlans": 30, "qos": 60, "vpn_instances": 60, "system": 120, "hardware": 300, "logs": 15}
+       "vlans": 30, "qos": 60, "vpn_instances": 60, "system": 120, "hardware": 300, "logs": 15,
+       "track": 240, "route_policies": 60}
 MAX_STALE = 600          # never show data older than this without fetching it first
 IDLE = 300               # stop warming a router nobody has looked at for this long
-WARM = (("overview", 1), ("interfaces", 1), ("arp", 3), ("bgp", 3), ("hardware", 30), ("qos", 12))   # (view, every N rounds of 5 s)
+WARM = (("overview", 1), ("interfaces", 1), ("arp", 3), ("bgp", 3), ("hardware", 30), ("qos", 12), ("track", 60))   # (view, every N rounds of 5 s)
 
 
 class ViewCache:
@@ -28,6 +29,9 @@ class ViewCache:
         self.busy = {}        # (router id, view) -> Event while a fetch runs
         self.used = {}        # router id -> last time a page asked
         self.warmers = {}     # router id -> Thread
+        self.again = set()    # (router id, view) asked for again while a fetch was running: fetch once more after it
+        self.ever = set()     # (router id, view) fetched at least once
+        self.observers = []   # fn(router, view name, value): called with every fresh answer (the change tracker)
 
     def _fetch(self, r, name):
         key = (id(r), name)
@@ -46,14 +50,25 @@ class ViewCache:
             value = getattr(r, name)()
             with self.lock:
                 self.data[key] = (time.time(), value)
+            for fn in self.observers:
+                try:
+                    fn(r, name, value)
+                except Exception as exc:      # tracking must never break a page
+                    print(f"view observer: {exc}", flush=True)
             return value
         finally:
             with self.lock:
                 self.busy.pop(key, None)
+                self.ever.add(key)
+                redo = key in self.again
+                self.again.discard(key)
             ev.set()
+            if redo and not r.stop.is_set():
+                self._background(r, name)
 
     def _background(self, r, name):
         if (id(r), name) in self.busy:
+            self.again.add((id(r), name))     # the answer on its way may predate a change: read once more after it
             return
         threading.Thread(target=self._quiet, args=(r, name), daemon=True).start()
 
@@ -81,11 +96,12 @@ class ViewCache:
     def invalidate(self, r):
         rid = id(r)
         with self.lock:
+            had_track = (rid, "track") in self.ever
             for k in [k for k in self.data if k[0] == rid]:
                 del self.data[k]
         self.used[rid] = time.time()
-        for name, _ in WARM[:2]:  # get the main views again straight away
-            self._background(r, name)
+        for name in [n for n, _ in WARM[:2]] + (["track"] if had_track else []):  # main views again straight away
+            self._background(r, name)                                            # (and the change log's read)
 
     def start(self, r):
         rid = id(r)
@@ -118,4 +134,6 @@ class ViewCache:
         with self.lock:
             for k in [k for k in self.data if k[0] == rid]:
                 del self.data[k]
+            self.ever = {k for k in self.ever if k[0] != rid}
+            self.again = {k for k in self.again if k[0] != rid}
         self.used.pop(rid, None)

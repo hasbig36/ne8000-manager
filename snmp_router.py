@@ -366,10 +366,11 @@ class SnmpRouter(Router):
         try:
             state, asn, up = self.walk(HW_BGP_PEER + ".5", 10), self.walk(HW_BGP_PEER + ".2", 60), self.walk(HW_BGP_PEER + ".7", 10)
             pref = self.walk(HW_BGP_ROUTES + ".1", 10)
+            act, adv = (self._walk_or_empty(HW_BGP_ROUTES + c) for c in (".2", ".3"))
             for idx, st in state.items():
                 peers.append({"peer": _ip_from_index(idx), "as": str(asn.get(idx, "")), "msg_rcvd": None, "msg_sent": None,
                               "out_q": None, "up_down": _updown(up.get(idx)), "state": BGP_STATES.get(st, str(st)),
-                              "prefixes": pref.get(idx, 0) or 0})
+                              "prefixes": pref.get(idx, 0) or 0, "active": act.get(idx), "advertised": adv.get(idx)})
         except DeviceError:
             peers = []
         if not peers:   # standard BGP4-MIB (IPv4 peers only)
@@ -380,6 +381,25 @@ class SnmpRouter(Router):
                               "out_q": None, "up_down": _updown(up.get(ip)), "state": BGP_STATES.get(st, str(st)), "prefixes": 0})
         return {"router_id": local.get("1.3.6.1.2.1.15.4.0") or "", "local_as": str(local.get("1.3.6.1.2.1.15.2.0") or ""),
                 "total": len(peers), "established": sum(1 for p in peers if p["state"] == "Established"), "peers": peers}
+
+    def _walk_or_empty(self, oid):
+        try:
+            return self.walk(oid, 10)
+        except DeviceError:
+            return {}
+
+    def track(self, detail=True):
+        """SNMP gives the BGP counts; the CLI parts (routes, MAC table, policy counters) need SSH."""
+        snmp = {p["peer"]: p for p in self.bgp_peers()["peers"]}
+        if self.ssh is None:
+            return {"bgp": list(snmp.values())}
+        out = super().track(detail=False)
+        for p in out.get("bgp") or []:
+            s = snmp.get(p["peer"]) or {}
+            p.update(active=s.get("active"), advertised=s.get("advertised"))
+        if not out.get("bgp"):
+            out["bgp"] = list(snmp.values())
+        return out
 
     def bgp(self):
         b = self.bgp_peers()

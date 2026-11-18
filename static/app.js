@@ -166,12 +166,12 @@ const I = {
   term: '<path d="M2 3h12v10H2zM4 6l2 2-2 2M8 10h4"/>', rtr: '<path d="M2 9h12v4H2zM5 11h.01M8 11h.01M4 9l2-5h4l2 5"/>', adopt: '<path d="M2 9h8v4H2zM12 3v6M9 6h6"/>', plan: '<path d="M2 3l4-1 4 2 4-1v11l-4 1-4-2-4 1zM6 2v11M10 4v11"/>', bill: '<path d="M3 2h10v12l-2-1-2 1-2-1-2 1-2-1zM5.5 5h5M5.5 8h5M5.5 11h3"/>',
 };
 const NAV = [
-  [null, [['dashboard', 'Dashboard', I.dash], ['health', 'Health check', I.health]]],
+  [null, [['dashboard', 'Dashboard', I.dash], ['health', 'Health check', I.health], ['changes', 'Change log', I.log]]],
   ['Network', [['interfaces', 'Interfaces', I.ifs], ['graphs', 'Graphs', I.graph], ['netflow', 'Traffic per address', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
   ['IP', [['addresses', 'Addresses', I.ip], ['routes', 'Routes', I.route], ['arp', 'ARP', I.ip], ['vpn', 'VPN instances', I.ip], ['neighbors', 'Neighbors (LLDP)', I.ip]]],
   ['Planning', [['netmap', 'Network map', I.plan], ['plans', 'Network plans', I.plan]]],
   ['Billing', [['billing', 'Splynx billing', I.bill]]],
-  ['Routing', [['bgp', 'BGP', I.route], ['ospf', 'OSPF', I.route], ['isis', 'IS-IS', I.route], ['mpls', 'MPLS / LDP', I.route]]],
+  ['Routing', [['bgp', 'BGP', I.route], ['policies', 'Route policies', I.route], ['ospf', 'OSPF', I.route], ['isis', 'IS-IS', I.route], ['mpls', 'MPLS / LDP', I.route]]],
   ['System', [['resources', 'Resources', I.graph], ['hardware', 'Hardware', I.hw], ['users', 'Router users', I.user], ['settings', 'Settings', I.sys], ['logs', 'Logs & alarms', I.log]]],
   ['Manager', [['account', 'My account', I.user], ['routers', 'Routers', I.rtr], ['adopt', 'Adopt devices', I.adopt], ['appusers', 'App users', I.user], ['audit', 'Audit log', I.log]]],
   ['Tools', [['traffic', 'Traffic monitor', I.graph], ['ping', 'Ping / Traceroute', I.tool], ['console', 'Console', I.term], ['config', 'Config editor', I.term], ['backup', 'Backup', I.tool]]],
@@ -1016,25 +1016,157 @@ PAGES.bgp = async c => {
   const nets = cfg.filter(l => l.startsWith('network ')).map(l => l.split(' ').slice(1).join('/'));
   const desc = {}; cfg.forEach(l => { const m = l.match(/^peer (\S+) description (.+)$/); if (m) desc[m[1]] = m[2]; });
   const ign = new Set(cfg.filter(l => / ignore$/.test(l)).map(l => l.split(' ')[1]));
-  b.peers.forEach(p => { p.description = desc[p.peer] || ''; p.ignored = ign.has(p.peer); });
+  const pol = {}; cfg.forEach(l => { const m = l.match(/^peer (\S+) route-policy (\S+) (import|export)$/); if (m) (pol[m[1]] = pol[m[1]] || {})[m[3]] = m[2]; });
+  const lat = await api('/api/changes/latest?kind=peer').catch(() => ({ now: {}, hour: {}, day: {} }));
+  b.peers.forEach(p => { p.description = desc[p.peer] || ''; p.ignored = ign.has(p.peer); p.pin = (pol[p.peer] || {}).import || ''; p.pout = (pol[p.peer] || {}).export || '';
+    const n = lat.now[p.peer];   // the CLI summary has no active/advertised: use the tracker's last read if it is about the same table
+    if (p.active == null && n && p.state === 'Established' && Math.abs(n[1] - p.prefixes) <= Math.max(10, p.prefixes / 100)) { p.active = n[2]; p.advertised = n[3]; }
+    const was = (k, i) => lat[k][p.peer] && lat[k][p.peer][0] < (n ? n[0] : 1e12) ? lat[k][p.peer][i] : null;
+    p.d1h = was('hour', 1) != null ? p.prefixes - was('hour', 1) : null; p.d24h = was('day', 1) != null ? p.prefixes - was('day', 1) : null; });
   const est = b.peers.filter(p => p.state === 'Established');
   c.innerHTML = head('BGP', `AS ${b.local_as || '-'} · router ID ${b.router_id || '-'}`) +
     `<div class="tiles"><div class="tile"><div class="l">Peers</div><div class="v">${b.peers.length}</div></div><div class="tile"><div class="l">Established</div><div class="v">${est.length}</div></div>
     <div class="tile"><div class="l">Down</div><div class="v" style="color:${b.peers.length - est.length ? 'var(--bad)' : ''}">${b.peers.length - est.length}</div></div><div class="tile"><div class="l">Prefixes received</div><div class="v">${Fmt.num(b.peers.reduce((a, p) => a + p.prefixes, 0))}</div></div></div>
     <div class="card"><h3>Peers</h3><div id="bP"></div></div>
+    <div class="card"><h3>Session changes <span class="sp"></span><a class="btn sm" href="#changes" onclick="CHG.kind='sessions'">Full change log</a></h3><div id="bE" class="muted">Loading…</div></div>
     <div class="grid g2"><div class="card"><h3>Advertised networks</h3><div id="bN"></div></div><div class="card"><h3>Configuration</h3><pre>${esc(Object.entries(b.config).map(([k, v]) => 'bgp ' + k + '\n ' + v.join('\n ')).join('\n'))}</pre></div></div>
     <div class="card" id="bRcard"><h3 id="bRt">BGP routing table</h3><div class="row" style="gap:6px;margin-bottom:10px"><input id="bLk" placeholder="Lookup: 8.8.8.8 or 8.8.8.0/24" style="max-width:260px"><button class="btn sm" id="bLkBtn">Look up</button></div><div id="bR" class="muted">Pick a peer’s Received / Advertised, look up an address, or <button class="btn sm" onclick="bgpRoutes()">load the full BGP table</button></div></div>`;
   $('#bLkBtn').onclick = () => bgpRoutes(null, null, $('#bLk').value.trim()); $('#bLk').onkeydown = e => { if (e.key === 'Enter') $('#bLkBtn').click(); };
   table($('#bP'), [{ t: 'Peer', k: 'peer', f: p => `<b>${esc(p.peer)}</b>` }, { t: 'Description', k: 'description' }, { t: 'Remote AS', k: 'as' }, { t: 'Type', sort: false, f: p => p.as === b.local_as ? 'iBGP' : 'eBGP' },
-    { t: 'State', k: 'state', f: p => bgpPill(p.state) }, { t: 'Up/Down', k: 'up_down' }, { t: 'Prefixes', k: 'prefixes', num: true }, { t: 'Msg in/out', k: 'msg_rcvd', num: true, f: p => `${Fmt.num(p.msg_rcvd)} / ${Fmt.num(p.msg_sent)}` }, { t: 'OutQ', k: 'out_q', num: true },
-    { t: '', sort: false, cls: 'acts', f: p => `<button class="btn sm" onclick='bgpRoutes(${attr(p.peer)},"received")'>Received</button><button class="btn sm" onclick='bgpRoutes(${attr(p.peer)},"advertised")'>Advertised</button>
+    { t: 'State', k: 'state', f: p => bgpPill(p.state) }, { t: 'Up/Down', k: 'up_down' }, { t: 'Received', k: 'prefixes', num: true }, { t: 'Active', k: 'active', num: true },
+    { t: 'Advertised', k: 'advertised', num: true }, { t: 'Δ 1 h', k: 'd1h', num: true, f: p => delta(p.d1h) }, { t: 'Δ 24 h', k: 'd24h', num: true, f: p => delta(p.d24h) },
+    { t: 'Policy in / out', k: 'pin', f: p => [p.pin, p.pout].map(x => x ? `<a href="#policies" onclick='POLSEL=${attr(x)}'>${esc(x)}</a>` : '<span class="faint">-</span>').join(' / ') },
+    { t: 'Msg in/out', k: 'msg_rcvd', num: true, f: p => `${Fmt.num(p.msg_rcvd)} / ${Fmt.num(p.msg_sent)}` }, { t: 'OutQ', k: 'out_q', num: true },
+    { t: '', sort: false, cls: 'acts', f: p => `<button class="btn sm" onclick='peerHistory(${attr(p.peer)},${attr(p.description)})'>History</button><button class="btn sm" onclick='bgpRoutes(${attr(p.peer)},"received")'>Received</button><button class="btn sm" onclick='bgpRoutes(${attr(p.peer)},"advertised")'>Advertised</button>
       <button class="btn sm" onclick='change({title:"Reset BGP session ${esc(p.peer)}",action:"bgp.reset",fields:[{k:"soft",label:"Type",type:"select",options:[["","Hard reset (session drops)"],["import","Soft refresh inbound"],["export","Soft refresh outbound"]]}],params:{peer:${attr(p.peer)}}})'>Reset</button>
       <button class="btn sm" onclick='change({title:"${p.ignored ? 'Enable' : 'Disable'} peer ${esc(p.peer)}",action:"bgp.peer_enable",params:{local_as:${attr(b.local_as)},peer:${attr(p.peer)},enabled:${p.ignored}}})'>${p.ignored ? 'Enable' : 'Disable'}</button>
       <button class="btn sm danger" onclick='change({title:"Remove peer ${esc(p.peer)}",action:"bgp.peer_remove",params:{local_as:${attr(b.local_as)},peer:${attr(p.peer)}}})'>Remove</button>` }],
     b.peers, { toolbar: `<button class="btn" onclick="peerForm()">+ Peer</button>`, rowClass: p => p.ignored ? 'off' : '' });
   table($('#bN'), [{ t: 'Network', k: 'n', f: x => `<b>${esc(x.n)}</b>` }, { t: '', sort: false, cls: 'acts', f: x => `<button class="btn sm danger" onclick='change({title:"Stop advertising ${esc(x.n)}",action:"bgp.network_remove",params:{local_as:${attr(b.local_as)},prefix:${attr(x.n)}}})'>Remove</button>` }],
     nets.map(n => ({ n })), { filter: false, toolbar: `<button class="btn" onclick='change({title:"Advertise network",action:"bgp.network_add",params:{local_as:${attr(b.local_as)}},fields:[{k:"prefix",label:"Network",ph:"203.0.113.0/24"}]})'>+ Network</button>`, empty: 'None' });
+  changeTable($('#bE'), { kind: 'bgp,peer', days: 30, limit: 50, compact: true });
   every(15000, async () => { if ($('#modalBg').classList.contains('hidden') && !$('#bR table')) PAGES.bgp(c); });
+};
+function delta(d) { return d == null ? '<span class="faint">-</span>' : d === 0 ? '<span class="faint">0</span>' : `<span style="color:${d < 0 ? 'var(--bad)' : 'var(--ok)'}">${d > 0 ? '+' : ''}${Fmt.num(d)}</span>`; }
+async function peerHistory(peer, desc) {
+  const m = $('#modal');
+  m.innerHTML = `<h2>Routes from and to ${esc(peer)}${desc ? ' · ' + esc(desc) : ''}</h2><div class="seg" id="phR">${['day', 'week', 'month', 'quarter'].map(k => `<button data-r="${k}">${{ day: '1 day', week: '1 week', month: '1 month', quarter: '3 months' }[k]}</button>`).join('')}</div>
+    <div class="muted" style="margin:8px 0">Received, active (used) and advertised route counts, sampled about every 5 minutes.</div>
+    <div id="phC" style="height:240px"></div><div id="phA" style="height:120px;margin-top:10px"></div><div class="muted" id="phN"></div><div class="actions"><button class="btn primary" data-a="x">Close</button></div>`;
+  $('#modalBg').classList.remove('hidden'); m.querySelector('[data-a=x]').onclick = closeModal;
+  const show = async rng => {
+    m.querySelectorAll('#phR button').forEach(b => b.classList.toggle('on', b.dataset.r === rng));
+    const r = await api(`/api/changes/series?kind=peer&key=${encodeURIComponent(peer)}&range=${rng}`), pts = r.points;
+    const span = { day: 86400, week: 604800, month: 2592000, quarter: 7776000 }[rng], vals = pts.flatMap(p => [p[1], p[2]]).filter(v => v != null);
+    const lo = vals.length ? Math.min(...vals) : 0, hi = vals.length ? Math.max(...vals) : 0;
+    new TimeChart($('#phC'), { fmt: Fmt.num, span, min: lo > 1000 && hi - lo < lo * 0.2 ? Math.floor(lo * 0.98) : 0 }).set([
+      { name: 'Received', color: '--s1', values: pts.map(p => [p[0], p[1]]) }, { name: 'Active', color: '--s3', values: pts.filter(p => p[2] != null).map(p => [p[0], p[2]]) }]);
+    new TimeChart($('#phA'), { fmt: Fmt.num, span, small: true }).set([{ name: 'Advertised', color: '--s2', values: pts.filter(p => p[3] != null).map(p => [p[0], p[3]]) }]);
+    $('#phN').textContent = pts.length ? '' : 'No numbers kept yet for this peer. They are sampled about every 5 minutes, so the first points show up shortly.';
+  };
+  $('#phR').onclick = e => { const b = e.target.closest('button[data-r]'); if (b) show(b.dataset.r); };
+  show('day');
+}
+
+/* ----- change log (ARP, MAC, routes, sessions, counts) ----- */
+const CHG = { kind: 'all', days: 1, q: '' };
+const CHG_KINDS = [['all', 'All', ''], ['arp', 'ARP', 'arp'], ['mac', 'MAC', 'mac'], ['route', 'Routes', 'route,routes'], ['sessions', 'Protocol sessions', 'bgp,ospf,isis,ldp'], ['counts', 'BGP route counts', 'peer,routes']];
+const CHG_LABEL = { arp: 'ARP', mac: 'MAC', route: 'Route', routes: 'Route count', bgp: 'BGP', ospf: 'OSPF', isis: 'IS-IS', ldp: 'LDP', peer: 'BGP routes' };
+function chgPill(c) {
+  const cls = { added: 'p-ok', up: 'p-ok', back: 'p-ok', removed: 'p-bad', down: 'p-bad', dropped: 'p-bad', changed: 'p-warn', jumped: 'p-warn' }[c] || 'p-off';
+  const words = { added: 'new', removed: 'gone', changed: 'changed', up: 'up', down: 'down', back: 'back', dropped: 'dropped', jumped: 'jumped' };
+  return `<span class="pill ${cls}">${esc(words[c] || c)}</span>`;
+}
+function chgWhat(e) {
+  if (e.kind === 'arp') return e.change === 'changed' ? 'MAC changed: possible moved host, IP clash or spoofing' : e.change === 'added' ? 'host appeared' : e.change === 'removed' ? 'host no longer answers' : '';
+  if (e.kind === 'mac') return e.change === 'changed' ? 'moved to another port' : '';
+  return '';
+}
+async function changeTable(host, o) {
+  const r = await api('/api/changes?' + new URLSearchParams({ kind: o.kind || '', days: o.days || 1, q: o.q || '', limit: o.limit || 1000 })).catch(e => ({ error: e.message }));
+  if (r.error) { host.innerHTML = `<div class="err">${esc(r.error)}</div>`; return r; }
+  host.classList.remove('muted');
+  table(host, [{ t: 'Time', k: 'ts', f: e => `<span title="${esc(new Date(e.ts * 1000).toLocaleString())}">${esc(new Date(e.ts * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))}</span>` },
+    ...(o.compact ? [] : [{ t: 'Table', k: 'kind', f: e => esc(CHG_LABEL[e.kind] || e.kind) }]),
+    { t: 'Item', k: 'key', cls: 'mono', f: e => `<b>${esc(e.key)}</b>` }, { t: 'Change', k: 'change', f: e => chgPill(e.change) },
+    { t: 'Before', k: 'old', cls: 'mono', f: e => esc(e.old || '') }, { t: 'After', k: 'new', cls: 'mono', f: e => esc(e.new || '') },
+    { t: 'Details', k: 'info', cls: 'wrap', f: e => esc([e.info, chgWhat(e)].filter(Boolean).join(' · ')) }],
+    r.events, { filter: !o.compact, empty: o.compact ? 'No session changes in the last 30 days.' : 'No changes in this period.' });
+  return r;
+}
+PAGES.changes = async c => {
+  c.innerHTML = head('Change log', 'what changed on the router, and when') + `<div id="chS"></div>
+    <div class="card"><div class="bar"><div class="seg pchips" id="chK">${CHG_KINDS.map(([k, l]) => `<button data-k="${k}" class="${CHG.kind === k ? 'on' : ''}">${l}</button>`).join('')}</div><span class="sp"></span>
+      <select id="chD">${[[1 / 24, 'Last hour'], [1, 'Last 24 hours'], [7, 'Last 7 days'], [30, 'Last 30 days'], [180, 'Last 6 months']].map(([d, l]) => `<option value="${d}" ${+CHG.days === d ? 'selected' : ''}>${l}</option>`).join('')}</select></div>
+      <div id="chT" class="muted">Loading…</div></div>
+    <div class="card"><h3>Routing table size <span class="sp"></span><span class="seg" id="chRR">${['day', 'week', 'month'].map(k => `<button data-r="${k}" class="${k === 'day' ? 'on' : ''}">${{ day: '1 day', week: '1 week', month: '1 month' }[k]}</button>`).join('')}</span></h3>
+      <div class="muted" style="margin-bottom:8px">Routes per protocol, sampled about every 5 minutes. A full Internet table is counted, not listed route by route; a sudden drop or jump of 5% or more is logged above.</div><div id="chRC" style="height:220px"></div><div id="chRS" class="muted"></div></div>`;
+  const kinds = () => (CHG_KINDS.find(x => x[0] === CHG.kind) || CHG_KINDS[0])[2];
+  const load = async () => {
+    const r = await changeTable($('#chT'), { kind: kinds(), days: CHG.days });
+    if (r.error) return;
+    const p = r.poller, tr = r.tracked || {}, n24 = r.counts || {};
+    const watch = p.on ? `Watched around the clock over SNMP${p.last ? ' · last check ' + ago(p.last) : ''}.`
+      : p.saved && p.snmp ? `The around-the-clock check could not read the router${p.error ? ': ' + p.error : ''}. Changes are still logged while this page or others read the router.`
+      : 'Checked while someone has the app open on this router. For around-the-clock tracking, save it with an SNMP login under Manager › Routers.';
+    $('#chS').innerHTML = `<div class="tiles">${[['arp', 'ARP entries'], ['mac', 'MAC entries'], ['route', 'Direct + static routes'], ['bgp', 'BGP sessions']].map(([k, l]) =>
+      `<div class="tile"><div class="l">${l}</div><div class="v">${tr[k] != null ? Fmt.num(tr[k]) : '-'}</div><div class="muted" style="font-size:12px">${(n => `${Fmt.num(n)} change${n === 1 ? '' : 's'} in 24 h`)(k === 'route' ? (n24.route || 0) + (n24.routes || 0) : k === 'bgp' ? (n24.bgp || 0) + (n24.peer || 0) : n24[k] || 0)}</div></div>`).join('')}</div>
+      <p class="muted" style="margin-top:-6px">${esc(watch)}${r.ssh ? '' : ' Route, MAC and route-policy changes need the router command line: sign in with SSH to include them.'}</p>`;
+  };
+  $('#chK').onclick = e => { const b = e.target.closest('button[data-k]'); if (!b) return; CHG.kind = b.dataset.k; c.querySelectorAll('#chK button').forEach(x => x.classList.toggle('on', x === b)); load(); };
+  $('#chD').onchange = () => { CHG.days = +$('#chD').value; load(); };
+  const rc = chart($('#chRC'), { fmt: Fmt.num, span: 86400 });
+  const sizes = async rng => {
+    const keys = ['BGP', 'DIRECT', 'STATIC', 'Total'], got = {};
+    for (const k of keys) got[k] = (await api(`/api/changes/series?kind=routes&key=${k}&range=${rng}`)).points;
+    rc.opts.span = { day: 86400, week: 604800, month: 2592000 }[rng];
+    const main = got.BGP.length ? 'BGP' : 'Total', vals = got[main].map(p => p[1]);
+    rc.opts.min = vals.length && Math.min(...vals) > 1000 ? Math.floor(Math.min(...vals) * 0.98) : 0;
+    rc.set([{ name: main === 'BGP' ? 'BGP routes' : 'All routes', color: '--s1', values: got[main].map(p => [p[0], p[1]]) }]);
+    const last = k => got[k].length ? Fmt.num(got[k][got[k].length - 1][1]) : '-';
+    $('#chRS').innerHTML = got.Total.length || got.BGP.length ? `Now: total ${last('Total')} · BGP ${last('BGP')} · direct ${last('DIRECT')} · static ${last('STATIC')}` : 'No counts yet: they are sampled about every 5 minutes.';
+  };
+  $('#chRR').onclick = e => { const b = e.target.closest('button[data-r]'); if (!b) return; c.querySelectorAll('#chRR button').forEach(x => x.classList.toggle('on', x === b)); sizes(b.dataset.r); };
+  await Promise.all([load(), sizes('day')]);
+  every(30000, async () => { if ($('#modalBg').classList.contains('hidden')) await load(); });
+};
+
+/* ----- route policies: rules, counters, who uses them, and a prefix check ----- */
+let POLSEL = '';
+PAGES.policies = async c => {
+  const [d, lat] = await Promise.all([api('/api/view/route_policies'), api('/api/changes/latest?kind=policy').catch(() => ({ now: {}, hour: {}, day: {} }))]);
+  const users = {}; Object.entries(d.peers).forEach(([peer, x]) => [['import', 'in'], ['export', 'out']].forEach(([k, w]) => { if (x[k]) (users[x[k]] = users[x[k]] || []).push(`${peer} ${w}`); }));
+  const delta = (k, key, now) => { const o = lat[k][key]; return o != null && now != null && (!lat.now[key] || o[0] < lat.now[key][0]) ? now - o[1] : null; };
+  const pols = d.policies.slice().sort((a, b) => (b.name === POLSEL) - (a.name === POLSEL) || (!!users[b.name]) - (!!users[a.name]) || a.name.localeCompare(b.name));
+  c.innerHTML = head('Route policies', `${d.policies.length} route-policies · ${Object.keys(d.prefixes).length} prefix lists`) +
+    `<div class="card"><h3>What would a policy do to a prefix?</h3><div class="row" style="gap:6px;flex-wrap:wrap"><input id="ptP" placeholder="Prefix, e.g. 8.8.8.0/24" style="max-width:220px">
+      <select id="ptN"><option value="">All policies in use</option>${d.policies.map(p => `<option ${p.name === POLSEL ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select><button class="btn" id="ptB">Check</button></div>
+      <div class="muted" style="margin-top:6px">Worked out from the policy rules and prefix lists read from the router. Rules about AS path, communities and the like depend on the route itself, so they are shown as “depends”.</div><div id="ptR"></div></div>
+    ${pols.map((p, i) => `<div class="card" id="pol-${i}"><h3>${esc(p.name)} <span class="sp"></span><span class="muted" style="font-weight:400;font-size:12px">${users[p.name] ? 'used by ' + users[p.name].map(esc).join(', ') : 'not used by a BGP peer'}</span></h3><div class="polT"></div></div>`).join('')}
+    <div class="card"><h3>Prefix lists</h3><div id="plT"></div></div>
+    ${d.as_path ? `<div class="card"><h3>AS-path filters</h3><pre>${esc(d.as_path)}</pre></div>` : ''}${d.community ? `<div class="card"><h3>Community filters</h3><pre>${esc(d.community)}</pre></div>` : ''}`;
+  pols.forEach((p, i) => table(c.querySelector(`#pol-${i} .polT`), [
+    { t: 'Node', k: 'node', num: true }, { t: 'Action', k: 'action', f: n => `<span class="pill ${n.action === 'permit' ? 'p-ok' : 'p-bad'}">${esc(n.action)}</span>` },
+    { t: 'Matches when', k: 'match', cls: 'mono wrap', f: n => n.match.length ? n.match.map(esc).join('<br>') : '<span class="faint">every route</span>' },
+    { t: 'Then', k: 'apply', cls: 'mono wrap', f: n => n.action === 'deny' ? '<span class="faint">rejected</span>' : n.apply.length ? n.apply.map(esc).join('<br>') : '<span class="faint">accepted as is</span>' },
+    { t: 'Matched (total)', k: 'matched', num: true, f: n => Fmt.num(n.matched) }, { t: 'Last hour', k: 'h', num: true, f: n => delta('hour', `${p.name} ${n.node}`, n.matched) == null ? '<span class="faint">-</span>' : Fmt.num(delta('hour', `${p.name} ${n.node}`, n.matched)) },
+    { t: 'Last 24 h', k: 'd', num: true, f: n => delta('day', `${p.name} ${n.node}`, n.matched) == null ? '<span class="faint">-</span>' : Fmt.num(delta('day', `${p.name} ${n.node}`, n.matched)) }],
+    p.nodes, { filter: false, empty: 'No nodes' }));
+  table($('#plT'), [{ t: 'Prefix list', k: 'name', f: x => `<b>${esc(x.name)}</b>` }, { t: 'Entries', k: 'entries', cls: 'mono wrap', f: x => x.entries.map(e => `${e.index} ${e.action} ${e.prefix}${e.ge != null ? ' ge ' + e.ge : ''}${e.le != null ? ' le ' + e.le : ''}`).map(esc).join('<br>') },
+    { t: 'Permitted', k: 'permitted', num: true, f: x => Fmt.num(x.permitted) }, { t: 'Denied', k: 'denied', num: true, f: x => Fmt.num(x.denied) }],
+    Object.entries(d.prefixes).map(([name, x]) => ({ name, ...x })), { empty: 'No prefix lists' });
+  const check = async () => {
+    const pfx = $('#ptP').value.trim(); if (!pfx) return;
+    const name = $('#ptN').value;
+    let r; try { r = await api('/api/policy/test?' + new URLSearchParams({ prefix: pfx, ...(name ? { policy: name } : {}) })); } catch (e) { $('#ptR').innerHTML = `<div class="err">${esc(e.message)}</div>`; return; }
+    const res = name ? r.results : r.results.filter(x => users[x.policy]);
+    const word = { permit: ['p-ok', 'accepted'], deny: ['p-bad', 'rejected'], depends: ['p-warn', 'depends'] };
+    $('#ptR').innerHTML = `<table class="tbl" style="margin-top:10px"><thead><tr><th>Policy</th><th>Used by</th><th>Result</th><th>How</th></tr></thead><tbody>${res.map(x => `<tr><td><b>${esc(x.policy)}</b></td><td>${esc((users[x.policy] || []).join(', ') || '-')}</td>
+      <td><span class="pill ${word[x.result][0]}">${word[x.result][1]}</span>${x.node != null ? ` <span class="muted">node ${x.node}</span>` : ''}</td>
+      <td class="wrap">${x.steps.map(s => `<div><span class="mono">${s.node} ${esc(s.action)}</span>: ${s.matches === true ? 'matches' : s.matches === false ? 'no' : 'maybe'}, ${esc(s.why)}</div>`).join('')}${x.apply.length ? `<div>then <span class="mono">${x.apply.map(esc).join('; ')}</span></div>` : ''}${x.note ? `<div class="muted">${esc(x.note)}</div>` : ''}</td></tr>`).join('')}</tbody></table>`;
+  };
+  $('#ptB').onclick = check; $('#ptP').onkeydown = e => { if (e.key === 'Enter') check(); };
+  if (POLSEL) { c.querySelector('#pol-0')?.scrollIntoView({ block: 'start' }); POLSEL = ''; }
 };
 function peerForm() {
   change({ title: 'New BGP peer', action: 'bgp.peer_add', params: { local_as: bgpState.local_as }, fields: [

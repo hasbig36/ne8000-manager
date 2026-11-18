@@ -76,6 +76,17 @@ class DemoRouter(Router):
             "10.10.1.2": {"as": "64512", "desc": "Customer-A", "ignore": False, "state": "Active", "pref": 0, "up": time.time() - 72, "ci": ""},
         }
         self.bgp_networks = ["10.10.0.0 16", "203.0.113.0 24"]
+        self.peer_policy = {"2.2.2.2": ("RR-IN", ""), "3.3.3.3": ("RR-IN", ""), "10.10.1.2": ("CUST-A-IN", "CUST-A-OUT")}
+        self.rpol = {
+            "RR-IN": [("deny", 10, ["if-match ip-prefix DEFAULT"], []), ("permit", 100, [], ["apply local-preference 200"])],
+            "CUST-A-IN": [("deny", 10, ["if-match ip-prefix PRIVATE"], []), ("permit", 20, ["if-match ip-prefix CUST-A"], ["apply community 64512:100"]),
+                          ("deny", 30, ["if-match as-path-filter 10"], [])],
+            "CUST-A-OUT": [("deny", 10, ["if-match community-filter NO-EXPORT-CUST"], []), ("permit", 20, ["if-match ip-prefix OUR-NETS"], [])],
+        }
+        self.prefix_lists = {"DEFAULT": [(10, "permit", "0.0.0.0/0", None, None)],
+                             "PRIVATE": [(10, "permit", "10.0.0.0/8", None, 32), (20, "permit", "172.16.0.0/12", None, 32), (30, "permit", "192.168.0.0/16", None, 32)],
+                             "CUST-A": [(10, "permit", "198.18.0.0/22", 22, 24)],
+                             "OUR-NETS": [(10, "permit", "203.0.113.0/24", None, None), (20, "permit", "10.10.0.0/16", None, None)]}
         self.ospf_networks = [("1", "0.0.0.0", "172.16.0.0 0.0.0.1"), ("1", "0.0.0.0", "172.16.0.2 0.0.0.1"), ("1", "0.0.0.0", "1.1.1.1 0.0.0.0")]
         self.isis_procs = {"1": {"level": "level-2", "cost_style": "wide", "nets": ["49.0001.0010.0000.0001.00"], "is_name": ""}}
         for n in ("100GE0/2/0", "100GE0/2/1", "LoopBack0"):
@@ -156,6 +167,9 @@ class DemoRouter(Router):
             return self.show_interface(c.split(" ", 2)[2])
         if cl.startswith("display port-queue statistics interface"):
             return self.show_port_queue(c.split()[4])
+        m = re.match(r"display bgp peer (\S+) (verbose|log-info)$", cl)
+        if m:
+            return self.show_bgp_peer_detail(m.group(1), m.group(2))
         if cl.startswith("display bgp routing-table") and cl.endswith(" statistics"):
             text = self._run(c[: -len(" statistics")], read_timeout)
             return f" Total Number of Routes: {len(P.parse_bgp_routes(text))}"
@@ -524,7 +538,7 @@ class DemoRouter(Router):
                 p["ci"] = rest.split()[1]
             elif rest == "ignore":
                 p["ignore"] = not undo
-                p["state"] = "Active" if undo else "Idle(Admin)"
+                p["state"] = "Connect" if undo else "Idle(Admin)"     # back up shortly after it is enabled again
                 p["up"] = time.time()
                 if not undo:
                     p["pref"] = 0
@@ -793,6 +807,9 @@ Statistics last cleared:never
                 lines.append(f" peer {p} ignore")
         lines += [" #", " ipv4-family unicast"] + [f"  network {n}" for n in self.bgp_networks] + \
                  [f"  peer {p} enable" for p in self.bgp_peers]
+        for p in self.bgp_peers:
+            imp, exp = self.peer_policy.get(p, ("", ""))
+            lines += ([f"  peer {p} route-policy {imp} import"] if imp else []) + ([f"  peer {p} route-policy {exp} export"] if exp else [])
         return "\n".join(lines) + "\n#"
 
     def show_config(self):
@@ -947,6 +964,57 @@ GE0/1/5                 111        XGE0/0/1                L2-SW-02"""
             msgs = int(age / 60) + 3
             out.append(f"  {ip:<15} 4 {p['as']:>11} {msgs:>8} {msgs + 2:>8} {0:>5} {hhmm(age):>8} {p['state']:>11} {p['pref']:>10}")
         return "\n".join(out)
+
+    def show_bgp_peer_detail(self, ip, what):
+        p = self.bgp_peers.get(ip)
+        if not p:
+            return "Error: The peer does not exist."
+        if what == "log-info":
+            out = [f"Peer : {ip}"]
+            if p["state"] != "Established":
+                out += [f" Date/Time     : {time.strftime('%Y-%m-%d %H:%M:%S+03:00', time.localtime(p['up']))}", " State         : Down",
+                        " Error Code    : 4(Hold Timer Expired)", " Error Subcode : 0(UnSpecific)", " Notification  : Hold Timer Expired"]
+            out += [f" Date/Time     : {time.strftime('%Y-%m-%d %H:%M:%S+03:00', time.localtime(BOOT))}", " State         : Up"]
+            return "\n".join(out)
+        imp, exp = self.peer_policy.get(ip, ("", ""))
+        state = p["state"] if p["state"] != "Established" else f"Established, Up for {hhmm(time.time() - p['up'])}"
+        return "\n".join([f"         BGP Peer is {ip},  remote AS {p['as']}", f"         BGP current state: {state}",
+                          "         BGP last state: OpenConfirm", "         BGP Peer Up count: 1",
+                          f"         Received total routes: {p['pref']}", f"         Received active routes total: {max(p['pref'] - 3, 0)}",
+                          f"         Advertised total routes: {len(self.bgp_networks) if p['state'] == 'Established' else 0}",
+                          " Routing policy configured:", f" Import route policy is: {imp}" if imp else " No import route policy",
+                          f" Export route policy is: {exp}" if exp else " No export route policy"])
+
+    def show_route_policy(self):
+        out, k = [], int((time.time() - BOOT) / 10)
+        for name, nodes in self.rpol.items():
+            out.append(f"Route-policy: {name}")
+            for i, (act, n, match, apply) in enumerate(nodes):
+                out.append(f"  {act} : {n} (matched counts: {(k * (37 + 11 * i) if act == 'permit' else k * i) + 1000 * i})")
+                if match:
+                    out += ["    Match clauses: "] + [f"      {c}" for c in match]
+                if apply:
+                    out += ["    Apply clauses: "] + [f"      {c}" for c in apply]
+        return "\n".join(out)
+
+    def show_ip_ip_prefix(self):
+        out = []
+        for name, rows in self.prefix_lists.items():
+            out += [f"Prefix-list {name}", "Permitted 12", "Denied 3456"]
+            for idx, act, pfx, ge, le in rows:
+                out.append(f"    index: {idx:<12} {act:<10} {pfx:<21}" + (f" ge {ge}" if ge else "") + (f"   le {le}" if le else ""))
+        return "\n".join(out)
+
+    def show_ip_as_path_filter(self):
+        return "As path filter number: 10\n   deny    _64496_\n   permit  .*"
+
+    def show_ip_community_filter(self):
+        return "Community filter Name: NO-EXPORT-CUST\n   permit 64512:666"
+
+    def show_mac_address(self):
+        rows = [("00e0-fc11-2201", "100", "GE0/1/4"), ("00e0-fc11-2202", "100", "GE0/1/4"), ("5489-98aa-0001", "200", "GE0/1/5")]
+        return "MAC Address    VLAN/VSI/BD   Learned-From        Type\n" + "-" * 60 + "\n" + \
+               "\n".join(f"{m}  {v}/-/-         {p:<19} dynamic" for m, v, p in rows)
 
     def show_bgp_routing_table(self):
         return self.show_bgp_routes(None, False)

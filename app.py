@@ -21,6 +21,7 @@ from flask import Flask, Response, jsonify, render_template, request, session
 import actions
 import auth
 import billing
+import changes
 import adopt
 import health
 import history
@@ -30,6 +31,7 @@ import netflow
 import netmap
 import panel
 import plans
+import policy
 import routers
 import viewcache
 from device import DeviceError, RealRouter, _cidr, is_read_only
@@ -61,6 +63,8 @@ DISABLED_IPS = ipdisabled.DisabledIPs(DATA_DIR)
 PANELS = panel.PanelStore(DATA_DIR)
 NOTES = panel.NotesStore(DATA_DIR)
 VIEWCACHE = viewcache.ViewCache()   # router views kept in server memory, so pages open without waiting for the router
+TRACK = changes.Tracker(DATA_DIR, SAVED)   # change log: ARP, MAC, routes, protocol sessions, BGP counts, policy counters
+VIEWCACHE.observers.append(lambda r, name, value: TRACK.feed_view(getattr(r, "track_id", ""), name, value))
 THROTTLE_IP = auth.Throttle(limit=5)        # per client address
 THROTTLE_USER = auth.Throttle(limit=20)     # per username, high enough that strangers cannot easily lock out a real user
 THROTTLE_ROUTER = auth.Throttle(limit=5)    # failed router SSH logins per app user (slows password guessing on the router)
@@ -92,7 +96,7 @@ ROUTERS = {}   # browser session id -> Router. Credentials are never stored.
 NAME_RE = re.compile(r"^[A-Za-z0-9/.:\-_]{1,64}$")
 
 VIEWS = ("overview", "interfaces", "vlans", "qos", "arp", "neighbors", "vpn_instances", "bgp", "ospf", "isis", "mpls",
-         "system", "hardware", "logs")
+         "system", "hardware", "logs", "route_policies")
 
 
 def router():
@@ -564,6 +568,7 @@ def connect():
     session["sid"] = uuid.uuid4().hex
     session["router_id"] = "" if r.demo else (data.get("router_id") or "")
     ROUTERS[session["sid"]] = r
+    r.track_id = netmap_key(r)
     VIEWCACHE.start(r)    # start filling the views now, so the dashboard opens from memory
     start_billing(r)
     AUDIT.log(me(), "router_connect", host=r.host, demo=r.demo, via=r.via, ip=client_ip())
@@ -1123,6 +1128,61 @@ def plan_create():
     return jsonify(PLANS.create(d.get("name"), d.get("description", ""), me(), d.get("diagram"), d.get("tasks")))
 
 
+@app.get("/api/changes")
+def changes_list():
+    """The change log of the connected router: ?kind=arp,bgp&q=text&days=7&limit=500"""
+    r = router()
+    rid = netmap_key(r)
+    kinds = [k for k in (request.args.get("kind") or "").split(",") if k]
+    days = min(max(float(request.args.get("days") or 7), 0.01), 180)
+    since = time.time() - days * 86400
+    st = TRACK.status.get(session.get("router_id", "")) or {}
+    return jsonify(events=TRACK.events(rid, kinds, since, (request.args.get("q") or "").strip()[:100],
+                                       min(int(request.args.get("limit") or 500), 5000)),
+                   counts=TRACK.counts(rid, time.time() - 86400), tracked={k: v[0] for k, v in TRACK.tracked(rid).items()},
+                   poller=dict(on=TRACK.polled(session.get("router_id", "")), last=st.get("time"), error=st.get("error", ""),
+                               saved=bool(session.get("router_id")), snmp=bool((SAVED.get(session.get("router_id", "")) or {}).get("snmp"))),
+                   ssh=bool(r.can_configure))
+
+
+@app.get("/api/changes/series")
+def changes_series():
+    kind = request.args.get("kind", "")
+    if kind not in ("peer", "routes", "policy"):
+        raise DeviceError("Unknown series.")
+    rng = request.args.get("range", "day")
+    if rng not in changes.RANGES:
+        raise DeviceError("Unknown range.")
+    return jsonify(points=TRACK.series(netmap_key(router()), kind, request.args.get("key", ""), rng))
+
+
+@app.get("/api/changes/latest")
+def changes_latest():
+    """Newest numbers of a kind, plus the numbers 1 hour and 1 day before, for the change columns."""
+    kind = request.args.get("kind", "peer")
+    if kind not in ("peer", "routes", "policy"):
+        raise DeviceError("Unknown series.")
+    rid = netmap_key(router())
+    return jsonify(now=TRACK.latest(rid, kind), hour=TRACK.latest(rid, kind, 3600), day=TRACK.latest(rid, kind, 86400))
+
+
+@app.get("/api/policy/test")
+def policy_test():
+    """What would route-policy P do to prefix X (from the policy and prefix lists read from the router)."""
+    pfx = (request.args.get("prefix") or "").strip()
+    if not re.match(r"^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$", pfx):
+        raise DeviceError("Give an IPv4 prefix, e.g. 8.8.8.0/24.")
+    try:
+        ipaddress.ip_network(pfx, strict=False)
+    except ValueError:
+        raise DeviceError("Give an IPv4 prefix, e.g. 8.8.8.0/24.")
+    data, _ = VIEWCACHE.get(router(), "route_policies")
+    pols = [p for p in data["policies"] if not request.args.get("policy") or p["name"] == request.args["policy"]]
+    if not pols:
+        raise DeviceError("No such route-policy.")
+    return jsonify(results=[dict(policy.evaluate(pfx, p, data["prefixes"]), policy=p["name"]) for p in pols])
+
+
 def netmap_key(r):
     return "demo" if r.demo else (session.get("router_id") or "host-" + r.host)
 
@@ -1282,7 +1342,9 @@ if __name__ == "__main__":
     if env_on("NE8000_HISTORY", "1"):
         HIST.start()   # 5-minute interface history for every saved router with an SNMP login
     if env_on("NE8000_HEALTH", "1"):
-        HEALTH.start()  # smart health check every 5 minutes (errors, drops, full links, optics, latency)
+        HEALTH.start()
+    if env_on("NE8000_CHANGES", "1"):
+        TRACK.start()   # 24/7 change log over SNMP for every saved router with an SNMP login  # smart health check every 5 minutes (errors, drops, full links, optics, latency)
     if int(os.environ.get("NE8000_NETFLOW_PORT", "2055") or 0):
         try:            # per-address traffic from the routers' NetStream export (UDP)
             FLOWS.start(int(os.environ.get("NE8000_NETFLOW_PORT", "2055")), os.environ.get("NE8000_NETFLOW_BIND", "0.0.0.0"))

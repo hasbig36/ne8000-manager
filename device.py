@@ -373,6 +373,50 @@ class Router:
         return {"ldp": P.parse_ldp_sessions(self.cached("display mpls ldp session", 10)),
                 "lsp": self.cached("display mpls lsp", 10)}
 
+    def _try(self, command, ttl):
+        """A CLI read that may not exist on every image: '' instead of an error."""
+        try:
+            out = self.cached(command, ttl)
+        except DeviceError:
+            return ""
+        return "" if re.search(r"^\s*Error:", out, re.M) else out
+
+    def track(self, detail=True):
+        """What the change tracker needs from the CLI (read every few minutes while someone is signed in):
+        route counts per protocol, the direct and static routes, the MAC table, BGP peers with their
+        received / active / advertised counts and the reason a down peer last went down, and the
+        route-policy match counters. A full BGP table is counted, never listed."""
+        out = {}
+        stats = P.parse_route_stats(self._try("display ip routing-table statistics", 50))
+        out["route_stats"] = stats
+        routes = []
+        for proto in ("direct", "static"):
+            if stats is None or (stats["protocols"].get(proto.upper()) or 0) <= ROUTE_LIST_LIMIT:
+                routes += P.parse_routing_table(self._try(f"display ip routing-table protocol {proto}", 50))
+        out["routes"] = routes
+        out["mac"] = P.parse_mac_table(self._try("display mac-address", 50))
+        peers = P.parse_bgp_peers(self._try("display bgp peer", 20))
+        for p in peers:
+            if detail and p["state"] == "Established":
+                v = P.parse_bgp_verbose(self._try(f"display bgp peer {p['peer']} verbose", 280))
+                p.update(active=v["active"], advertised=v["advertised"])
+            if p["state"] != "Established" and "Admin" not in p["state"]:
+                log = P.parse_bgp_log_info(self._try(f"display bgp peer {p['peer']} log-info", 280))
+                p["why"] = P.bgp_down_reason(next((e for e in log if e["state"].lower() == "down"), None))
+        out["bgp"] = peers
+        out["policies"] = P.parse_route_policies(self._try("display route-policy", 280))
+        return out
+
+    def route_policies(self):
+        """Route-policies with their match counters, the filters they use, and which BGP peer uses which."""
+        cfg = self.cached("display current-configuration configuration bgp", 30)
+        return {"policies": P.parse_route_policies(self._try("display route-policy", 30)),
+                "prefixes": P.parse_ip_prefixes(self._try("display ip ip-prefix", 30)),
+                "as_path": self._try("display ip as-path-filter", 60).strip(),
+                "community": "\n".join(x for x in (self._try("display ip community-filter", 60).strip(),
+                                                    self._try("display ip large-community-filter", 60).strip()) if x),
+                "peers": P.parse_peer_policies(cfg)}
+
     def system(self):
         return {"users": P.parse_local_users(self.cached("display local-user", 10)),
                 "online": self.cached("display users", 10),
