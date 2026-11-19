@@ -11,3 +11,5 @@ audit.log
 .env
 data.backup-*
 .git
+store/.env
+store/data

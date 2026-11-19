@@ -1,0 +1,10 @@
+{% extends "base.html" %}
+{% block title %}Approve on your phone · {{ store_name }}{% endblock %}
+{% block body %}<div class="page"><div class="wrap narrow"><div class="card" style="text-align:center" id="wait" data-checkout="{{ checkout_id }}" data-ref="{{ o.ref }}">
+<h1>Check your phone</h1>
+<p class="muted">Enter your M-Pesa PIN to approve KES {{ '{:,}'.format(o.amount_kes) }} for invoice {{ o.ref }}.</p>
+<div class="spinner" data-w="spin"></div>
+<p data-w="msg" class="muted small">Waiting for M-Pesa…</p>
+<p><a class="btn" href="/pay/{{ o.ref }}">Back to the invoice</a></p>
+</div></div></div>{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='store.js') }}"></script>{% endblock %}

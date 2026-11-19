@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+{% block title %}{{ store_name }}: manage your Huawei NE8000 from the browser{% endblock %}
+{% block body %}
+<div class="hero"><div class="wrap">
+  <div class="tag">For ISPs and network operators</div>
+  <h1>Run your Huawei NE8000 network from one web page</h1>
+  <p class="lead">Interfaces, VLANs, QoS, BGP, OSPF and live graphs, a NOC wall map, network plans you can check before you commit, and Splynx billing that shuts and opens customer ports for you.</p>
+  <div class="cta">
+    <a class="btn primary big" href="/buy">Buy a licence</a>
+    <a class="btn big" href="#pricing">See pricing</a>
+  </div>
+  <img class="shot" src="{{ url_for('static', filename='shots/graphs.jpg') }}" alt="NE8000 Manager showing live and daily traffic graphs for a router interface" width="1280" height="900">
+</div></div>
+
+<section id="features"><div class="wrap">
+  <div class="tag">Features</div>
+  <h2>Everything your NOC does on the router, without the CLI</h2>
+  <p class="intro">NE8000 Manager connects to your routers over SSH and SNMP. Every change shows the exact VRP commands first, and you can check them on the router before you commit.</p>
+  <div class="grid3">
+    <div class="card feature"><div class="ico">IF</div><h3>Interfaces and VLANs</h3><p>Every port and sub-interface with state, IPs, VLANs and utilisation. Create dot1q and QinQ sub-interfaces, VLANIFs and trunks in a form.</p></div>
+    <div class="card feature"><div class="ico">Q</div><h3>Queues and QoS</h3><p>Rate-limit any interface like a simple queue, shape ports and watch live pass and drop counters per queue.</p></div>
+    <div class="card feature"><div class="ico">BGP</div><h3>Routing</h3><p>BGP peers, prefixes and tables, OSPF, IS-IS and MPLS LDP. Add, reset and refresh peers safely.</p></div>
+    <div class="card feature"><div class="ico">~</div><h3>Graphs and NetFlow</h3><p>Live, daily, weekly, monthly and yearly traffic per interface, and traffic per IP address from NetStream.</p></div>
+    <div class="card feature"><div class="ico">$</div><h3>Splynx billing</h3><p>Blocked customers get their port shut, paid customers get it back, automatically and logged.</p></div>
+    <div class="card feature"><div class="ico">!</div><h3>Health and alerts</h3><p>CPU, memory, optics, errors, BGP sessions and site power. Alerts to Telegram, email, SMS, Slack or Teams.</p></div>
+  </div>
+</div></section>
+
+<section class="alt"><div class="wrap grid2">
+  <div><div class="tag">NOC</div><h2>A live map of the whole network</h2>
+  <p class="muted">See every router, switch and reseller with live traffic on each link, links that are down, BGP sessions and warnings, on a wall screen or a laptop.</p>
+  <ul class="ticks"><li>Diagram, Kenya map and major sites views</li><li>Interfaces, BGP sessions and links down at a glance</li><li>24/7 change log of ARP, MAC, routes and sessions</li></ul></div>
+  <div class="shotframe"><img src="{{ url_for('static', filename='shots/noc.jpg') }}" alt="NOC view with network diagram and live link traffic" width="1024" height="768" loading="lazy"></div>
+</div></section>
+
+<section><div class="wrap grid2">
+  <div class="shotframe"><img src="{{ url_for('static', filename='shots/plan.jpg') }}" alt="Network plan designer with devices and links" width="1280" height="900" loading="lazy"></div>
+  <div><div class="tag">Planning</div><h2>Design a change, check it, then run it</h2>
+  <p class="muted">Draw the change, generate the router tasks, check them on the router without changing anything, then execute and keep a signed record of who did what.</p>
+  <ul class="ticks"><li>Version history for every plan</li><li>Check only mode: the router checks the syntax, nothing changes</li><li>Print a one-page record for your change board</li></ul></div>
+</div></section>
+
+<section id="pricing" class="alt"><div class="wrap">
+  <div class="tag">Pricing</div>
+  <h2>Simple pricing per device</h2>
+  <p class="intro">One licence covers your routers. Run it on your own server, or let us host it for you.</p>
+  <div class="pricing">
+    <div class="card calc" id="calc" data-first="{{ first_usd }}" data-extra="{{ extra_usd }}" data-kes="{{ kes_rate }}" data-sizes='{{ sizes|tojson }}'>
+      <div class="price-big">${{ '%g'|format(first_usd) }} <small>first device {{ period_label }}</small></div>
+      <div class="muted">then ${{ '%g'|format(extra_usd) }} for each extra device</div>
+      <label for="n">How many routers will you manage?</label>
+      <div class="counter"><button type="button" class="btn" data-step="-1" aria-label="Fewer devices">-</button>
+        <input id="n" type="number" min="1" max="200" value="1"><button type="button" class="btn" data-step="1" aria-label="More devices">+</button></div>
+      <div class="seg" role="radiogroup" aria-label="Where it runs">
+        <label><input type="radio" name="h" value="self" checked> My own server</label>
+        <label><input type="radio" name="h" value="hosted"> Hosted by us</label>
+      </div>
+      <table class="lines">
+        <tr><td>Licence (<span data-out="n">1</span> device<span data-out="s"></span>)</td><td data-out="lic"></td></tr>
+        <tr data-hosted class="hidden"><td>Hosted server, monthly</td><td data-out="host"></td></tr>
+        <tr class="total"><td>Total {{ period_label }}</td><td data-out="total"></td></tr>
+        <tr><td class="muted small">About</td><td class="muted small" data-out="kes"></td></tr>
+      </table>
+      <div class="server"><div><span class="muted">Recommended server</span><b data-out="server"></b></div></div>
+      <a class="btn primary big" style="width:100%" id="calcBuy" href="/buy">Buy now</a>
+    </div>
+    <div class="card">
+      <h3>Server sizes</h3>
+      <p class="small">The app keeps graphs and polls every router, so the server grows with your network. Hosted servers cost the cloud price plus {{ '%g'|format(markup) }}% for setup, updates, backups and support.</p>
+      <div class="scroll"><table class="sizes"><tr><th>Devices</th><th>Server</th><th class="num">Hosted / month</th></tr>
+      {% set ns = namespace(lo=1) %}
+      {% for s in sizes %}<tr><td>{{ ns.lo }}{% if s.max != ns.lo %}–{{ s.max }}{% endif %}</td><td>{{ s.label }}</td><td class="num">${{ '%.2f'|format(s.hosted) }}</td></tr>{% set ns.lo = s.max + 1 %}{% endfor %}
+      </table></div>
+      <ul class="ticks small">
+        <li>Pay by M-Pesa or bank transfer</li>
+        <li>Installed for you within minutes of payment</li>
+        <li>Add devices any time from your billing account</li>
+        <li>Updates included while the licence is active</li>
+      </ul>
+    </div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <div class="tag">How it works</div><h2>From order to running in one sitting</h2><p class="intro"></p>
+  <div class="steps">
+    <div class="card"><h3>Pick your devices</h3><p>Tell us how many routers you have. We show the price and the server size you need.</p></div>
+    <div class="card"><h3>Choose a server</h3><p>Use your own Ubuntu server, or let us host it on DigitalOcean for you.</p></div>
+    <div class="card"><h3>Pay</h3><p>Approve the M-Pesa prompt on your phone, or pay by bank transfer.</p></div>
+    <div class="card"><h3>Sign in</h3><p>Hosted: we install it and email your login. Own server: run one install command.</p></div>
+  </div>
+</div></section>
+
+<section id="faq" class="alt"><div class="wrap mid">
+  <h2>Questions</h2>
+  <details><summary>What counts as a device?</summary><p>Each router you save in the app (Manager › Routers). Switches and resellers drawn on maps and plans are free.</p></details>
+  <details><summary>Which routers does it support?</summary><p>Huawei NetEngine 8000 M8, M14 and F series, NE40E and other VRP8 routers.</p></details>
+  <details><summary>Does the hosted server reach my routers?</summary><p>The server needs to reach your routers' management IPs over SSH and SNMP. Allow its public IP on your management ACL, or connect it over a VPN. We help you set this up.</p></details>
+  <details><summary>What happens if I do not renew?</summary><p>You get a renewal invoice 7 days before the end of the period and a 7-day grace period after it. After that the app stops connecting to routers until you renew. Your data is kept.</p></details>
+  <details><summary>Can I pay in shillings?</summary><p>Yes. Prices are in US dollars and M-Pesa payments are charged in KES at about {{ '%g'|format(kes_rate) }} KES per dollar.</p></details>
+</div></section>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='store.js') }}"></script>{% endblock %}

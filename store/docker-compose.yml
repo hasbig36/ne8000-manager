@@ -1,0 +1,25 @@
+# Licence store (sales site + billing site). On the store server:
+#   cp store/.env.example store/.env   (fill it in)   then
+#   docker compose -f store/docker-compose.yml up -d --build
+services:
+  store:
+    build:
+      context: ..
+      dockerfile: store/Dockerfile
+    container_name: ne8000-store
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/data          # store.db (customers, licences, invoices), the licence signing key, outbox
+    expose: ["8090"]
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    env_file: .env
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on: [store]
+volumes:
+  caddy_data:

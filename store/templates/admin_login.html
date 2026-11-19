@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Admin · {{ store_name }}{% endblock %}
+{% block body %}<div class="page"><div class="wrap narrow"><div class="card">
+<h1>Store admin</h1>
+{% if error %}<div class="err">{{ error }}</div>{% endif %}
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="password">Admin password</label><input id="password" name="password" type="password" required>
+<p><button class="btn primary">Sign in</button></p></form>
+</div></div></div>{% endblock %}

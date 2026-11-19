@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Admin · {{ store_name }}{% endblock %}
+{% block body %}<div class="page"><div class="wrap">
+<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+<h1>Store admin</h1>
+<form method="post" action="/admin/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn sm">Sign out</button></form></div>
+<div class="grid3" style="margin:16px 0">
+  <div class="card"><div class="muted small">Paid, last 30 days</div><div class="price-big" style="font-size:32px">${{ '{:,.2f}'.format(paid.usd) }}</div><div class="muted small">{{ paid.n }} invoices</div></div>
+  <div class="card"><div class="muted small">Active licences</div><div class="price-big" style="font-size:32px">{{ licences|selectattr('status','equalto','active')|list|length }}</div>
+    <div class="muted small">{{ licences|selectattr('status','equalto','active')|sum(attribute='devices') }} devices</div></div>
+  <div class="card"><div class="muted small">Set up</div>{% for k, v in setup.items() %}<div class="small">{{ '✓' if v else '✗' }} {{ k }}</div>{% endfor %}</div>
+</div>
+
+<h2 class="sec">Invoices</h2>
+<div class="card scroll" style="padding:8px 14px"><table class="list">
+<tr><th>Invoice</th><th>Date</th><th>Customer</th><th>For</th><th class="num">USD</th><th class="num">KES</th><th>Status</th><th>Confirm bank payment</th></tr>
+{% for o in orders %}<tr><td class="mono">{{ o.ref }}</td><td>{{ fmt_date(o.created) }}</td><td>{{ o.company or o.name }}<div class="muted small">{{ o.email }}</div></td>
+<td>{{ o.description }}</td><td class="num">{{ '%.2f'|format(o.amount_usd) }}</td><td class="num">{{ '{:,}'.format(o.amount_kes) }}</td>
+<td><span class="pill {{ o.status }}">{{ o.status }}</span>{% if o.method %}<div class="muted small">{{ o.method }}</div>{% endif %}</td>
+<td>{% if o.status == 'unpaid' %}<form method="post" action="/admin/orders/{{ o.id }}/confirm" class="inline"><input type="hidden" name="csrf" value="{{ csrf }}">
+<div style="min-width:120px"><input name="reference" type="text" placeholder="Bank reference" required aria-label="Bank reference"></div><button class="btn sm">Mark paid</button></form>{% endif %}</td></tr>
+{% else %}<tr><td colspan="8" class="muted">No invoices yet.</td></tr>{% endfor %}
+</table></div>
+
+<h2 class="sec">Licences</h2>
+<div class="card scroll" style="padding:8px 14px"><table class="list">
+<tr><th>Key</th><th>Customer</th><th>Devices</th><th>Runs on</th><th>Paid until</th><th>Status</th><th></th></tr>
+{% for l in licences %}<tr><td class="mono">{{ l.key }}</td><td>{{ l.company or l.name }}<div class="muted small">{{ l.email }}</div></td><td>{{ l.devices }}</td>
+<td>{{ l.hosting }}{% if l.hosting == 'hosted' %}<div class="muted small">{{ l.server_slug }} · ${{ '%.2f'|format(l.hosted_monthly) }}/mo</div>{% endif %}</td>
+<td>{{ fmt_date(l.paid_until) }}</td><td><span class="pill {{ l.status }}">{{ l.status }}</span></td>
+<td>{% if l.hosting == 'hosted' and l.status == 'active' %}<form method="post" action="/admin/licences/{{ l.id }}/provision"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn sm">Create server</button></form>{% endif %}</td></tr>
+{% else %}<tr><td colspan="7" class="muted">No licences yet.</td></tr>{% endfor %}
+</table></div>
+
+<h2 class="sec">Hosted servers</h2>
+<div class="card scroll" style="padding:8px 14px"><table class="list">
+<tr><th>Licence</th><th>Droplet</th><th>Size</th><th>IP / address</th><th>Status</th><th>Updated</th></tr>
+{% for s in servers %}<tr><td class="mono">{{ s.key }}</td><td>{{ s.droplet_id or '-' }}</td><td>{{ s.slug }} · {{ s.region }}</td><td>{{ s.ip or '-' }}{% if s.url %}<div class="small"><a href="{{ s.url }}" target="_blank" rel="noopener">{{ s.url }}</a></div>{% endif %}</td>
+<td><span class="pill {{ s.status }}">{{ s.status }}</span>{% if s.log %}<details><summary class="small">Error</summary><pre class="cmd">{{ s.log }}</pre></details>{% endif %}</td><td>{{ fmt_date(s.updated) }}</td></tr>
+{% else %}<tr><td colspan="6" class="muted">No hosted servers yet.</td></tr>{% endfor %}
+</table></div>
+
+<h2 class="sec">Payments</h2>
+<div class="card scroll" style="padding:8px 14px"><table class="list">
+<tr><th>Invoice</th><th>Method</th><th>Amount</th><th>Phone</th><th>Receipt</th><th>Status</th><th>Note</th></tr>
+{% for p in payments %}<tr><td class="mono">{{ p.ref }}</td><td>{{ p.method }}</td><td>{{ p.currency }} {{ p.amount }}</td><td>{{ p.phone or '' }}</td><td class="mono">{{ p.receipt or '' }}</td>
+<td><span class="pill {{ p.status }}">{{ p.status }}</span></td><td class="small muted">{{ p.note or '' }}</td></tr>
+{% else %}<tr><td colspan="7" class="muted">No payments yet.</td></tr>{% endfor %}
+</table></div>
+<p class="small muted">Licence public key (set by the installers as NE8000_LICENCE_PUBKEY): <span class="mono">{{ pubkey }}</span></p>
+</div></div>{% endblock %}

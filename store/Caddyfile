@@ -1,0 +1,3 @@
+{$STORE_SALES_HOST}, {$STORE_BILLING_HOST} {
+	reverse_proxy store:8090
+}

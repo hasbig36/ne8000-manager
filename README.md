@@ -16,6 +16,13 @@ A Winbox-style web GUI for the Huawei NetEngine 8000 M8 (VRP8). It runs on a PC 
 | **Planning** | Saved network plans with drawing, tasks, executions and version history | Draw a design, generate or add tasks, check or execute them on the router, restore old versions |
 | **Tools** | Traffic monitor (up to 6 interfaces side by side), ping and traceroute with source/VPN, console for display commands, config editor, backup | Config editor with "check only" and "apply & commit", save to startup, download running config |
 
+### Selling licences (store/)
+`store/` is a separate app that sells NE8000 Manager to other operators: a sales site, a billing site,
+M-Pesa and bank payments, and automatic installs on the buyer's server or on DigitalOcean. Copies sold
+there carry a device licence (`licence.py`): set by the installer through `NE8000_LICENCE_KEY`, it limits
+the number of saved routers to the devices paid for. Without that setting (your own server) there is no
+limit. See [store/README.md](store/README.md).
+
 ### Splynx billing (Billing › Splynx billing)
 Keeps reseller ports in line with Splynx:
 - **Blocked** (or disabled) in Splynx → the customer's router port is **shut down**.

@@ -37,6 +37,7 @@ import plans
 import policy
 import routers
 import ipam
+import licence
 import sitereg
 import serverinfo
 import alerts
@@ -62,6 +63,7 @@ app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", S
 USERS = auth.UserStore(DATA_DIR)
 AUDIT = auth.Audit(DATA_DIR)
 SAVED = routers.RouterStore(DATA_DIR)
+LICENCE = licence.Licence(DATA_DIR)   # off unless NE8000_LICENCE_KEY is set (copies sold through the store)
 HIST = history.History(DATA_DIR, SAVED)
 SITES = sitewatch.SiteWatch(DATA_DIR)
 HEALTH = health.Health(DATA_DIR, SAVED, HIST)
@@ -302,6 +304,11 @@ def users_delete(name):
     return jsonify(users=USERS.list())
 
 
+@app.get("/api/licence")
+def licence_status():
+    return jsonify(LICENCE.status())
+
+
 @app.get("/api/routers")
 def routers_list():
     return jsonify(routers=SAVED.list())
@@ -326,6 +333,7 @@ def need_site(d, required=True):
 @app.post("/api/routers")
 def routers_add():
     d = request.get_json(force=True) or {}
+    LICENCE.check_add(len(SAVED.list()))
     d["site"] = need_site(d)
     r = SAVED.add(d)
     AUDIT.log(me(), "router_added", name=r["name"], host=r["host"], port=r["port"])
@@ -515,6 +523,7 @@ def safe_name(value, label="name"):
 @app.errorhandler(billing.BillingError)
 @app.errorhandler(plans.PlanError)
 @app.errorhandler(auth.AuthError)
+@app.errorhandler(licence.LicenceError)
 def handle_error(exc):
     if getattr(exc, "ssh_required", False):
         return jsonify(error=str(exc), ssh_required=True), 400
@@ -545,6 +554,7 @@ def connect():
         from demo import DemoRouter
         r = DemoRouter((data.get("host") or "").strip() or "demo")
     else:
+        LICENCE.check_connect()
         saved = SAVED.get(data.get("router_id")) if data.get("router_id") else None
         if data.get("router_id") and not saved:
             raise DeviceError("That saved router no longer exists. Reload the page.")
@@ -2330,6 +2340,7 @@ if __name__ == "__main__":
     if args.add_user:
         add_user_cli(args.add_user, args.role)
         raise SystemExit(0)
+    LICENCE.start()     # copies sold through the store: fetch the signed licence every 12 hours
     if env_on("NE8000_HISTORY", "1"):
         HIST.start()   # 5-minute interface history for every saved router with an SNMP login
     if env_on("NE8000_HEALTH", "1"):
