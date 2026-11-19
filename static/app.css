@@ -321,8 +321,14 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
 .noc .nh{flex-wrap:nowrap}.noc .seg button,.noc .nh .clk,.noc .nh .btn{white-space:nowrap}.noc #ncInfo{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.noc .nh .clk{margin-left:0}
 .noc .tile .v{white-space:nowrap;font-size:clamp(20px,1.7vw,28px)}
 /* major sites */
-.canvas.nmap.swmap{background:#050506}.swmap .swland path{fill:#030303;stroke:#d8d8d8;stroke-width:1.3;vector-effect:non-scaling-stroke;stroke-linejoin:round}
-.swmap .swke{fill:#0a0a10;stroke:#ffffff;stroke-width:1.8;vector-effect:non-scaling-stroke}
+.canvas.nmap.swmap{background:#04060a;position:relative}.swmap .swland path{fill:#12161f;stroke:#4b5568;stroke-width:.7;vector-effect:non-scaling-stroke;stroke-linejoin:round}
+.swmap .swland path:hover{fill:#171c27}.swmap .swgrid path{fill:none;stroke:#1a2232;stroke-width:.6;vector-effect:non-scaling-stroke;pointer-events:none}
+.swlegend{position:absolute;left:12px;bottom:10px;right:12px;display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:11.5px;color:#cfd6e4;pointer-events:none}
+.swlegend>span{background:rgba(4,6,10,.8);padding:3px 8px;border-radius:5px}.swlegend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:-1px}
+.swlegend i.ok{background:#22d3ee}.swlegend i.bad{background:#ffb020}.swlegend i.down{background:#ff3b4a}.swmap .swsite.extra circle{stroke:#fff;stroke-dasharray:2 2}
+.swtime{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12.5px;display:flex;flex-direction:column;gap:2px}
+.swbar{height:3px;background:var(--line);border-radius:2px;overflow:hidden;margin-top:3px}.swbar i{display:block;height:100%;width:0;background:var(--accent);transition:width 1s linear}
+.swmap .swke{fill:#1a2650;stroke:#9fb4ff;stroke-width:1.4;vector-effect:non-scaling-stroke}
 .swmap .swcab{fill:none;stroke:#1fae3a;stroke-width:1;stroke-opacity:.75;vector-effect:non-scaling-stroke;pointer-events:none}
 .swmap .swsub path,.swmap .swsub rect{fill:#21b33f}
 .swmap .swroute path.vis{fill:none;stroke:#2346ff;stroke-width:1.4;vector-effect:non-scaling-stroke;stroke-linejoin:round;pointer-events:none}

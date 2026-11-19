@@ -139,7 +139,7 @@ def close_router(r):
 # ---- app login ---------------------------------------------------------------------
 OPEN = {"index", "static", "auth_login", "auth_me", "healthz", "otdr_event"}     # otdr_event checks its own token or login
 # endpoints a viewer may POST to; everything else that changes something needs operator or admin
-VIEWER_POST = {"connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password"}
+VIEWER_POST = {"connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password", "sites_check", "sites_run"}
 ADMIN_ONLY = {"users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
               "routers_test_snmp", "adopt_discover", "adopt_scan", "adopt_build", "adopt_apply", "adopt_identify"}
 
@@ -1700,6 +1700,35 @@ def sites_set():
     if not r_demo():
         threading.Thread(target=SITES.check_all, daemon=True).start()
     return jsonify(sites=out)
+
+
+@app.post("/api/sites/settings")
+def sites_settings():
+    """How often the major sites are pinged: every 1 to 5 minutes (the path is traced every 5 minutes)."""
+    try:
+        sec = SITES.set_interval((request.get_json(force=True) or {}).get("interval"))
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "sites_interval", seconds=sec)
+    return jsonify(interval=sec)
+
+
+@app.post("/api/sites/run")
+def sites_run():
+    """Check every site now (with traces); at most once every 30 seconds."""
+    if r_demo():
+        return jsonify(started=True)
+    return jsonify(started=SITES.check_now())
+
+
+@app.post("/api/sites/check")
+def sites_check():
+    """Check any site now (the search on the Major sites map): delay, loss and path, from this server through the router."""
+    host = (request.get_json(force=True) or {}).get("host")
+    try:
+        return jsonify(sitewatch.demo_lookup(host) if r_demo() else SITES.lookup(host))
+    except ValueError as exc:
+        raise DeviceError(str(exc))
 
 
 GEO_PATH = os.path.join(DATA_DIR, "netmap_places.json")
