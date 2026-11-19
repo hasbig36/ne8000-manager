@@ -51,7 +51,8 @@ class RouterStore:
             raise AuthError("Invalid username.")
         if len(notes) > 200 or any(ord(c) < 32 for c in notes):
             raise AuthError("Notes can be up to 200 characters on one line.")
-        return {"name": name, "host": host, "port": port, "username": username, "notes": notes}
+        site = str(d.get("site") or "").strip()[:20]          # the site it is at (Sites); checked by the app
+        return {"name": name, "host": host, "port": port, "username": username, "notes": notes, "site": site}
 
     @staticmethod
     def _clean_snmp(d, old):

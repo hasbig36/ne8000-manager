@@ -58,8 +58,9 @@ def suggest_blocks(used, own=None):
     an upstream's or an exchange's space, not ours."""
     if own:
         ins = [str(n) for n in own if any(net(u["net"]).subnet_of(n) for u in used if net(u["net"]).version == 4)]
-        if ins:
-            return sorted(set(ins), key=lambda s: net(s))
+        if ins:     # a block inside another announced one (a /24 half of the /23 announced to a peer) is the same space
+            ins = [x for x in set(ins) if not any(net(x) != net(y) and net(x).subnet_of(net(y)) for y in ins)]
+            return sorted(ins, key=lambda s: net(s))
     groups = {}
     for u in used:
         n = net(u["net"])

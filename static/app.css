@@ -347,3 +347,9 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
 .ipgrid{display:grid;gap:2px}.ipgrid i{display:block;aspect-ratio:1;border-radius:2px;background:var(--panel2);border:1px solid var(--line);cursor:pointer;min-width:0}
 .ipgrid i:hover{outline:2px solid var(--text)}.ipbar{display:flex;height:8px;border-radius:4px;background:var(--line);overflow:hidden}.ipbar i{display:block;height:100%}
 .witem.info{border-left-color:#3b82f6;background:rgba(59,130,246,.09)}
+
+/* Sites */
+.srgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}.srcard{cursor:pointer;border-left:4px solid #22c55e}.srcard:hover{outline:1px solid var(--line)}
+.srcard.warning{border-left-color:#ffb020}.srcard.critical{border-left-color:#ff4d4f}
+.srk{font-size:12px;padding:2px 7px;border-radius:10px;background:var(--panel2);border:1px solid var(--line)}.srk.ok{border-color:#22c55e66}.srk.warn{border-color:#ffb020;background:rgba(255,176,32,.12)}
+.srk.crit{border-color:#ff4d4f;background:rgba(255,77,79,.12)}.srk.none{opacity:.55}

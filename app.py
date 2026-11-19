@@ -37,6 +37,7 @@ import plans
 import policy
 import routers
 import ipam
+import sitereg
 import sitewatch
 import viewcache
 from device import DeviceError, RealRouter, _cidr, is_read_only
@@ -138,7 +139,7 @@ def close_router(r):
 
 
 # ---- app login ---------------------------------------------------------------------
-OPEN = {"index", "static", "auth_login", "auth_me", "healthz", "otdr_event"}     # otdr_event checks its own token or login
+OPEN = {"index", "static", "auth_login", "auth_me", "healthz", "otdr_event", "site_event"}     # otdr_event checks its own token or login
 # endpoints a viewer may POST to; everything else that changes something needs operator or admin
 VIEWER_POST = {"connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password", "sites_check", "sites_run", "ipam_layout", "ipam_renumber"}
 ADMIN_ONLY = {"users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
@@ -303,16 +304,36 @@ def routers_list():
     return jsonify(routers=SAVED.list())
 
 
+def need_site(d, required=True):
+    """A device is attached to a site that is fully registered (Sites)."""
+    sid = str(d.get("site") or "").strip()
+    if not sid:
+        if required:
+            raise DeviceError("Pick the site the device is at. Register the site under Sites first.")
+        return ""
+    s = SITEREG.get(sid)
+    if not s:
+        raise DeviceError("That site is not registered (Sites).")
+    m = sitereg.missing(s)
+    if m:
+        raise DeviceError(f"Finish registering the site {s['name']} first: {', '.join(m)}.")
+    return s["id"]
+
+
 @app.post("/api/routers")
 def routers_add():
-    r = SAVED.add(request.get_json(force=True))
+    d = request.get_json(force=True) or {}
+    d["site"] = need_site(d)
+    r = SAVED.add(d)
     AUDIT.log(me(), "router_added", name=r["name"], host=r["host"], port=r["port"])
     return jsonify(routers=SAVED.list())
 
 
 @app.put("/api/routers/<rid>")
 def routers_update(rid):
-    r = SAVED.update(rid, request.get_json(force=True))
+    d = request.get_json(force=True) or {}
+    d["site"] = need_site(d, required=False)       # routers saved before sites existed can be edited, and given a site
+    r = SAVED.update(rid, d)
     AUDIT.log(me(), "router_changed", name=r["name"], host=r["host"], port=r["port"])
     return jsonify(routers=SAVED.list())
 
@@ -443,6 +464,7 @@ def adopt_apply():
     name = (f.get("hostname") or "").strip()
     if commit and not demo and any(r["name"].lower() == name.lower() for r in SAVED.list()):
         raise DeviceError(f"A saved router is already called {name}. Pick another hostname.")
+    site = need_site(f) if commit and not demo else ""       # it is saved under Manager > Routers at a registered site
     THROTTLE_ROUTER.check(me())
     try:
         res = adopt.apply(host, port, d.get("username") or "", d.get("password") or "", d.get("text") or "", d.get("platform") or "",
@@ -466,7 +488,7 @@ def adopt_apply():
             saved = SAVED.add({"name": name, "host": res["host"], "port": port, "username": (f.get("admin_user") or "").strip(),
                                "notes": f"Adopted {time.strftime('%Y-%m-%d')} {res.get('model', '')}"[:200],
                                "snmp_user": f.get("snmp_user") or "", "snmp_auth_proto": f.get("snmp_auth_proto"), "snmp_auth_key": f.get("snmp_auth_key"),
-                               "snmp_priv_proto": f.get("snmp_priv_proto"), "snmp_priv_key": f.get("snmp_priv_key")})
+                               "snmp_priv_proto": f.get("snmp_priv_proto"), "snmp_priv_key": f.get("snmp_priv_key"), "site": site})
             AUDIT.log(me(), "router_added", name=saved["name"], host=saved["host"], port=saved["port"])
         except Exception as exc:
             res["warnings"].append(f"Configured, but not added to Manager > Routers: {exc}")
@@ -1606,7 +1628,8 @@ def with_manual(out, key):
             p = byid.get(frm) or {"x": 40, "y": 40}
             k = under[frm] = under.get(frm, 0) + 1
             n = {"id": to, "type": m.get("to_type") or "router", "label": m.get("to_label") or "Remote site", "x": p["x"] + 230 * (k - 1), "y": p["y"] + 170,
-                 "props": {"location": m.get("town", ""), "drawn": "by hand", **({"monitored": m["far_name"]} if m.get("far_name") else {})}}
+                 "props": {"location": m.get("town", ""), "drawn": "by hand", **({"monitored": m["far_name"]} if m.get("far_name") else {}),
+                           **({"site": (SITEREG.get(m["site"]) or {}).get("code", "")} if m.get("site") else {})}}
             nodes.append(n)
             byid[to] = n
         links.append({"id": "ml:" + m["id"], "from": frm, "to": to, "props": {"iface": m.get("iface", ""), "label": m.get("label") or m.get("iface") or "Drawn line",
@@ -1675,6 +1698,7 @@ def netmap_links_save():
         raise DeviceError("Pick the router interface this line uses.")
     if not row["to"] and not row["to_label"]:
         raise DeviceError("Pick the device at the far end, or name a new one.")
+    row["site"] = need_site(d) if not row["to"] else ""       # a new device is placed at a registered site
     if row["far_router"]:
         far = SAVED.get(row["far_router"])
         if not far:
@@ -1958,6 +1982,100 @@ def netmap_places_set():
     return jsonify(places=cur)
 
 
+SITEREG = sitereg.Registry(DATA_DIR)
+
+
+@app.get("/api/siteregistry")
+def site_list():
+    """Every site: its registration (and what is missing), the items watched there with up/down, alarms, and its saved routers."""
+    return jsonify(sites=SITEREG.report(SAVED.list()), types=sitereg.TYPES, power=sitereg.POWER, kinds=sitereg.KINDS,
+                   required=[k for k, _ in sitereg.REQUIRED], events=sitereg.EVENTS, unassigned=[r for r in SAVED.list() if not r.get("site")])
+
+
+@app.post("/api/siteregistry")
+def site_add():
+    try:
+        s = SITEREG.save(request.get_json(force=True) or {})
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "site_added", site=s["code"], name=s["name"])
+    return jsonify(site=s, missing=sitereg.missing(s))
+
+
+@app.put("/api/siteregistry/<sid>")
+def site_update(sid):
+    try:
+        s = SITEREG.save(request.get_json(force=True) or {}, sid)
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "site_changed", site=s["code"], name=s["name"])
+    return jsonify(site=s, missing=sitereg.missing(s))
+
+
+@app.delete("/api/siteregistry/<sid>")
+def site_delete(sid):
+    try:
+        s = SITEREG.delete(sid, attached=sum(1 for r in SAVED.list() if r.get("site") == sid))
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "site_deleted", site=s["code"], name=s["name"])
+    return jsonify(ok=True)
+
+
+@app.post("/api/siteregistry/<sid>/assets")
+def site_asset_add(sid):
+    d = request.get_json(force=True) or {}
+    try:
+        a = SITEREG.save_asset(sid, d, str(d.get("id") or "") or None)
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "site_item", site=sid, item=a["name"], kind=a["kind"])
+    threading.Thread(target=SITEREG.check, daemon=True).start()
+    return jsonify(asset=a)
+
+
+@app.delete("/api/siteregistry/<sid>/assets/<aid>")
+def site_asset_delete(sid, aid):
+    try:
+        SITEREG.delete_asset(sid, aid)
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "site_item_deleted", site=sid, item=aid)
+    return jsonify(ok=True)
+
+
+@app.get("/api/siteregistry/<sid>/events")
+def site_events(sid):
+    return jsonify(events=SITEREG.events(sid, 200))
+
+
+@app.post("/api/site-events")
+def site_event():
+    """An alarm from a site's power, door, camera or sensor system: {"site": "MBT-01" (code or id), "kind": "power|access|cctv|env|device",
+    "event": "mains_fail|on_battery|battery_low|generator_on|mains_ok|door_forced|door_held|access_denied|door_open|door_closed|
+    camera_offline|recording_stopped|disk_full|camera_ok|temp_high|water|smoke|env_ok|...", "detail": "", "asset": "UPS-1", "source": "APC"}.
+    The system signs in with the header Authorization: Bearer <NE8000_SITES_TOKEN>; a signed-in admin or operator can post too."""
+    d = request.get_json(force=True) or {}
+    tok = os.environ.get("NE8000_SITES_TOKEN", "")
+    if tok and hmac.compare_digest(request.headers.get("Authorization", "").encode(), ("Bearer " + tok).encode()):
+        who = "site-feed"
+    else:
+        u = current_user()
+        if not u:
+            return jsonify(error="Please log in, or send the sites token."), 401
+        if request.headers.get("X-Requested-With") != "ne8000":
+            return jsonify(error="Missing request header."), 403
+        if u["role"] == "viewer":
+            return jsonify(error="Your account is read-only."), 403
+        who = me()
+    try:
+        e = SITEREG.add_event(d.get("site"), d.get("kind"), d.get("event"), d.get("detail"), d.get("asset"), d.get("source") or who)
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(who, "site_event", site=e["site"], kind=e["kind"], what=e["event"])
+    return jsonify(event=e)
+
+
 @app.post("/api/otdr")
 def otdr_event():
     """A fibre event from an OTDR / fibre monitoring system, shown on the health page and the NOC map:
@@ -2103,6 +2221,7 @@ if __name__ == "__main__":
         HIST.start()   # 5-minute interface history for every saved router with an SNMP login
     if env_on("NE8000_HEALTH", "1"):
         HEALTH.start()
+        SITEREG.start()     # sites: ping the devices, power, door and camera systems registered at each, every minute
         SITES.start()   # major sites: ping and trace to Google, YouTube, Facebook... every 5 minutes
     if env_on("NE8000_CHANGES", "1"):
         TRACK.start()   # 24/7 change log over SNMP for every saved router with an SNMP login  # smart health check every 5 minutes (errors, drops, full links, optics, latency)

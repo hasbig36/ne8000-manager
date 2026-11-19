@@ -84,7 +84,8 @@ def icmp_ping(host, count=5, timeout=1.0, gap=0.2):
                     data = data[(data[0] & 0x0F) * 4:]
                     if len(data) < 8 or struct.unpack("!H", data[4:6])[0] != ident:
                         continue
-                if len(data) >= 8 and data[0] == 0 and struct.unpack("!H", data[6:8])[0] == seq:
+                # our own echo coming back: same sequence and the same payload (a reply to another ping running at the same time is skipped)
+                if len(data) >= 8 and data[0] == 0 and struct.unpack("!H", data[6:8])[0] == seq and data[8:8 + len(payload)] == payload:
                     rtts.append((time.time() - t0) * 1000)
                     break
             time.sleep(gap)

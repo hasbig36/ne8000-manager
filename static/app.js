@@ -183,6 +183,7 @@ function showOutput(title, text) {
 
 /* ---------- navigation ---------- */
 const I = {
+  site: '<path d="M2 14h12M3 14V6l5-3 5 3v8M6 14v-3h4v3M6 8h1M9 8h1"/>',
   dash: '<path d="M2 2h5v6H2zM9 2h5v3H9zM9 7h5v7H9zM2 10h5v4H2z"/>', health: '<path d="M1 8h3l2-4 3 8 2-4h4"/>', ifs: '<path d="M2 4h12v8H2zM5 7v2M8 7v2M11 7v2"/>', vlan: '<path d="M2 3h12M2 8h12M2 13h12M5 3v10M11 3v10"/>',
   ip: '<circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12"/>', route: '<path d="M3 13V8a3 3 0 013-3h7M10 2l3 3-3 3"/>', q: '<path d="M2 4h9M2 8h12M2 12h6"/>',
   sys: '<circle cx="8" cy="8" r="2.5"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5L13 13M3 13l1.5-1.5M11.5 4.5L13 3"/>', tool: '<path d="M10 2a3 3 0 00-3 4L2 11l3 3 5-5a3 3 0 004-3l-2 1-2-2 1-2z"/>',
@@ -190,7 +191,7 @@ const I = {
   term: '<path d="M2 3h12v10H2zM4 6l2 2-2 2M8 10h4"/>', rtr: '<path d="M2 9h12v4H2zM5 11h.01M8 11h.01M4 9l2-5h4l2 5"/>', adopt: '<path d="M2 9h8v4H2zM12 3v6M9 6h6"/>', plan: '<path d="M2 3l4-1 4 2 4-1v11l-4 1-4-2-4 1zM6 2v11M10 4v11"/>', bill: '<path d="M3 2h10v12l-2-1-2 1-2-1-2 1-2-1zM5.5 5h5M5.5 8h5M5.5 11h3"/>',
 };
 const NAV = [
-  [null, [['dashboard', 'Dashboard', I.dash], ['health', 'Health check', I.health], ['changes', 'Change log', I.log]]],
+  [null, [['dashboard', 'Dashboard', I.dash], ['health', 'Health check', I.health], ['sites', 'Sites', I.site], ['changes', 'Change log', I.log]]],
   ['Network', [['interfaces', 'Interfaces', I.ifs], ['graphs', 'Graphs', I.graph], ['netflow', 'Traffic per address', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
   ['IP', [['ipplan', 'IP plan', I.plan], ['addresses', 'Addresses', I.ip], ['routes', 'Routes', I.route], ['arp', 'ARP', I.ip], ['vpn', 'VPN instances', I.ip], ['neighbors', 'Neighbors (LLDP)', I.ip]]],
   ['Planning', [['netmap', 'Network map', I.plan], ['plans', 'Network plans', I.plan]]],
@@ -1907,6 +1908,7 @@ async function nocLine(id, after) {
       <label>To</label><select id="lnT">${opt('', 'A new device…', row.to || '')}${nodes.map(n => opt(n.id, n.label, row.to)).join('')}</select>
       <label class="lnN">New device name</label><input class="lnN" id="lnN" value="${esc(row.to_label || '')}" placeholder="MARSABIT-BTS-01">
       <label class="lnN">Type</label><select class="lnN" id="lnY">${['router', 'switch', 'ap', 'olt', 'customer', 'reseller', 'server'].map(t => opt(t, (NODE_META[t] || {}).label || t, row.to_type || 'router')).join('')}</select>
+      <label class="lnN">Site *</label><span class="lnN" id="lnSW">Loading…</span>
       <label class="lnN">Town</label><select class="lnN" id="lnW">${opt('', 'from the name', row.town || '')}${Object.keys(KE_TOWNS).sort().map(t => opt(t, t, row.town)).join('')}</select>
       <label>Far-end router (SNMP)</label><select id="lnR">${opt('', 'not monitored', row.far_router || '')}${(rem.routers || []).map(r => opt(r.id, `${r.name} (${r.host})${r.snmp ? '' : ' – no SNMP'}`, row.far_router)).join('')}</select>
       <label class="lnFI">Its interface</label><select class="lnFI" id="lnFI"><option value="">Loading…</option></select>
@@ -1918,11 +1920,12 @@ async function nocLine(id, after) {
     const r = await api('/api/netmap/remote?rid=' + encodeURIComponent(rid)).catch(() => ({ interfaces: [] }));
     $('#lnFI').innerHTML = opt('', (r.interfaces || []).length ? 'pick its interface' : 'no SNMP data from that router yet', '') + (r.interfaces || []).map(i => opt(i.name, `${i.name}${i.rx != null ? ` · ▼ ${Fmt.bps(i.rx)} ▲ ${Fmt.bps(i.tx)}` : ''}`, row.far_iface)).join(''); };
   $('#lnT').onchange = showNew; $('#lnR').onchange = loadFar; showNew(); loadFar();
+  srComplete().then(ss => { if ($('#lnSW')) $('#lnSW').outerHTML = srPicker(ss, row.site || '', 'lnS').replace('<select', '<select class="lnN"'); showNew(); });
   m.querySelector('.actions').onclick = async e => {
     if (e.target.dataset.a === 'c') return closeModal();
     if (e.target.dataset.a !== 's') return;
     try { await post('/api/netmap/links', { id, from: $('#lnF').value, iface: $('#lnI').value, to: $('#lnT').value, to_label: $('#lnN').value, to_type: $('#lnY').value, town: $('#lnW').value,
-        far_router: $('#lnR').value, far_iface: $('#lnFI').value, label: $('#lnL').value });
+        far_router: $('#lnR').value, far_iface: $('#lnFI').value, label: $('#lnL').value, site: $('#lnS') ? $('#lnS').value : '' });
       closeModal(); toast('Line saved on the map'); after && after(); } catch (err) { m.querySelector('.err').textContent = err.message; }
   };
 }

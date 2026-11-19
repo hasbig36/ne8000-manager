@@ -48,12 +48,13 @@ PAGES.appusers = async c => {
 };
 
 PAGES.routers = async c => {
-  const { routers } = await api('/api/routers');
+  const [{ routers }] = await Promise.all([api('/api/routers'), srLoad().catch(() => null)]);
   c.innerHTML = head('Routers', 'the routers people can connect to', `<button class="btn primary" id="rtAdd">+ Router</button>`) +
     `<div class="card"><div id="rtT"></div><p class="faint" style="font-size:12.5px;margin-bottom:0">Once at least one router is saved, the app only connects to saved routers and the connect screen shows them as a list.
     Router SSH passwords are never stored: each person types their own. An optional read-only SNMPv3 login is kept on this server (never shown here) so people can connect and monitor without one.</p></div>`;
   table($('#rtT'), [{ t: 'Name', k: 'name', f: r => `<b>${esc(r.name)}</b>` }, { t: 'Address', k: 'host', f: r => `<span class="mono">${esc(r.host)}:${r.port}</span>` },
     { t: 'Default username', k: 'username', f: r => esc(r.username) || '<span class="faint">none</span>' },
+    { t: 'Site', k: 'site', f: r => r.site ? esc(((SR.d && SR.d.sites.find(s => s.id === r.site)) || {}).code || '?') : '<span class="warnc">needs a site</span>' },
     { t: 'SNMP', k: 'snmp', f: r => r.snmp ? `v3 <span class="mono">${esc(r.snmp.user)}</span>` : '<span class="faint">off (SSH only)</span>' }, { t: 'Notes', k: 'notes', cls: 'wrap', f: r => esc(r.notes) },
     { t: '', sort: false, cls: 'acts', f: r => `${r.snmp ? `<button class="btn sm" data-test="${esc(r.id)}">Test SNMP</button>` : ''}<button class="btn sm" data-edit="${esc(r.id)}">Edit</button><button class="btn sm danger" data-del="${esc(r.id)}">Delete</button>` }],
     routers, { filter: false, empty: 'No routers saved yet. Add one so people can pick it when connecting.' });
@@ -65,6 +66,7 @@ PAGES.routers = async c => {
       <label>SSH port</label><input id="frPort" type="number" value="${r ? r.port : 22}">
       <label>Default username</label><input id="frUser" value="${v('username')}" placeholder="optional, filled in on the connect screen" autocomplete="off">
       <label>Notes</label><input id="frNotes" value="${v('notes')}" placeholder="optional" autocomplete="off">
+      <label>Site *</label>${srPicker(((SR.d && SR.d.sites) || []).filter(s => !s.missing.length), r ? r.site : '', 'frSite')}<div class="help">Where it is. Only fully registered sites are listed (Sites).</div>
       <h3 style="margin:14px 0 2px">SNMP (optional)</h3><div class="faint" style="font-size:12.5px">A read-only SNMPv3 login. With it, Connect uses SNMP first and SSH only when needed or if SNMP fails. Leave the user empty for SSH only.</div>
       <label>SNMPv3 user</label><input id="fsUser" value="${r && r.snmp ? esc(r.snmp.user) : ''}" placeholder="e.g. ne8000mon" autocomplete="off">
       <label>Authentication</label><select id="fsAuth">${['sha256', 'sha384', 'sha512', 'sha224', 'sha', 'md5'].map(p => `<option ${r && r.snmp && r.snmp.auth_proto === p ? 'selected' : ''} value="${p}">${p.toUpperCase()}</option>`).join('')}</select>
@@ -76,7 +78,7 @@ PAGES.routers = async c => {
     $('#modalBg').classList.remove('hidden'); $('#frName').focus();
     m.querySelector('.actions').onclick = async e => {
       if (e.target.dataset.a === 'c') return closeModal(); if (e.target.dataset.a !== 's') return;
-      const body = { name: $('#frName').value, host: $('#frHost').value, port: $('#frPort').value, username: $('#frUser').value, notes: $('#frNotes').value,
+      const body = { name: $('#frName').value, host: $('#frHost').value, port: $('#frPort').value, username: $('#frUser').value, notes: $('#frNotes').value, site: $('#frSite').value,
         snmp_user: $('#fsUser').value, snmp_auth_proto: $('#fsAuth').value, snmp_auth_key: $('#fsAuthKey').value, snmp_priv_proto: $('#fsPriv').value,
         snmp_priv_key: $('#fsPrivKey').value, snmp_port: $('#fsPort').value };
       try {
@@ -148,6 +150,7 @@ function adoptWizard(d) {
     <div class="form">
       <label>Platform</label><select id="aw_platform"><option value="">(log in and identify first)</option><option value="vrp8">NE / CE router (VRP8, two-stage commit)</option><option value="vrp5">S switch (VRP5, applies each line at once)</option></select>
       ${lab('hostname', 'Hostname', d.name && d.name !== 'HUAWEI' ? d.name : '', 'placeholder="SW-NDOVU-02"')}
+      <label>Site *</label><span id="aw_siteW">Loading…</span>
       ${lab('admin_user', 'New admin user', 'noc')}<label>New admin password</label><input id="aw_admin_password" type="password" autocomplete="new-password" placeholder="8 to 64 characters, sent to the device only">
       <label>SSH only (telnet off)</label><input id="aw_ssh_only" type="checkbox" checked style="width:auto">
       ${lab('mgmt_interface', 'Management interface', '', 'placeholder="Vlanif10 or MEth0/0/0 (optional)"')}${lab('mgmt_vlan', 'Management VLAN', '', 'placeholder="optional, for a Vlanif"')}
@@ -169,7 +172,8 @@ function adoptWizard(d) {
       <pre id="awLog" class="hidden" style="max-height:320px;overflow:auto"></pre></div>`;
   w.scrollIntoView({ behavior: 'smooth' });
   const val = k => { const e = $('#aw_' + k); return e.type === 'checkbox' ? e.checked : e.value; };
-  const fields = () => Object.fromEntries(['hostname', 'admin_user', 'admin_password', 'ssh_only', 'mgmt_interface', 'mgmt_vlan', 'mgmt_ip', 'gateway', 'snmp_user', 'snmp_auth_proto', 'snmp_auth_key', 'snmp_priv_proto', 'snmp_priv_key', 'snmp_acl_source', 'ntp', 'syslog', 'banner'].map(k => [k, val(k)]));
+  srComplete().then(ss => { if ($('#aw_siteW')) $('#aw_siteW').outerHTML = srPicker(ss, '', 'aw_site'); });
+  const fields = () => Object.fromEntries(['site', 'hostname', 'admin_user', 'admin_password', 'ssh_only', 'mgmt_interface', 'mgmt_vlan', 'mgmt_ip', 'gateway', 'snmp_user', 'snmp_auth_proto', 'snmp_auth_key', 'snmp_priv_proto', 'snmp_priv_key', 'snmp_acl_source', 'ntp', 'syslog', 'banner'].map(k => [k, val(k)]));
   const login = () => ({ host: val('host').trim(), port: val('port'), username: val('user'), password: val('pass') });
   $('#awId').onclick = async e => {
     e.target.disabled = true; $('#awIdR').textContent = 'Logging in…';
