@@ -149,7 +149,7 @@ def close_router(r):
 OPEN = {"index", "static", "brand_get", "brand_logo", "auth_login", "auth_me", "healthz", "otdr_event", "site_event"}     # otdr_event checks its own token or login
 # endpoints a viewer may POST to; everything else that changes something needs operator or admin
 VIEWER_POST = {"connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password", "sites_check", "sites_run", "ipam_layout", "ipam_renumber"}
-ADMIN_ONLY = {"brand_save", "alerts_channel_add", "alerts_channel_delete", "alerts_test", "alerts_rules", "alerts_settings", "alerts_check_save", "alerts_check_delete",
+ADMIN_ONLY = {"brand_save", "updates_check", "alerts_channel_add", "alerts_channel_delete", "alerts_test", "alerts_rules", "alerts_settings", "alerts_check_save", "alerts_check_delete",
               "users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
               "routers_test_snmp", "adopt_discover", "adopt_scan", "adopt_build", "adopt_apply", "adopt_identify"}
 
@@ -558,6 +558,29 @@ def brand_logo():
     if not data:
         return Response(status=404)
     return Response(data, mimetype=mime, headers={"Cache-Control": "no-cache"})
+
+
+def app_version():
+    try:
+        with open(os.path.join(HERE, "VERSION")) as f:
+            return f.read().strip()
+    except OSError:
+        return "0"
+
+
+@app.get("/api/updates")
+def updates_check():
+    """This copy's version and, for licensed copies, the newest release in the licence store."""
+    out = {"version": app_version(), "licensed": LICENCE.enabled, "latest": None, "notes": "", "error": ""}
+    if LICENCE.enabled:
+        import urllib.request
+        try:
+            with urllib.request.urlopen(f"{LICENCE.server}/api/version", timeout=15) as resp:
+                v = json.load(resp)
+            out["latest"], out["notes"] = str(v.get("version", ""))[:20], str(v.get("notes", ""))[:4000]
+        except Exception as exc:
+            out["error"] = f"Could not reach the licence server: {exc}"[:200]
+    return jsonify(out)
 
 
 @app.put("/api/brand")

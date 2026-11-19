@@ -47,5 +47,6 @@
 <td><span class="pill {{ p.status }}">{{ p.status }}</span></td><td class="small muted">{{ p.note or '' }}</td></tr>
 {% else %}<tr><td colspan="7" class="muted">No payments yet.</td></tr>{% endfor %}
 </table></div>
+<p class="small muted">Release buyers download: <b>{{ version.version }}</b> (VERSION in the app folder; licensed copies install it on their nightly update).</p>
 <p class="small muted">Licence public key (set by the installers as NE8000_LICENCE_PUBKEY): <span class="mono">{{ pubkey }}</span></p>
 </div></div>{% endblock %}

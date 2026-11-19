@@ -1,5 +1,5 @@
 /* Manager pages: my account, routers (admin), adopt devices (admin), app users (admin) and the audit log (admin). */
-const MANAGER_PAGES = ['account', 'routers', 'adopt', 'appusers', 'branding', 'audit'];
+const MANAGER_PAGES = ['account', 'routers', 'adopt', 'appusers', 'branding', 'updates', 'audit'];
 const ROLE_HELP = { admin: 'everything, including app users', operator: 'everything except app users', viewer: 'read only' };
 const when = t => t ? new Date(t * 1000).toLocaleString() : '';
 
@@ -44,6 +44,20 @@ PAGES.branding = async c => {
     } catch (e) { $('#brErr').textContent = e.message; }
   };
   preview();
+};
+
+PAGES.updates = async c => {
+  c.innerHTML = head('Updates', 'the version this server runs and how to update it') + '<div class="card" style="max-width:640px" id="upC">Checking…</div>';
+  const u = await api('/api/updates');
+  const newer = u.latest && u.latest !== u.version;
+  $('#upC').innerHTML = `<div><span class="muted">This server</span> <b>${esc(u.version)}</b></div>
+    ${u.licensed ? `<div style="margin-top:6px"><span class="muted">Newest release</span> <b>${esc(u.latest || '-')}</b> ${newer ? '<span class="pill p-warn">update available</span>' : u.latest ? '<span class="pill p-ok">up to date</span>' : ''}</div>` : ''}
+    ${u.error ? `<div class="err">${esc(u.error)}</div>` : ''}
+    ${u.notes ? `<h3 style="margin-top:16px">What is new in ${esc(u.latest)}</h3><pre style="white-space:pre-wrap;font:inherit;margin:0">${esc(u.notes)}</pre>` : ''}
+    <h3 style="margin-top:16px">How updates happen</h3>
+    <p>${u.licensed ? 'This server installs new releases by itself every night at 03:30 (server time), after backing up its data. To update now, run on the server:' : 'Run on the server, in the folder the app is installed in:'}</p>
+    <pre class="mono" style="background:var(--code);color:var(--codetext);padding:10px 12px;border-radius:6px">cd ${u.licensed ? '/opt/ne8000' : '/path/to/the/app'} && sudo sh update.sh</pre>
+    <p class="faint" style="font-size:12.5px">Your data, users and settings are kept, and the data folder is backed up first (the 5 newest backups are kept). The app restarts, which takes about a minute.${u.licensed ? ' To stop nightly updates: sudo rm /etc/cron.d/yubo-update' : ''}</p>`;
 };
 
 PAGES.appusers = async c => {

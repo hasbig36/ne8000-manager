@@ -113,6 +113,7 @@ def cloud_init(store_url, licence_key, pubkey, admin_password, callback_url):
         "chmod 600 .env",
         "ufw allow 22/tcp || true; ufw allow 80/tcp || true; ufw allow 443/tcp || true",
         'DOMAIN="$DOMAIN" sh ./install.sh',
+        "echo '30 3 * * * root sh /opt/ne8000/update.sh --if-newer >> /var/log/yubo-update.log 2>&1' > /etc/cron.d/yubo-update",
         'for i in $(seq 1 60); do curl -fsS "https://$DOMAIN/healthz" >/dev/null 2>&1 && break; sleep 10; done',
         'curl -fsS -X POST -H "Content-Type: application/json" '
         f'-d "{{\\"ip\\":\\"$IP\\",\\"url\\":\\"https://$DOMAIN\\"}}" "{callback_url}"',

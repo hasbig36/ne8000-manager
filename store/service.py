@@ -292,6 +292,25 @@ class Store:
         else:
             self.db.run("UPDATE licences SET brand=? WHERE id=?", name, lic["id"])
 
+    def version(self):
+        """The release buyers download: VERSION and the newest section of CHANGELOG.md in the app folder."""
+        try:
+            with open(os.path.join(self.app_dir, "VERSION")) as f:
+                version = f.read().strip()
+        except OSError:
+            version = "0"
+        notes = ""
+        try:
+            with open(os.path.join(self.app_dir, "CHANGELOG.md")) as f:
+                parts = f.read().split("\n## ")
+            if len(parts) > 1:
+                head, _, body = parts[1].partition("\n")
+                if head.strip() == version:
+                    notes = body.strip()
+        except OSError:
+            pass
+        return {"version": version, "notes": notes[:4000]}
+
     def install_command(self, lic):
         return f"curl -fsSL -H 'X-Licence-Key: {lic['key']}' {self.public_url}/api/install.sh | sudo sh"
 
@@ -326,6 +345,7 @@ class Store:
             f"  echo 'NE8000_LICENCE_PUBKEY={self.signer.public_b64}' >> .env",
             "fi",
             'DOMAIN="$DOMAIN" sh ./install.sh',
+            'echo "30 3 * * * root sh $DIR/update.sh --if-newer >> /var/log/yubo-update.log 2>&1" > /etc/cron.d/yubo-update  # nightly updates',
             "",
         ])
 

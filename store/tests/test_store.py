@@ -273,3 +273,19 @@ def test_buyer_brand_name_and_logo_reach_the_app(client, tmp_path):
     r = client.post(f"/account/licence/{lic['id']}/brand", data={"csrf": tok, "brand": "x", "logo": (io.BytesIO(b"<svg/>"), "l.svg")},
                     content_type="multipart/form-data")
     assert r.status_code == 400
+
+
+def test_updates_version_and_nightly_job(client):
+    v = client.get("/api/version").json
+    assert v["version"] == open(os.path.join(ROOT, "VERSION")).read().strip() and v["notes"]
+    ref = buy(client, "self", 1)
+    o = client.store.order_by_ref(ref)
+    client.store.confirm_bank(o["id"], "R1", "admin")
+    lic = client.store.licence(o["licence_id"])
+    sh = client.get("/api/install.sh", headers={"X-Licence-Key": lic["key"]}).get_data(as_text=True)
+    assert 'echo "30 3 * * * root sh $DIR/update.sh --if-newer' in sh
+    import subprocess
+    for script in (sh, open(os.path.join(ROOT, "update.sh")).read()):
+        assert subprocess.run(["sh", "-n"], input=script.encode()).returncode == 0
+    names = tarfile.open(fileobj=io.BytesIO(client.get("/api/download", headers={"X-Licence-Key": lic["key"]}).data)).getnames()
+    assert "VERSION" in names and "update.sh" in names

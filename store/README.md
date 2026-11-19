@@ -77,3 +77,13 @@ Until M-Pesa or DigitalOcean are set up, the site offers bank transfer and own-s
 
 With `DO_TOKEN` set, the live DigitalOcean prices are used instead. Edit `SIZES` in `pricing.py` to change the tiers.
 When a hosted customer adds enough devices to need a bigger size, you get an email to resize the droplet.
+
+## Releasing an update to buyers
+1. Merge the changes into `main`, then put the new number in `VERSION` (for example 1.1.0) and add a
+   `## 1.1.0` section at the top of `CHANGELOG.md` with what changed.
+2. On the store server: `cd ne8000-manager && git pull && docker compose -f store/docker-compose.yml up -d --build`.
+   The store now hands out the new release (`/api/version`, `/api/download`).
+3. Buyers' servers check every night at 03:30 and install it if it is newer (`/etc/cron.d/yubo-update`,
+   log in `/var/log/yubo-update.log`). Their admins see the version and the notes under Manager › Updates
+   and can update at once with `cd /opt/ne8000 && sudo sh update.sh`. Their data and `.env` are kept and
+   the data folder is backed up first. Only active licences can download, so expired copies stop updating.

@@ -350,6 +350,11 @@ def api_brand_logo():
     return Response(data, mimetype=logo_mime(data))
 
 
+@app.get("/api/version")
+def api_version():
+    return jsonify(STORE.version())
+
+
 @app.get("/api/pubkey")
 def api_pubkey():
     return jsonify(pubkey=STORE.signer.public_b64)
@@ -421,7 +426,7 @@ def admin():
     paid = STORE.db.one("SELECT COALESCE(SUM(amount_usd),0) AS usd, COUNT(*) AS n FROM orders WHERE status='paid' AND paid>?", time.time() - 30 * 86400)
     setup = {"M-Pesa": STORE.mpesa.configured, "DigitalOcean": STORE.do.configured, "Email (SMTP)": bool(STORE.mail.host),
              "Bank details": bool(STORE.bank["account_number"])}
-    return render_template("admin.html", orders=orders, licences=lics, servers=servers, payments=payments, paid=paid, setup=setup,
+    return render_template("admin.html", version=STORE.version(), orders=orders, licences=lics, servers=servers, payments=payments, paid=paid, setup=setup,
                            pubkey=STORE.signer.public_b64)
 
 
