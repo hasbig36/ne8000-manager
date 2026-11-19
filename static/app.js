@@ -302,7 +302,9 @@ PAGES.health = async c => {
     ${t('Slowing customers', slow, 'errors, drops, full links, latency', slow ? '--bad' : '--ok')}
     ${t('Checked', `${st.interfaces ?? 0} links`, `${st.optics ?? 0} SFPs · ${st.targets ?? 0} ping targets · ${st.time ? ago(st.time) : 'not yet'}`)}</div>
     <div class="card"><h3>Problems found</h3>${st.time || st.demo ? '' : `<p class="muted">The first check runs within 5 minutes of the server starting. "Unusual" levels need about ${h.learn_hours || 2} hours of history first; fixed limits (errors, full links, SFP alarm levels) apply straight away.</p>`}<div id="hF"></div></div>
-    <div class="card"><h3>Latency and loss <span class="muted" style="font-weight:400;font-size:12px">pinged from this server</span><span class="sp"></span><button class="btn sm" id="hTg">Ping targets…</button></h3><div id="hL"></div></div>`;
+    <div class="card"><h3>Latency and loss <span class="muted" style="font-weight:400;font-size:12px">pinged from this server</span><span class="sp"></span><button class="btn sm" id="hTg">Ping targets…</button></h3><div id="hL"></div></div>
+    <div class="card" id="hSrv"><h3>Server health <span class="muted" style="font-weight:400;font-size:12px">the machine this app runs on</span></h3><p class="muted">Reading the server…</p></div>`;
+  serverHealth();
   table($('#hF'), [{ t: 'Severity', k: 'severity', f: x => `<span class="pill ${x.severity === 'critical' ? 'p-bad' : 'p-warn'}">${esc(x.severity)}</span>` },
     { t: 'Problem', k: 'title', cls: 'wrap', f: x => `<b>${esc(x.title)}</b> <span class="faint">${esc(HK[x.kind] || '')}</span>${x.slow ? ' <span class="pill p-bad" title="likely to make customers slow">slows customers</span>' : ''}<div class="muted">${esc(x.detail)}</div>` },
     { t: 'Where', k: 'target', f: x => `<b>${esc(x.target)}</b>` }, { t: 'Customer / description', k: 'description' },
@@ -319,6 +321,46 @@ PAGES.health = async c => {
   $('#hTg').onclick = () => healthTargets(h.targets || []);
   every(60000, async () => { if ($('#modalBg').classList.contains('hidden')) refresh(); });
 };
+/* Server health card on the Health page: the machine the app is hosted on, its use now and over 24 h. */
+async function serverHealth() {
+  const el = $('#hSrv'); if (!el) return;
+  let r; try { r = await api('/api/server'); } catch (e) { el.innerHTML = '<h3>Server health</h3><p class="muted">Could not read the server: ' + esc(e.message || e) + '</p>'; return; }
+  if (!$('#hSrv')) return;
+  const h = r.host, c = r.cpu, m = r.memory, d = r.disk, a = r.app, cm = r.container_memory;
+  const pct = (u, t) => t ? 100 * u / t : null, col = (v, w, b) => v == null ? '' : v >= b ? '--bad' : v >= w ? '--warn' : '--ok';
+  const mp = pct(m.used, m.total), dp = d ? pct(d.used, d.used + d.free) : null, lp = c.cores ? 100 * c.load[1] / c.cores : null;
+  const dur = s => { if (s == null) return '-'; s = Math.round(s); const dd = Math.floor(s / 86400), hh = Math.floor(s % 86400 / 3600), mm = Math.floor(s % 3600 / 60); return dd ? `${dd} d ${hh} h` : hh ? `${hh} h ${mm} min` : `${mm} min`; };
+  const bar = v => `<div class="srvbar"><i style="width:${Math.min(100, Math.max(0, v || 0)).toFixed(1)}%;background:var(${col(v, 80, 92) || '--s1'})"></i></div>`;
+  const tile = (l, v, s, colr, b) => `<div class="tile"><div class="l">${l}</div><div class="v" ${colr ? `style="color:var(${colr})"` : ''}>${v}</div>${b || ''}${s ? `<div class="s">${s}</div>` : ''}</div>`;
+  const where = [h.vendor, h.product].filter(Boolean).join(' ') || (h.hypervisor ? h.hypervisor.toUpperCase() : '');
+  const kind = (h.virtual ? 'Virtual machine' : 'Physical server') + (where ? ' · ' + where : '');
+  const os = h.container ? `${h.host_os ? h.host_os + ' host, ' : ''}kernel ${h.kernel}` : `${h.os}, kernel ${h.kernel}`;
+  const rows = [['Machine', kind], ['Hostname', h.hostname + (h.container ? ' <span class="faint">(the app\'s container)</span>' : '')], ['Operating system', esc(os)],
+    ['Processor', `${esc(c.model || h.arch)} · ${c.cores} core${c.cores === 1 ? '' : 's'} · ${esc(h.arch)}`],
+    ['Memory', `${Fmt.bytes(m.total)}${m.swap_total ? ` · swap ${Fmt.bytes(m.swap_used)} of ${Fmt.bytes(m.swap_total)} used` : ' · no swap'}`],
+    ['Disk (app data)', d ? `${Fmt.bytes(d.used)} used of ${Fmt.bytes(d.used + d.free)} · ${Fmt.bytes(d.free)} free` : '-'],
+    ['App data folder', `${Fmt.bytes(r.data.size)} in ${Fmt.num(r.data.files)}${r.data.more ? '+' : ''} files`],
+    ['Server up for', dur(r.uptime)], ['App running for', `${dur(a.uptime)} <span class="faint">since ${new Date(a.started * 1000).toLocaleString()}</span>`],
+    ['App process', `${Fmt.bytes(a.rss)} memory · ${a.threads} threads · Python ${esc(a.python)}${cm ? ` · container uses ${Fmt.bytes(cm.used)}${cm.limit ? ' of ' + Fmt.bytes(cm.limit) : ''}` : ''}`],
+    ['Run in', h.container ? 'Docker container' : 'Directly on the server'], ['Server time', `${new Date(r.time * 1000).toLocaleString()} <span class="faint">${esc(h.timezone)}</span>`]]
+    .concat(r.version ? [['App version', esc(r.version)]] : []);
+  el.innerHTML = `<h3>Server health <span class="muted" style="font-weight:400;font-size:12px">the machine this app runs on</span><span class="sp"></span><span class="faint" style="font-weight:400;font-size:12px">updated ${Fmt.time(r.time)}</span></h3>` +
+    (r.warnings || []).map(w => `<div class="witem${w.severity === 'critical' ? ' crit' : ''}">${w.severity === 'critical' ? '⛔' : '⚠'} ${esc(w.text)}</div>`).join('') +
+    `<div class="tiles">${tile('CPU', Fmt.pct(c.percent), `load ${c.load.map(x => x.toFixed(2)).join(' · ')} on ${c.cores} cores`, col(lp, 70, 100), bar(c.percent))}
+    ${tile('Memory', Fmt.pct(mp), `${Fmt.bytes(m.used)} of ${Fmt.bytes(m.total)}`, col(mp, 80, 90), bar(mp))}
+    ${tile('Disk', Fmt.pct(dp), d ? `${Fmt.bytes(d.free)} free of ${Fmt.bytes(d.used + d.free)}` : '', col(dp, 80, 92), bar(dp))}
+    ${tile('Up for', dur(r.uptime), `app restarted ${ago(a.started)}`)}</div>
+    <div class="srvgrid"><table class="kv">${rows.map(([k, v]) => `<tr><td class="muted">${k}</td><td>${v}</td></tr>`).join('')}</table>
+    <div><div class="muted" style="font-size:12px;margin-bottom:4px">Last 24 hours (one point a minute)</div><div id="hSrvC" style="height:180px"></div>
+    <div class="srvleg"><span><i style="background:var(--s1)"></i>CPU</span><span><i style="background:var(--s2)"></i>Memory</span><span><i style="background:var(--s3)"></i>Disk</span></div>
+    <div class="faint" style="font-size:12px">${r.history.length < 2 ? 'Points are kept from when the app started; the graph fills in over the next minutes.' : 'Each line is % of the whole. Hover for the values at any minute.'}</div></div></div>`;
+  const hs = r.history || [];
+  new TimeChart($('#hSrvC'), { fmt: Fmt.pct, max: 100 }).set([
+    { name: 'CPU', color: '--s1', values: hs.filter(x => x[1] != null).map(x => [x[0], x[1]]) },
+    { name: 'Memory', color: '--s2', values: hs.filter(x => x[2] != null).map(x => [x[0], x[2]]) },
+    { name: 'Disk', color: '--s3', values: hs.filter(x => x[3] != null).map(x => [x[0], x[3]]) }]);
+}
+
 async function healthTargets(cur) {
   const m = $('#modal');
   m.innerHTML = `<h2>Ping targets</h2><p class="muted">This server pings each address 5 times every 5 minutes, learns its normal latency and warns when it rises or packets are lost. The router's own address is always included. One per line: address, then a name.</p>

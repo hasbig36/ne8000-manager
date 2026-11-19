@@ -353,3 +353,18 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
 .srcard.warning{border-left-color:#ffb020}.srcard.critical{border-left-color:#ff4d4f}
 .srk{font-size:12px;padding:2px 7px;border-radius:10px;background:var(--panel2);border:1px solid var(--line)}.srk.ok{border-color:#22c55e66}.srk.warn{border-color:#ffb020;background:rgba(255,176,32,.12)}
 .srk.crit{border-color:#ff4d4f;background:rgba(255,77,79,.12)}.srk.none{opacity:.55}
+
+/* Health > Server health */
+.srvbar { height: 6px; border-radius: 3px; background: var(--line, rgba(127,127,127,.2)); margin: 6px 0 2px; overflow: hidden; }
+.srvbar i { display: block; height: 100%; border-radius: 3px; }
+.srvgrid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 18px; margin-top: 12px; align-items: start; }
+.srvgrid table.kv { width: 100%; border-collapse: collapse; font-size: 13px; }
+.srvgrid table.kv td { padding: 5px 8px 5px 0; border-bottom: 1px solid var(--line, rgba(127,127,127,.15)); vertical-align: top; }
+.srvgrid table.kv td:first-child { white-space: nowrap; width: 1%; padding-right: 16px; }
+@media (max-width: 900px) { .srvgrid { grid-template-columns: 1fr; } }
+.srvleg { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin: 4px 0; }
+.srvleg i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; margin-right: 5px; vertical-align: middle; }
+.srvgrid table.kv td:last-child { overflow-wrap: anywhere; }
+@media (max-width: 600px) { .srvgrid table.kv td:first-child { white-space: normal; width: 35%; padding-right: 8px; } }
+.srvgrid table.kv { table-layout: fixed; } .srvgrid table.kv td { white-space: normal; } .srvgrid table.kv td:first-child { width: 150px; }
+@media (max-width: 600px) { .srvgrid table.kv td:first-child { width: 110px; } }

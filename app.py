@@ -38,6 +38,7 @@ import policy
 import routers
 import ipam
 import sitereg
+import serverinfo
 import sitewatch
 import viewcache
 from device import DeviceError, RealRouter, _cidr, is_read_only
@@ -1122,6 +1123,12 @@ def health_report():
     if not (SAVED.get(rid) or {}).get("snmp"):
         out["note"] = "Add this router's SNMP login under Manager > Routers so the health check can read its links and optics."
     return jsonify(out)
+
+
+@app.get("/api/server")
+def server_report():
+    """The machine this app runs on: CPU, memory, disk, uptime, the app process and the last 24 h of use."""
+    return jsonify(serverinfo.report(DATA_DIR))
 
 
 @app.post("/api/health/run")
@@ -2221,6 +2228,7 @@ if __name__ == "__main__":
         HIST.start()   # 5-minute interface history for every saved router with an SNMP login
     if env_on("NE8000_HEALTH", "1"):
         HEALTH.start()
+        serverinfo.start(DATA_DIR)  # server health: CPU, memory and disk use every minute
         SITEREG.start()     # sites: ping the devices, power, door and camera systems registered at each, every minute
         SITES.start()   # major sites: ping and trace to Google, YouTube, Facebook... every 5 minutes
     if env_on("NE8000_CHANGES", "1"):
