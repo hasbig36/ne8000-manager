@@ -1795,6 +1795,7 @@ function nocLeave() {
 }
 $('#nocBtn').onclick = () => { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {}); location.hash = 'noc'; };
 PAGES.noc = async c => {
+  if (typeof srLoad === 'function' && typeof SR === 'object' && !SR.d) srLoad().catch(() => {});   // registered sites name the regions
   if (NOC_THEME === null) NOC_THEME = document.documentElement.dataset.theme || '';
   document.documentElement.dataset.theme = 'dark';
   const view = decodeURIComponent((location.hash.split('/')[1] || ''));   // #noc/<view>: a wall screen can stay on one view
@@ -1841,7 +1842,9 @@ PAGES.noc = async c => {
     const d = NM.data.diagram, t = T, out = [];
     (t.kids[t.root] || []).map(id => d.nodes.find(n => n.id === id)).filter(n => n && n.type !== 'upstream').forEach(n => out.push(['n:' + n.id, 'Port group: ' + n.label]));
     if (d.nodes.some(n => n.type === 'upstream')) out.push(['up', 'Upstreams and peers']);
-    const cnt = {}; d.nodes.forEach(n => { const w = (n.label.match(/^[A-Za-z]{3,}/) || [''])[0].toUpperCase(); if (w && !['NEW', 'VLAN', 'IBGP', 'AS'].includes(w)) cnt[w] = (cnt[w] || 0) + 1; });
+    // a region is a real place: a Kenyan town, or a registered site's town or name (not just any word devices start with)
+    const known = new Set([...Object.keys(typeof KE_TOWNS === 'object' ? KE_TOWNS : {}), ...((typeof SR === 'object' && SR.d ? SR.d.sites : []).flatMap(x => [x.town, x.name, x.code].filter(Boolean).map(v => String(v).toUpperCase().split(/[\s-]/)[0])))]);
+    const cnt = {}; d.nodes.forEach(n => { const w = (n.label.match(/^[A-Za-z]{3,}/) || [''])[0].toUpperCase(); if (w && known.has(w)) cnt[w] = (cnt[w] || 0) + 1; });
     Object.entries(cnt).filter(([, n]) => n >= 2).sort().forEach(([w, n]) => out.push(['r:' + w, `Region: ${w} (${n})`]));
     d.nodes.filter(n => n.id !== t.root).slice().sort((x, y) => x.label.localeCompare(y.label)).forEach(n => out.push(['d:' + n.id, 'Device: ' + n.label]));
     return out;

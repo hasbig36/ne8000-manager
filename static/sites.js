@@ -119,6 +119,15 @@ function sitesDraw(host) {
     const y0 = c[1] < 0 ? c[1] - (n - 1) * 24 : c[1] > 0 ? c[1] : -(n - 1) * 12;      // a column above, below or beside its place
     list.forEach((s, i) => { pos[s.host] = [x + c[0] * px, y + (y0 + i * 24) * px, w, p.side < 0]; });
   });
+  // labels that would sit on top of each other (same side, overlapping text): push the lower one down until they clear
+  const box = s => { const [x, , , left] = pos[s.host], w = (s.name.length + 9) * 7.4 * px; return left ? [x - 12 * px - w, x + 24 * px] : [x - 24 * px, x + 12 * px + w]; };
+  for (let it = 0; it < 8; it++) {
+    let moved = false; const ord = sites.slice().sort((a, b) => pos[a.host][1] - pos[b.host][1]);
+    for (let i = 0; i < ord.length; i++) for (let j = i + 1; j < ord.length; j++) {
+      const A = pos[ord[i].host], B = pos[ord[j].host], [a0, a1] = box(ord[i]), [b0, b1] = box(ord[j]);
+      if (B[1] - A[1] < 22 * px && a0 < b1 && b0 < a1) { B[1] = A[1] + 22 * px; moved = true; } }
+    if (!moved) break;
+  }
   const grid = [];
   for (let lon = -180; lon <= 180; lon += 30) grid.push(swPath([[84, lon], [-58, lon]]));
   for (let lat = -40; lat <= 80; lat += 20) grid.push(swPath([[lat, -180], [lat, 180]]));
