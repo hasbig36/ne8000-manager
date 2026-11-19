@@ -192,7 +192,7 @@ const I = {
 const NAV = [
   [null, [['dashboard', 'Dashboard', I.dash], ['health', 'Health check', I.health], ['changes', 'Change log', I.log]]],
   ['Network', [['interfaces', 'Interfaces', I.ifs], ['graphs', 'Graphs', I.graph], ['netflow', 'Traffic per address', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
-  ['IP', [['addresses', 'Addresses', I.ip], ['routes', 'Routes', I.route], ['arp', 'ARP', I.ip], ['vpn', 'VPN instances', I.ip], ['neighbors', 'Neighbors (LLDP)', I.ip]]],
+  ['IP', [['ipplan', 'IP plan', I.plan], ['addresses', 'Addresses', I.ip], ['routes', 'Routes', I.route], ['arp', 'ARP', I.ip], ['vpn', 'VPN instances', I.ip], ['neighbors', 'Neighbors (LLDP)', I.ip]]],
   ['Planning', [['netmap', 'Network map', I.plan], ['plans', 'Network plans', I.plan]]],
   ['Billing', [['billing', 'Splynx billing', I.bill]]],
   ['Routing', [['bgp', 'BGP', I.route], ['policies', 'Route policies', I.route], ['ospf', 'OSPF', I.route], ['isis', 'IS-IS', I.route], ['mpls', 'MPLS / LDP', I.route]]],
@@ -839,14 +839,14 @@ function primaryBlock(name, ip, sub, subs) {
 }
 function parentList() { return ifCache.filter(i => ['ethernet', 'eth-trunk'].includes(i.type)).map(i => i.name); }
 async function ensureIfs() { if (!ifCache.length) ifCache = await api('/api/view/interfaces'); }
-async function subifForm(parent) {
+async function subifForm(parent, pre = {}) {
   await ensureIfs();
   change({ title: 'New dot1q sub-interface', action: 'subif.create', fields: [
     { k: 'parent', label: 'Parent port', type: 'select', options: parentList(), value: parent },
-    { k: 'vlan', label: 'VLAN ID', type: 'number', ph: '100' }, { k: 'number', label: 'Sub-interface no.', type: 'number', ph: 'same as VLAN', help: 'Name will be <parent>.<number>' },
+    { k: 'vlan', label: 'VLAN ID', type: 'number', ph: '100', value: pre.vlan }, { k: 'number', label: 'Sub-interface no.', type: 'number', ph: 'same as VLAN', help: 'Name will be <parent>.<number>', value: pre.vlan },
     { k: 'encap', label: 'Encapsulation', type: 'select', options: [['vlan-type', 'vlan-type dot1q (one VLAN)'], ['termination', 'dot1q termination vid'], ['qinq', 'QinQ termination']] },
-    { k: 'inner_vlan', label: 'Inner VLAN (QinQ)', type: 'number', ph: 'only for QinQ' }, { k: 'address', label: 'IP address/prefix', ph: '10.20.100.1/24' },
-    { k: 'vpn', label: 'VPN instance', ph: 'optional' }, { k: 'description', label: 'Description' }] });
+    { k: 'inner_vlan', label: 'Inner VLAN (QinQ)', type: 'number', ph: 'only for QinQ' }, { k: 'address', label: 'IP address/prefix', ph: '10.20.100.1/24', value: pre.address },
+    { k: 'vpn', label: 'VPN instance', ph: 'optional', value: pre.vpn }, { k: 'description', label: 'Description', value: pre.description }] });
 }
 function loopbackForm() { change({ title: 'New loopback', action: 'loopback.create', fields: [{ k: 'number', label: 'Number', type: 'number', ph: '1' }, { k: 'address', label: 'IP/prefix', ph: '1.1.1.2/32' }, { k: 'description', label: 'Description' }] }); }
 
@@ -986,7 +986,7 @@ PAGES.addresses = async c => {
       ...(r.ipv6 || []).map(ip => ({ ...r, ip, v6: true, description: (r.description ? r.description + ' · ' : '') + 'IPv6' }))])
       .map(r => { const n = r.v6 ? [] : ipNeighbours(r.ip, r.name); return { ...r, _nb: n, nb: nbSearch(n) }; }), { toolbar: `<button class="btn" onclick="addrForm()">+ Address</button>` });
 };
-function addrForm() { change({ title: 'Add IP address', action: 'interface.ip_add', fields: [{ k: 'interface', label: 'Interface', type: 'select', options: ifCache.filter(i => i.type !== 'null' && !i.l2).map(i => i.name) }, { k: 'address', label: 'Address/prefix', ph: '10.0.0.1/30' }, { k: 'secondary', label: 'Secondary (sub)', type: 'check', value: true, help: 'Untick only on an interface with no address yet. The manager refuses to replace an existing primary from here.' }] }); }
+function addrForm(pre = {}) { change({ title: 'Add IP address', action: 'interface.ip_add', fields: [{ k: 'interface', label: 'Interface', type: 'select', options: ifCache.filter(i => i.type !== 'null' && !i.l2).map(i => i.name), value: pre.interface }, { k: 'address', label: 'Address/prefix', ph: '10.0.0.1/30', value: pre.address }, { k: 'secondary', label: 'Secondary (sub)', type: 'check', value: pre.secondary ?? true, help: 'Untick only on an interface with no address yet. The manager refuses to replace an existing primary from here.' }] }); }
 
 PAGES.routes = async c => {
   const vpns = (await api('/api/view/vpn_instances')).instances.map(v => v.name);
@@ -1810,20 +1810,28 @@ PAGES.noc = async c => {
   const side = async (x, kind) => {
     const el = $('#ncS'); if (!el) return;
     if (!x) { el.innerHTML = `<h3>Click a line or a device</h3><p class="muted">One click follows it to the router and dims the rest. Double-click shows how it is built. Click empty space to clear.</p>
-      <p class="muted">A <span class="wdot warn">⚠</span> on a line, a device or a town is a warning: high or changed latency, a longer path, a port filling up, flapping, errors, falling light, a fibre event from the OTDR. Click it to see what and since when.</p>`; return; }
+      <p class="muted">A <span class="wdot warn">⚠</span> on a line, a device or a town is a warning: high or changed latency, a longer path, a port filling up, flapping, errors, falling light, a fibre event from the OTDR. Click it to see what and since when.</p>
+      <p class="muted">Click a line, then <b>Edit</b> to correct its details, or <b>Delete</b> / <b>Hide</b> to take it off the map.</p><div id="ncHid"></div>`;
+      nocHidden(); return; }
     const wh = nmWarnHtml((NM.warn || {})[x.id]);
     if (kind === 'link') {
       const p = x.props, s = nmLinkState(x), t = NM.ifs[p.iface] || {};
-      el.innerHTML = `<h3>${esc(p.label || p.iface || 'Line')}</h3>${wh}<div class="row" style="gap:18px;margin-bottom:8px"><div><div class="muted">Download ▼</div><div class="big">${rate(s.down || null)}</div></div><div><div class="muted">Upload ▲</div><div class="big">${rate(s.up || null)}</div></div></div>
+      el.innerHTML = `<h3>${esc(p.label || p.iface || 'Line')}</h3><div class="row" style="gap:6px;margin:-2px 0 8px">${p.manual
+          ? '<span class="faint" style="font-size:12px">Drawn by hand</span><span class="sp"></span><button class="btn sm" id="ncLE">✎ Edit</button><button class="btn sm danger" id="ncLD">Delete</button>'
+          : `<span class="faint" style="font-size:12px">${p.edited ? 'Found by the app, corrected on the map' : 'Found by the app'}</span><span class="sp"></span><button class="btn sm" id="ncLE">✎ Edit</button><button class="btn sm danger" id="ncLD">Hide</button>`}</div>${wh}<div class="row" style="gap:18px;margin-bottom:8px"><div><div class="muted">Download ▼</div><div class="big">${rate(s.down || null)}</div></div><div><div class="muted">Upload ▲</div><div class="big">${rate(s.up || null)}</div></div></div>
         <div id="ncG" style="height:120px"></div>` + kv([['Interface', esc(p.iface || '')], ['State', esc(t.phy || p.state || '')], ['VLAN', esc(p.vlan || '')], ['Address', esc(p.address || '')],
-          ['Load', s.pct != null && p.iface ? Math.round(s.pct) + '%' : ''], ['QoS plan', p.plan_kbps ? Fmt.bps(p.plan_kbps * 1000) : ''], ['BGP', p.peers ? esc(p.peers.split(',').map(ip => `${ip} ${NM.peers[ip] || ''}`).join(', ')) : ''],
+          ['Note', esc(p.note || '')], ['Load', s.pct != null && p.iface ? Math.round(s.pct) + '%' : ''], ['QoS plan', p.plan_kbps ? Fmt.bps(p.plan_kbps * 1000) : ''], ['BGP', p.peers ? esc(p.peers.split(',').map(ip => `${ip} ${NM.peers[ip] || ''}`).join(', ')) : ''],
           ['Far end', p.manual && p.far_iface ? (() => { const f = (NM.far || {})[x.id]; return esc(`${p.far_name || ''} ${p.far_iface}`) + (f ? ` · ▼ ${Fmt.bps(f.rx)} ▲ ${Fmt.bps(f.tx)} <span class="faint">(${ago(f.ts)})</span>` : ' · <span class="faint">no data yet</span>'); })() : ''],
           ['Path', esc(T.up(x.to in T.parent && T.parent[x.to] === x.from ? x.to : x.from).filter(id => NM.data.diagram.nodes.some(n => n.id === id)).map(id => NM.data.diagram.nodes.find(n => n.id === id).label).reverse().join(' → '))]]) +
-        nmRedHtml(p.iface) + (p.manual ? `<p style="margin-top:8px"><span class="muted">Drawn by hand.</span> <button class="btn sm" id="ncLE">Edit</button> <button class="btn sm danger" id="ncLD">Delete</button></p>` : '') +
+        nmRedHtml(p.iface) +
         `<p class="muted" style="font-size:12px;margin-top:8px">Double-click the line for how it is built.</p>` + (() => { const n = NM.data.diagram.nodes.find(y => y.id === (T.parent[x.to] === x.from ? x.to : x.from)); return n ? geoPlaceHtml(n) : ''; })();
       geoPlaceBind();
       if (p.manual) { $('#ncLE').onclick = () => nocLine(x.id.slice(3), () => map());
         $('#ncLD').onclick = async () => { if (!confirm('Delete this line from the map? Nothing changes on the router.')) return; await api('/api/netmap/links/' + x.id.slice(3), { method: 'DELETE' }); toast('Line deleted'); side(null); map(); }; }
+      else { $('#ncLE').onclick = () => nocLineFix(x, () => map().then(() => { const l = NM.data.diagram.links.find(y => y.id === x.id); if (l) side(l, 'link'); }));
+        $('#ncLD').onclick = async () => { if (!confirm('Hide this line (and what is only reached through it) from the map? Nothing changes on the router; you can bring it back.')) return;
+          const far = NM.data.diagram.nodes.find(n => n.id === (T.parent[x.to] === x.from ? x.to : x.from));
+          await post('/api/netmap/edits', { id: x.id, hidden: true, was: `${p.label || p.iface || ''}${far ? ' → ' + far.label : ''}` }); toast('Line hidden. Bring it back from the side panel.'); side(null); map(); }; }
       if (p.iface) { try { const r = await api('/api/traffic?names=' + encodeURIComponent(p.iface)), pts = r[p.iface] || [], dn = p.down === 'rx' ? 1 : 2;
         if ($('#ncG')) new TimeChart($('#ncG'), { fmt: Fmt.bps, small: true }).set([{ name: 'Download', color: '--s1', values: pts.map(v => [v[0], v[dn]]) }, { name: 'Upload', color: '--s2', values: pts.map(v => [v[0], v[3 - dn]]) }]); } catch (e) { } }
     } else {
@@ -1917,6 +1925,46 @@ async function nocLine(id, after) {
         far_router: $('#lnR').value, far_iface: $('#lnFI').value, label: $('#lnL').value });
       closeModal(); toast('Line saved on the map'); after && after(); } catch (err) { m.querySelector('.err').textContent = err.message; }
   };
+}
+/* Correct a line the app found by itself: its label, a note, and the far device's name, type and town. Only the app's map
+   changes, never the router; "Undo corrections" goes back to what the app found. */
+async function nocLineFix(x, after) {
+  const d = NM.data.diagram, m = $('#modal'), p = x.props;
+  const root = (d.nodes.find(y => y.type === 'ne8000') || {}).id, far = d.nodes.find(n => n.id === (x.to === root ? x.from : x.to)) || {};
+  const ed = ((await api('/api/netmap/edits').catch(() => ({ edits: {} }))).edits || {})[x.id] || {};
+  const opt = (v, l, sel) => `<option value="${esc(v)}" ${v === sel ? 'selected' : ''}>${esc(l)}</option>`;
+  m.innerHTML = `<h2>Correct this line</h2><p class="muted">Fix details the app got wrong. Only the app's map changes, never the router.</p>
+    <div class="form"><label>Interface</label><input value="${esc(p.iface || '-')}" disabled>
+      <label>Label</label><input id="lfL" value="${esc(ed.label || p.label || '')}" placeholder="Fibre to Marsabit (primary)">
+      <label>Far device name</label><input id="lfN" value="${esc(ed.to_label || far.label || '')}">
+      <label>Type</label><select id="lfY">${['router', 'switch', 'ap', 'olt', 'customer', 'reseller', 'server', 'upstream'].map(t => opt(t, (NODE_META[t] || {}).label || t, ed.to_type || far.type)).join('')}</select>
+      <label>Town</label><select id="lfW">${opt('', 'from the name', ed.town || '')}${Object.keys(KE_TOWNS).sort().map(t => opt(t, t, ed.town || (far.props || {}).location)).join('')}</select>
+      <label>Note</label><textarea id="lfO" rows="3" placeholder="e.g. leased from Safaricom, circuit ID 12345">${esc(ed.note || p.note || '')}</textarea></div>
+    <div class="err"></div><div class="actions">${p.edited ? '<button class="btn" data-a="u">Undo corrections</button><span class="sp"></span>' : ''}<button class="btn" data-a="c">Cancel</button><button class="btn primary" data-a="s">Save</button></div>`;
+  $('#modalBg').classList.remove('hidden');
+  m.querySelector('.actions').onclick = async e => {
+    const a = e.target.dataset.a; if (!a) return;
+    if (a === 'c') return closeModal();
+    try {
+      if (a === 'u') { await api('/api/netmap/edits/' + encodeURIComponent(x.id), { method: 'DELETE' }); closeModal(); toast('Back to what the app found'); return after && after(); }
+      const body = { id: x.id, note: $('#lfO').value, was: `${p.label || p.iface || ''} → ${far.label || ''}` };
+      if ($('#lfL').value.trim() !== (p.label || '')) body.label = $('#lfL').value;
+      if ($('#lfN').value.trim() !== (far.label || '')) body.to_label = $('#lfN').value;
+      if ($('#lfY').value !== far.type) body.to_type = $('#lfY').value;
+      if ($('#lfW').value) body.town = $('#lfW').value;
+      ['label', 'to_label', 'to_type', 'town'].forEach(k => { if (body[k] == null && ed[k]) body[k] = ed[k]; });     // keep earlier corrections
+      await post('/api/netmap/edits', body); closeModal(); toast('Line corrected on the map'); after && after();
+    } catch (err) { m.querySelector('.err').textContent = err.message; }
+  };
+}
+// the side panel's list of hidden lines, to bring one back
+async function nocHidden() {
+  const r = await api('/api/netmap/edits').catch(() => null), el = $('#ncHid'); if (!r || !el) return;
+  const hid = Object.entries(r.edits || {}).filter(([, e]) => e.hidden);
+  if (!hid.length) return;
+  el.innerHTML = `<h3 style="margin-top:10px">Hidden lines (${hid.length})</h3><table><tbody>${hid.map(([id, e]) => `<tr><td>${esc(e.was || id)}<div class="faint" style="font-size:11.5px">by ${esc(e.by || '?')} ${esc(ago(e.at))}</div></td>
+    <td style="text-align:right"><button class="btn sm" data-r="${esc(id)}">Bring back</button></td></tr>`).join('')}</tbody></table>`;
+  el.querySelectorAll('[data-r]').forEach(b => b.onclick = async () => { await api('/api/netmap/edits/' + encodeURIComponent(b.dataset.r), { method: 'DELETE' }); toast('Line back on the map'); location.hash === '#noc' && $('#ncM [data-m=d]') ? $('#ncM [data-m=d]').click() : 0; });
 }
 /* Double-click on the NOC map: how this line or device is built, from what the app knows (and the router's configuration with SSH). */
 async function nocDesign(x, kind, T) {

@@ -92,6 +92,9 @@ function swIssues(s) {
   if (pe) out.push({ severity: 'warning', title: 'The path changed', detail: `${pe.text} (${ago(pe.ts)}).`, advice: 'The upstream or the site changed the route. Nothing to do if the delay stayed the same.' });
   return out;
 }
+// one colour per site, kept by its name so it does not change between checks
+const SW_COLORS = ['#4f8cff', '#22d3ee', '#a78bfa', '#34d399', '#f472b6', '#a3e635', '#e879f9', '#2dd4bf', '#fb7185', '#7dd3fc', '#c4b5fd', '#86efac', '#f9a8d4', '#5eead4'];
+const swColor = s => { let h = 0; for (const c of s.host || '') h = (h * 31 + c.charCodeAt(0)) >>> 0; const i = swAll().findIndex(x => x.host === s.host); return SW_COLORS[(i >= 0 ? i : h) % SW_COLORS.length]; };
 const swState = s => s.avg == null || s.loss === 100 ? 'down' : swIssues(s).length ? 'bad' : 'ok';
 // the sites on the list, then the ones searched for this visit
 function swAll() {
@@ -129,8 +132,11 @@ function sitesDraw(host) {
     let L = 0; for (let k = 1; k < pts.length; k++) L += Math.hypot(pts[k][0] - pts[k - 1][0], pts[k][1] - pts[k - 1][1]);
     const dur = Math.min(16, Math.max(3, 2.5 + L / 1500)).toFixed(1), id = 'swr' + i;
     const d = 'M' + pts.map(p => p.map(v => v.toFixed(0)).join(' ')).join('L');
-    const dots = st === 'down' ? '' : [0, 1, 2].map(k => `<circle class="swdot" r="${(sel ? 8 : 5.5) * px}"><animateMotion dur="${dur}s" begin="-${(k * dur / 3).toFixed(2)}s" repeatCount="indefinite"><mpath href="#${id}"/></animateMotion></circle>`).join('');
-    return `<g class="swroute ${st}${SW.sel && !sel ? ' dim' : ''}${sel ? ' sel' : ''}" data-site="${esc(s.host)}"><path id="${id}" class="vis" d="${d}"/><path class="hit" d="${d}" style="stroke-width:${14 * px}"/>${dots}</g>`;
+    // going out (from the router to the site): the site's colour, an arrow pointing the way; replies coming back: small white dots
+    const col = swColor(s), r = (sel ? 1.4 : 1) * px;
+    const goes = st === 'down' ? '' : [0, 1, 2].map(k => `<path class="swpkt" d="M${-9 * r} ${-5 * r} L${7 * r} 0 L${-9 * r} ${5 * r} L${-5 * r} 0Z" style="fill:${col}"><animateMotion dur="${dur}s" begin="-${(k * dur / 3).toFixed(2)}s" rotate="auto" repeatCount="indefinite"><mpath href="#${id}"/></animateMotion></path>`).join('');
+    const back = st === 'down' ? '' : [0, 1].map(k => `<circle class="swback" r="${3 * r}"><animateMotion dur="${dur}s" begin="-${((k + 0.25) * dur / 2).toFixed(2)}s" keyPoints="1;0" keyTimes="0;1" calcMode="linear" repeatCount="indefinite"><mpath href="#${id}"/></animateMotion></circle>`).join('');
+    return `<g class="swroute ${st}${SW.sel && !sel ? ' dim' : ''}${sel ? ' sel' : ''}" data-site="${esc(s.host)}"><path id="${id}" class="vis" d="${d}" style="stroke:${st === 'down' ? '' : col}"/><path class="hit" d="${d}" style="stroke-width:${14 * px}"/>${goes}${back}</g>`;
   }).join('');
   const pins = sites.map(s => { const [x, y, , left] = pos[s.host], st = swState(s), ms = s.avg != null ? Math.round(s.avg) + ' ms' : 'no reply', iss = swIssues(s);
     return `<g class="swsite ${st}${s.extra ? ' extra' : ''}${SW.sel && SW.sel !== s.host ? ' dim' : ''}" data-site="${esc(s.host)}"><circle cx="${x}" cy="${y}" r="${6 * px}"/>
@@ -149,7 +155,7 @@ function sitesDraw(host) {
     <g class="swland">${KENYA_MAP.world.map(c => `<path d="${c.d}"><title>${esc(c.n)}</title></path>`).join('')}</g>
     <path class="swke" d="${KENYA_MAP.kenya}"><title>Kenya</title></path>
     <g class="swcables">${cable}${subs}</g>${routes}${places}${pins}</svg>
-    <div class="swlegend"><span><i class="ok"></i>Normal</span><span><i class="bad"></i>Needs a look</span><span><i class="down"></i>No reply</span>
+    <div class="swlegend"><span><b style="color:#7f9bff">➤</b> going out, in each site's colour · <i class="back"></i>replies coming back</span><span><i class="ok"></i>Normal</span><span><i class="bad"></i>Needs a look</span><span><i class="down"></i>No reply</span>
       <span>${nIss ? `<b class="warnc">⚠ ${nIss} site${nIss > 1 ? 's' : ''}: click for why</b>` : 'All sites normal'}</span>
       <span class="faint">Placed by delay · cables simplified · map: Natural Earth</span></div>`;
   const svg = $('#swSvg');
@@ -203,7 +209,7 @@ function swSide(force) {
   const cls = x => ({ ok: 'okc', bad: 'warnc', down: 'bad' })[swState(x)];
   if (!s) {
     const list = (SW.data && SW.data.sites) || [], bad = list.filter(x => swState(x) !== 'ok').length;
-    const row = x => `<tr data-h="${esc(x.host)}" style="cursor:pointer"><td><b>${swState(x) !== 'ok' ? '<span class="warnc">⚠</span> ' : ''}${esc(x.name)}</b><div class="faint" style="font-size:11.5px">${esc(swUpstream(x.hops) || x.host)}</div></td>
+    const row = x => `<tr data-h="${esc(x.host)}" style="cursor:pointer"><td><b><i class="swsw" style="background:${swColor(x)}"></i>${swState(x) !== 'ok' ? '<span class="warnc">⚠</span> ' : ''}${esc(x.name)}</b><div class="faint" style="font-size:11.5px">${esc(swUpstream(x.hops) || x.host)}</div></td>
         <td style="text-align:right;white-space:nowrap" class="${cls(x)}"><b>${swMs(x.avg)}</b>${x.loss ? `<div style="font-size:11.5px">${x.loss}% lost</div>` : ''}${x.normal ? `<div class="faint" style="font-size:11.5px">normally ${swMs(x.normal)}</div>` : ''}</td></tr>`;
     el.innerHTML = `<h3>Major sites</h3>${swTimeHtml()}
       <form id="swF" class="row" style="gap:6px;margin:8px 0"><input id="swQ" placeholder="Check any site, e.g. bbc.com" style="flex:1;min-width:0" autocomplete="off"><button class="btn sm primary">Check</button></form>

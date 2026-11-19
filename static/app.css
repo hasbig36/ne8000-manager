@@ -325,7 +325,7 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
 .swmap .swland path:hover{fill:#171c27}.swmap .swgrid path{fill:none;stroke:#1a2232;stroke-width:.6;vector-effect:non-scaling-stroke;pointer-events:none}
 .swlegend{position:absolute;left:12px;bottom:10px;right:12px;display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:11.5px;color:#cfd6e4;pointer-events:none}
 .swlegend>span{background:rgba(4,6,10,.8);padding:3px 8px;border-radius:5px}.swlegend i{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px;vertical-align:-1px}
-.swlegend i.ok{background:#22d3ee}.swlegend i.bad{background:#ffb020}.swlegend i.down{background:#ff3b4a}.swmap .swsite.extra circle{stroke:#fff;stroke-dasharray:2 2}
+.swlegend i.ok{background:#22d3ee}.swlegend i.back{background:#fff;width:6px;height:6px}.swmap .swpkt{pointer-events:none;filter:none}.swmap .swback{fill:#fff;opacity:.85;pointer-events:none}.swsw{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px;vertical-align:1px}.swmap .dim .swpkt,.swmap .dim .swback{display:none}.swlegend i.bad{background:#ffb020}.swlegend i.down{background:#ff3b4a}.swmap .swsite.extra circle{stroke:#fff;stroke-dasharray:2 2}
 .swtime{background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:8px 10px;font-size:12.5px;display:flex;flex-direction:column;gap:2px}
 .swbar{height:3px;background:var(--line);border-radius:2px;overflow:hidden;margin-top:3px}.swbar i{display:block;height:100%;width:0;background:var(--accent);transition:width 1s linear}
 .swmap .swke{fill:#1a2650;stroke:#9fb4ff;stroke-width:1.4;vector-effect:non-scaling-stroke}
@@ -341,4 +341,9 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
 .swmap .swsite.bad circle{fill:#ffb020}.swmap .swsite.down circle{fill:#ff3b4a}
 .swmap .swsite text{fill:#e8f4ff;font-weight:700;paint-order:stroke;stroke:#050506;stroke-width:3px}.swmap .swsite text .ms{fill:#ffe14a;font-weight:600}
 .swmap .dim path.vis{stroke-opacity:.15}.swmap .dim .swdot{display:none}.swmap .dim text{fill-opacity:.3;stroke-opacity:.3}.swmap .dim circle{fill-opacity:.3;stroke-opacity:.3}.swmap .dim .wbadge{display:none}
-@media (prefers-reduced-motion:reduce){.swmap .swdot{display:none}}
+@media (prefers-reduced-motion:reduce){.swmap .swdot,.swmap .swpkt,.swmap .swback{display:none}}
+
+/* IP plan */
+.ipgrid{display:grid;gap:2px}.ipgrid i{display:block;aspect-ratio:1;border-radius:2px;background:var(--panel2);border:1px solid var(--line);cursor:pointer;min-width:0}
+.ipgrid i:hover{outline:2px solid var(--text)}.ipbar{display:flex;height:8px;border-radius:4px;background:var(--line);overflow:hidden}.ipbar i{display:block;height:100%}
+.witem.info{border-left-color:#3b82f6;background:rgba(59,130,246,.09)}

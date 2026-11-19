@@ -36,6 +36,7 @@ import panel
 import plans
 import policy
 import routers
+import ipam
 import sitewatch
 import viewcache
 from device import DeviceError, RealRouter, _cidr, is_read_only
@@ -139,7 +140,7 @@ def close_router(r):
 # ---- app login ---------------------------------------------------------------------
 OPEN = {"index", "static", "auth_login", "auth_me", "healthz", "otdr_event"}     # otdr_event checks its own token or login
 # endpoints a viewer may POST to; everything else that changes something needs operator or admin
-VIEWER_POST = {"connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password", "sites_check", "sites_run"}
+VIEWER_POST = {"connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password", "sites_check", "sites_run", "ipam_layout", "ipam_renumber"}
 ADMIN_ONLY = {"users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
               "routers_test_snmp", "adopt_discover", "adopt_scan", "adopt_build", "adopt_apply", "adopt_identify"}
 
@@ -1590,8 +1591,9 @@ def links_load():
 
 def with_manual(out, key):
     """The map plus the lines drawn by hand (and the devices they lead to that the router does not see)."""
-    rows = links_load().get(key, [])
-    if not rows:
+    allp = links_load()
+    rows, edits = allp.get(key, []), allp.get(key + "#edits", {})
+    if not rows and not edits:
         return out
     nodes, links = [dict(n) for n in out["diagram"]["nodes"]], list(out["diagram"]["links"])
     byid = {n["id"]: n for n in nodes}
@@ -1609,7 +1611,50 @@ def with_manual(out, key):
             byid[to] = n
         links.append({"id": "ml:" + m["id"], "from": frm, "to": to, "props": {"iface": m.get("iface", ""), "label": m.get("label") or m.get("iface") or "Drawn line",
                       "manual": "1", "down": "tx", "far_router": m.get("far_router", ""), "far_iface": m.get("far_iface", ""), "far_name": m.get("far_name", "")}})
+    if edits:
+        nodes, links = apply_edits(nodes, links, root, edits)
     return {**out, "diagram": {**out["diagram"], "nodes": nodes, "links": links}}
+
+
+def apply_edits(nodes, links, root, edits):
+    """Corrections made on the map to lines the app found by itself: a new label, a note, the far device's name, type or
+    town, or the line hidden (with whatever is only reached through it). Only the app's map changes, never the router."""
+    def reach(ls):
+        adj = {}
+        for l in ls:
+            adj.setdefault(l["from"], []).append(l["to"])
+            adj.setdefault(l["to"], []).append(l["from"])
+        seen, todo = {root}, [root]
+        while todo:
+            for y in adj.get(todo.pop(), []):
+                if y not in seen:
+                    seen.add(y)
+                    todo.append(y)
+        return seen
+    before = reach(links)
+    byid = {n["id"]: n for n in nodes}
+    kept = []
+    for l in links:
+        e = edits.get(l["id"])
+        if not e:
+            kept.append(l)
+            continue
+        if e.get("hidden"):
+            continue
+        props = {**l["props"], "edited": "1"}
+        if e.get("label"):
+            props["label"] = e["label"]
+        if e.get("note"):
+            props["note"] = e["note"]
+        far = l["from"] if l["to"] == root else l["to"]     # the device at the far end, away from the router
+        n = byid.get(far)
+        if n and (e.get("to_label") or e.get("to_type") or e.get("town")):
+            n = byid[far] = {**n, "label": e.get("to_label") or n["label"], "type": e.get("to_type") or n["type"],
+                             "props": {**n.get("props", {}), **({"location": e["town"]} if e.get("town") else {}), "edited": "on the map"}}
+        kept.append({**l, "props": props})
+    after = reach(kept)
+    gone = before - after
+    return [byid[n["id"]] for n in nodes if n["id"] not in gone], [l for l in kept if l["from"] not in gone and l["to"] not in gone]
 
 
 @app.get("/api/netmap/links")
@@ -1647,6 +1692,55 @@ def netmap_links_save():
         os.replace(tmp, LINKS_PATH)
     AUDIT.log(me(), "map_line", line=row["id"], iface=row["iface"], far=row["far_router"])
     return jsonify(link=row)
+
+
+def links_write(allp):
+    tmp = LINKS_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(allp, f, indent=1)
+    os.replace(tmp, LINKS_PATH)
+
+
+@app.get("/api/netmap/edits")
+def netmap_edits():
+    """The corrections made on the map to lines the app found by itself (and the hidden ones, to bring back)."""
+    return jsonify(edits=links_load().get(netmap_key(router()) + "#edits", {}))
+
+
+@app.post("/api/netmap/edits")
+def netmap_edits_save():
+    """Correct a line the app found by itself: {id, label, note, to_label, to_type, town, hidden, was}. Only the app's map changes."""
+    d = request.get_json(force=True) or {}
+    s = lambda k, n=120: str(d.get(k) or "").strip()[:n]
+    lid = s("id", 200)
+    if not lid or lid.startswith("ml:"):
+        raise DeviceError("Pick a line on the map.")
+    row = {k: v for k, v in {"label": s("label", 80), "note": s("note", 300), "to_label": s("to_label", 80), "to_type": s("to_type", 20),
+                              "town": s("town", 60), "was": s("was", 120)}.items() if v}
+    if d.get("hidden"):
+        row["hidden"] = True
+    row.update(by=me(), at=int(time.time()))
+    key = netmap_key(router()) + "#edits"
+    with GEO_LOCK:
+        allp = links_load()
+        cur = allp.get(key, {})
+        cur[lid] = row
+        allp[key] = dict(list(cur.items())[-1000:])
+        links_write(allp)
+    AUDIT.log(me(), "map_line_hidden" if row.get("hidden") else "map_line_edited", line=lid)
+    return jsonify(edit=row)
+
+
+@app.delete("/api/netmap/edits/<path:lid>")
+def netmap_edits_delete(lid):
+    """Undo a correction (or bring a hidden line back)."""
+    key = netmap_key(router()) + "#edits"
+    with GEO_LOCK:
+        allp = links_load()
+        allp.get(key, {}).pop(lid, None)
+        links_write(allp)
+    AUDIT.log(me(), "map_line_restored", line=lid)
+    return jsonify(ok=True)
 
 
 @app.delete("/api/netmap/links/<lid>")
@@ -1729,6 +1823,86 @@ def sites_check():
         return jsonify(sitewatch.demo_lookup(host) if r_demo() else SITES.lookup(host))
     except ValueError as exc:
         raise DeviceError(str(exc))
+
+
+IPAM = ipam.Plans(DATA_DIR)
+
+
+def ipam_now():
+    """This router's IP plan and the addresses in use on it now."""
+    r = router()
+    data, _ = VIEWCACHE.get(r, "interfaces")
+    return netmap_key(r), IPAM.get(netmap_key(r)), ipam.used_from(data if isinstance(data, list) else (data or {}).get("interfaces", []))
+
+
+@app.get("/api/ipam")
+def ipam_get():
+    """IP plan: blocks, segments, bookings, what is in use on the router, each block's numbers and free gaps, and advice."""
+    key, plan, used = ipam_now()
+    suggested = not plan["blocks"]
+    if suggested:
+        plan = {**plan, "blocks": [{"cidr": c, "name": "Public block (found on the router)"} for c in ipam.suggest_blocks(used)]}
+    return jsonify(plan=plan, suggested=suggested, used=used, purposes=ipam.PURPOSES, stats=[ipam.stats(b["cidr"], plan, used) for b in plan["blocks"]],
+                   findings=ipam.findings(plan, used))
+
+
+@app.post("/api/ipam")
+def ipam_save():
+    """Save the blocks and segments (the bookings are kept as they are)."""
+    key, cur, used = ipam_now()
+    d = request.get_json(force=True) or {}
+    try:
+        plan = ipam.check_plan({"blocks": d.get("blocks"), "pools": d.get("pools"), "allocs": cur["allocs"]})
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    IPAM.put(key, plan)
+    AUDIT.log(me(), "ipam_plan", blocks=len(plan["blocks"]), segments=len(plan["pools"]))
+    return jsonify(plan=plan)
+
+
+@app.post("/api/ipam/allocate")
+def ipam_allocate():
+    """Book the next free subnet of a size in a segment or block: {where, plen, name, note}. Only the plan changes."""
+    key, plan, used = ipam_now()
+    d = request.get_json(force=True) or {}
+    if not plan["blocks"]:
+        plan["blocks"] = [{"cidr": c, "name": "Public block (found on the router)"} for c in ipam.suggest_blocks(used)]
+    if not str(d.get("name") or "").strip():
+        raise DeviceError("Say who or what the addresses are for.")
+    try:
+        a = ipam.allocate(plan, used, str(d.get("where") or ""), d.get("plen") or 30, d.get("name"), d.get("note"), me())
+    except (ValueError, TypeError) as exc:
+        raise DeviceError(str(exc))
+    IPAM.put(key, plan)
+    AUDIT.log(me(), "ipam_allocate", subnet=a["cidr"], name=a["name"])
+    return jsonify(alloc=a, hosts=ipam.hosts(a["cidr"]))
+
+
+@app.delete("/api/ipam/allocs/<aid>")
+def ipam_free(aid):
+    key, plan, used = ipam_now()
+    gone = [a for a in plan["allocs"] if a["id"] == aid]
+    plan["allocs"] = [a for a in plan["allocs"] if a["id"] != aid]
+    IPAM.put(key, plan)
+    AUDIT.log(me(), "ipam_free", subnet=gone[0]["cidr"] if gone else aid)
+    return jsonify(ok=True)
+
+
+@app.post("/api/ipam/layout")
+def ipam_layout():
+    """A suggested split of a block into segments (not saved): {block, regions}."""
+    d = request.get_json(force=True) or {}
+    try:
+        return jsonify(pools=ipam.layout(d.get("block"), [str(x)[:30] for x in (d.get("regions") or [])]))
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+
+
+@app.post("/api/ipam/renumber")
+def ipam_renumber():
+    """Where each subnet would go in the plan (nothing is booked or changed): {moves: {subnet: segment id}}."""
+    key, plan, used = ipam_now()
+    return jsonify(moves=ipam.renumber(plan, used, (request.get_json(force=True) or {}).get("moves") or {}))
 
 
 GEO_PATH = os.path.join(DATA_DIR, "netmap_places.json")
