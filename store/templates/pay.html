@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}Invoice {{ o.ref }} · {{ store_name }}{% endblock %}
+{% block body %}<div class="page"><div class="wrap mid">
+<h1>Invoice {{ o.ref }} <span class="pill {{ o.status }}">{{ o.status }}</span></h1>
+<p class="muted">{{ o.description }}</p>
+<div class="card">
+  <dl class="kv">
+    <dt>Amount</dt><dd>USD {{ '%.2f'|format(o.amount_usd) }}</dd>
+    <dt>In shillings</dt><dd>KES {{ '{:,}'.format(o.amount_kes) }}</dd>
+    <dt>Licence</dt><dd class="mono">{{ lic.key if lic.status == 'active' else 'issued after payment' }}</dd>
+    <dt>Where it runs</dt><dd>{{ 'Hosted by us' if lic.hosting == 'hosted' else 'Your own server' }}</dd>
+  </dl>
+</div>
+{% if o.status == 'paid' %}
+  <div class="ok">Paid, thank you. {% if o.kind == 'new' and lic.hosting == 'hosted' %}Your server is being set up; we will email your login in about 10 minutes.{% elif o.kind == 'new' %}Your licence key and install command are on your account page and in your email.{% endif %}</div>
+  <p><a class="btn primary" href="/account">Go to my account</a></p>
+{% else %}
+<div class="grid2" style="align-items:start;margin-top:20px">
+  <div class="card">
+    <h3>Pay with M-Pesa</h3>
+    {% if mpesa %}
+    <p class="small muted">We send a payment prompt to your phone. Enter your M-Pesa PIN to approve KES {{ '{:,}'.format(o.amount_kes) }}.</p>
+    {% if sandbox %}<div class="note">Test mode: no real money is taken.</div>{% endif %}
+    <form method="post" action="/pay/{{ o.ref }}/mpesa"><input type="hidden" name="csrf" value="{{ csrf }}">
+      <label for="phone">M-Pesa phone number</label><input id="phone" name="phone" type="tel" value="{{ me.phone if me else '' }}" placeholder="0712 345 678" required>
+      <p><button class="btn primary big" style="width:100%">Send M-Pesa prompt</button></p></form>
+    {% else %}<p class="muted small">M-Pesa payments are not switched on yet. Please pay by bank transfer.</p>{% endif %}
+  </div>
+  <div class="card">
+    <h3>Pay by bank transfer</h3>
+    {% if bank.account_number %}
+    <dl class="kv small" style="grid-template-columns:120px 1fr">
+      <dt>Bank</dt><dd>{{ bank.name }}</dd><dt>Account name</dt><dd>{{ bank.account_name }}</dd>
+      <dt>Account no.</dt><dd class="mono">{{ bank.account_number }}</dd>
+      {% if bank.branch %}<dt>Branch</dt><dd>{{ bank.branch }}</dd>{% endif %}
+      {% if bank.swift %}<dt>SWIFT</dt><dd class="mono">{{ bank.swift }}</dd>{% endif %}
+      {% if bank.paybill %}<dt>Paybill</dt><dd class="mono">{{ bank.paybill }}</dd>{% endif %}
+      <dt>Reference</dt><dd class="mono">{{ o.ref }}</dd>
+    </dl>
+    {% if request.args.get('bank') or o.method == 'bank' %}<div class="ok">Thanks. We activate your order as soon as the transfer arrives, usually within one working day.</div>
+    {% else %}<form method="post" action="/pay/{{ o.ref }}/bank"><input type="hidden" name="csrf" value="{{ csrf }}"><p><button class="btn big" style="width:100%">I will pay by bank transfer</button></p></form>{% endif %}
+    {% else %}<p class="muted small">Contact us for bank details. Use {{ o.ref }} as the reference.</p>{% endif %}
+  </div>
+</div>
+{% endif %}
+</div></div>{% endblock %}

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}{{ store_name }}{% endblock %}</title>
+<meta name="description" content="Web management, monitoring and billing for Huawei NetEngine 8000 routers. Licensed per device, self-hosted or hosted.">
+<link rel="stylesheet" href="{{ url_for('static', filename='store.css') }}">
+</head>
+<body>
+<header class="top"><div class="wrap">
+  <a class="brand" href="{{ sales_url or '' }}/"><i></i>{{ store_name }}</a>
+  <nav>
+    <a class="opt" href="{{ sales_url or '' }}/#features">Features</a>
+    <a class="opt" href="{{ sales_url or '' }}/#pricing">Pricing</a>
+    <a class="opt" href="{{ sales_url or '' }}/#faq">FAQ</a>
+    {% if me %}
+      <a href="{{ billing_url or '' }}/account">My account</a>
+      <form method="post" action="{{ billing_url or '' }}/logout"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn link">Sign out</button></form>
+    {% else %}
+      <a href="{{ billing_url or '' }}/login">Sign in</a>
+      <a class="btn primary sm" href="{{ sales_url or '' }}/buy">Buy a licence</a>
+    {% endif %}
+  </nav>
+</div></header>
+{% block body %}{% endblock %}
+<footer><div class="wrap">
+  <div>{{ store_name }}: web management for Huawei NetEngine 8000 routers.</div>
+  <div class="small" style="margin-top:6px">Billing and renewals at <a href="{{ billing_url or '' }}/account">{{ (billing_url or '').replace('https://','') or 'your account' }}</a>. Huawei and NetEngine are trademarks of Huawei Technologies; this product is not made by or affiliated with Huawei.</div>
+</div></footer>
+{% block scripts %}{% endblock %}
+</body>
+</html>

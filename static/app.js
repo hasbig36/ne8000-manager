@@ -1,4 +1,4 @@
-/* NE8000 Manager front end. Plain JS, no build step, no external libraries. */
+/* Yubo (NE8000 Manager) front end. Plain JS, no build step, no external libraries. */
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const attr = s => esc(JSON.stringify(s));
@@ -199,7 +199,7 @@ const NAV = [
   ['Billing', [['billing', 'Splynx billing', I.bill]]],
   ['Routing', [['bgp', 'BGP', I.route], ['policies', 'Route policies', I.route], ['ospf', 'OSPF', I.route], ['isis', 'IS-IS', I.route], ['mpls', 'MPLS / LDP', I.route]]],
   ['System', [['server', 'Server health', I.health], ['resources', 'Resources', I.graph], ['hardware', 'Hardware', I.hw], ['users', 'Router users', I.user], ['settings', 'Settings', I.sys], ['logs', 'Logs & alarms', I.log]]],
-  ['Manager', [['account', 'My account', I.user], ['routers', 'Routers', I.rtr], ['adopt', 'Adopt devices', I.adopt], ['appusers', 'App users', I.user], ['audit', 'Audit log', I.log]]],
+  ['Manager', [['account', 'My account', I.user], ['routers', 'Routers', I.rtr], ['adopt', 'Adopt devices', I.adopt], ['appusers', 'App users', I.user], ['branding', 'Branding', I.sys], ['updates', 'Updates', I.sys], ['audit', 'Audit log', I.log]]],
   ['Tools', [['traffic', 'Traffic monitor', I.graph], ['ping', 'Ping / Traceroute', I.tool], ['console', 'Console', I.term], ['config', 'Config editor', I.term], ['backup', 'Backup', I.tool]]],
 ];
 $('#side').innerHTML = NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>` : '') + items.map(([k, t, ic]) =>
@@ -251,7 +251,7 @@ async function topbar() {
   $('#tMem').textContent = Fmt.pct(o.memory.percent); const up = (o.uptime || '').replace(/ minutes?/, 'm').replace(/ hours?,?/, 'h').replace(/ days?,?/, 'd'); $('#tUp').textContent = up.split(' ').slice(0, 2).join(' '); $('#tUp').parentNode.title = 'Up ' + (o.uptime || '');
   $('#tCpu').parentNode.className = o.cpu >= 85 ? 'hi' : o.cpu >= 70 ? 'mid' : ''; $('#tMem').parentNode.className = o.memory.percent >= 90 ? 'hi' : o.memory.percent >= 80 ? 'mid' : '';
   if ($('#tSwitch')) $('#tSwitch').title = `${o.sysname} · ${o.host}${o.via ? ' · ' + o.via : ''} (switch to another saved router)`;
-  document.title = `${o.sysname} · NE8000 Manager`;
+  document.title = `${o.sysname} · ${($('#top .brand') || {}).dataset?.brand || 'Yubo'}`;
   return o;
 }
 
@@ -2171,16 +2171,16 @@ async function start() {
   $('#appLogin').classList.add('hidden');
   document.querySelectorAll('.meName').forEach(e => e.textContent = `${ME.username} (${ME.role})`);
   document.body.classList.toggle('ro', ME.role === 'viewer');
-  document.querySelectorAll('#side a[data-p=appusers], #side a[data-p=audit], #side a[data-p=routers], #side a[data-p=adopt]').forEach(a => a.style.display = ME.role === 'admin' ? '' : 'none');
+  document.querySelectorAll('#side a[data-p=appusers], #side a[data-p=branding], #side a[data-p=updates], #side a[data-p=audit], #side a[data-p=routers], #side a[data-p=adopt]').forEach(a => a.style.display = ME.role === 'admin' ? '' : 'none');
   $('#demoBtn').style.display = AUTH.allow_demo ? '' : 'none';
   routerPicker();
   if (AUTH.default_host && !$('#host').value) { $('#host').value = AUTH.default_host; $('#port').value = AUTH.default_port || 22; }
   const s = await api('/api/status');
   document.querySelectorAll('.adminOnly').forEach(e => e.style.display = ME.role === 'admin' ? '' : 'none');
   const want = location.hash.slice(1);
-  if (!s.connected && !['account', 'routers', 'adopt', 'appusers', 'audit'].includes(want)) {
+  if (!s.connected && !['account', 'routers', 'adopt', 'appusers', 'branding', 'updates', 'audit'].includes(want)) {
     $('#login').classList.remove('hidden'); $('#shell').classList.add('hidden'); (ROUTER_LIST.length || $('#host').value ? $('#username') : $('#host')).focus();
-    window.onhashchange = () => { if (['account', 'routers', 'adopt', 'appusers', 'audit'].includes(location.hash.slice(1))) location.reload(); };
+    window.onhashchange = () => { if (['account', 'routers', 'adopt', 'appusers', 'branding', 'updates', 'audit'].includes(location.hash.slice(1))) location.reload(); };
     return;
   }
   if (!s.connected) { $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden'); $('#tHost').textContent = 'not connected'; $('#logoutBtn').textContent = 'Connect router'; $('#saveBtn').style.display = 'none';

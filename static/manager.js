@@ -1,5 +1,5 @@
 /* Manager pages: my account, routers (admin), adopt devices (admin), app users (admin) and the audit log (admin). */
-const MANAGER_PAGES = ['account', 'routers', 'adopt', 'appusers', 'audit'];
+const MANAGER_PAGES = ['account', 'routers', 'adopt', 'appusers', 'branding', 'updates', 'audit'];
 const ROLE_HELP = { admin: 'everything, including app users', operator: 'everything except app users', viewer: 'read only' };
 const when = t => t ? new Date(t * 1000).toLocaleString() : '';
 
@@ -16,9 +16,53 @@ PAGES.account = async c => {
   };
 };
 
+PAGES.branding = async c => {
+  const b = await api('/api/brand');
+  let logo = null, remove = false;
+  c.innerHTML = head('Branding', 'your company name and logo in the top bar, sign-in page and browser tab') + `<div class="card" style="max-width:560px">
+    <div class="form"><label>Name shown</label><input id="brName" maxlength="40" value="${esc(b.name === b.product ? '' : b.name)}" placeholder="${esc(b.product)}">
+    <label>Logo (PNG, JPEG or WebP, up to 512 KB; a wide logo about 120 × 30 looks best)</label><input id="brLogo" type="file" accept="image/png,image/jpeg,image/webp"></div>
+    <label style="margin-top:12px">Preview</label><div class="brandPreview" id="brPrev"></div>
+    <div class="err" id="brErr"></div>
+    <div class="actions"><button class="btn" id="brRemove" ${b.logo ? '' : 'disabled'}>Remove logo</button><button class="btn primary" id="brSave">Save</button></div></div>`;
+  const preview = () => {
+    const src = remove ? '' : logo || (b.logo ? '/brand/logo?' + Date.now() : '');
+    $('#brPrev').innerHTML = (src ? `<img src="${src}" alt="">` : '') + `<span>${esc($('#brName').value.trim() || b.product)}</span>`;
+  };
+  $('#brName').oninput = preview;
+  $('#brLogo').onchange = () => {
+    const f = $('#brLogo').files[0]; $('#brErr').textContent = '';
+    if (!f) return;
+    if (f.size > 512 * 1024) { $('#brErr').textContent = 'The logo can be up to 512 KB.'; return; }
+    const r = new FileReader(); r.onload = () => { logo = r.result; remove = false; preview(); }; r.readAsDataURL(f);
+  };
+  $('#brRemove').onclick = () => { remove = true; logo = null; $('#brLogo').value = ''; preview(); };
+  $('#brSave').onclick = async () => {
+    try {
+      await api('/api/brand', { method: 'PUT', body: JSON.stringify({ name: $('#brName').value, logo: logo || '', remove_logo: remove }) });
+      toast('Saved'); location.reload();
+    } catch (e) { $('#brErr').textContent = e.message; }
+  };
+  preview();
+};
+
+PAGES.updates = async c => {
+  c.innerHTML = head('Updates', 'the version this server runs and how to update it') + '<div class="card" style="max-width:640px" id="upC">Checking…</div>';
+  const u = await api('/api/updates');
+  const newer = u.latest && u.latest !== u.version;
+  $('#upC').innerHTML = `<div><span class="muted">This server</span> <b>${esc(u.version)}</b></div>
+    ${u.licensed ? `<div style="margin-top:6px"><span class="muted">Newest release</span> <b>${esc(u.latest || '-')}</b> ${newer ? '<span class="pill p-warn">update available</span>' : u.latest ? '<span class="pill p-ok">up to date</span>' : ''}</div>` : ''}
+    ${u.error ? `<div class="err">${esc(u.error)}</div>` : ''}
+    ${u.notes ? `<h3 style="margin-top:16px">What is new in ${esc(u.latest)}</h3><pre style="white-space:pre-wrap;font:inherit;margin:0">${esc(u.notes)}</pre>` : ''}
+    <h3 style="margin-top:16px">How updates happen</h3>
+    <p>${u.licensed ? 'This server installs new releases by itself every night at 03:30 (server time), after backing up its data. To update now, run on the server:' : 'Run on the server, in the folder the app is installed in:'}</p>
+    <pre class="mono" style="background:var(--code);color:var(--codetext);padding:10px 12px;border-radius:6px">cd ${u.licensed ? '/opt/ne8000' : '/path/to/the/app'} && sudo sh update.sh</pre>
+    <p class="faint" style="font-size:12.5px">Your data, users and settings are kept, and the data folder is backed up first (the 5 newest backups are kept). The app restarts, which takes about a minute.${u.licensed ? ' To stop nightly updates: sudo rm /etc/cron.d/yubo-update' : ''}</p>`;
+};
+
 PAGES.appusers = async c => {
   const { users, roles } = await api('/api/users');
-  c.innerHTML = head('App users', 'who can sign in to NE8000 Manager', `<button class="btn primary" id="auAdd">+ App user</button>`) +
+  c.innerHTML = head('App users', 'who can sign in to ' + esc(($('#top .brand') || {}).dataset?.brand || 'Yubo'), `<button class="btn primary" id="auAdd">+ App user</button>`) +
     `<div class="card"><div id="auT"></div><p class="faint" style="font-size:12.5px;margin-bottom:0">${roles.map(r => `<b>${r}</b>: ${ROLE_HELP[r]}`).join(' · ')}. Router SSH logins are separate: each person still connects with their own router account.</p></div>`;
   table($('#auT'), [{ t: 'Username', k: 'username', f: u => `<b>${esc(u.username)}</b>${u.username === ME.username ? ' <span class="faint">(you)</span>' : ''}` }, { t: 'Role', k: 'role' },
     { t: 'Created', k: 'created', f: u => when(u.created) }, { t: 'Last sign-in', k: 'last_login', f: u => when(u.last_login) || '<span class="faint">never</span>' },
