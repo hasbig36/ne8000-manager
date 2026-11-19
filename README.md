@@ -205,6 +205,16 @@ Follow the steps at the top of `deploy/ne8000.service`: copy the app to `/opt/ne
 - **Live data:** ports, interfaces and map traffic update every 5 s. The slower router reads (the map, System, Route policies, VLANs, OSPF, IS-IS, MPLS, VPNs, logs, LLDP) are kept fresh in the background, so pages open from memory. Stored router data is only dropped after a real change on the router (a commit, reset, save or restore), not after a Review, Check only, note or backup.
 - **SSH stays connected:** the app sends SSH keep-alives and a harmless Enter when the session has been idle for 4 minutes (so the router's vty idle-timeout never closes it), and logs in again by itself with the login held in memory if the router or the network drops the session. After the app restarts (a deploy), sign in to SSH again: the password is never written to disk.
 
+### Alerts (menu: Alerts)
+
+Messages the moment something goes wrong, a reminder while it lasts, and "✅ resolved" when it clears. Checked every minute.
+
+- **Channels** (+ Channel, admins): Telegram (bot token and group chat ID), email (any SMTP server; Gmail with an app password), SMS through Africa's Talking (username, API key, numbers; username `sandbox` to try it), Slack, Microsoft Teams, Discord, or any webhook (JSON). **Send test** on each. Each channel can take every alert, warnings and up, or critical only. Secrets are kept in `<data>/alerts.json` (readable by the app only) and never shown again.
+- **What is alerted** (one rule per kind): link / port down, link flapping, BGP / OSPF / IS-IS / LDP session down, latency, packet loss, link full, errors and drops, SFP light, fibre cut (OTDR), the router itself, sites (power, access, CCTV, site devices), this server, and your own checks. Each rule has a minimum severity, the channels it goes to, "only if it mentions" / "never if it mentions" words (link, description, router, site or address) and how often to remind.
+- **My checks**: ping an address with your own latency and loss limits, check that a TCP port answers, or that a web page loads. Alerts after two failures in a row.
+- **No spam**: problems starting together go out as one message per channel; **Acknowledge** stops reminders; **quiet hours** hold back warnings (critical always goes out) and send them when quiet hours end if they are still there.
+- Link-down alerts cover links that have a description (the same rule as the Health check). Router alerts need the router saved under Manager › Routers with its SNMP login.
+
 ### Server health (System › Health)
 
 At the bottom of the Health page: the machine the app is hosted on. It shows whether it is a virtual machine and from which maker (e.g. QEMU/KVM), the kernel, CPU model and cores, memory, the disk holding the app's data, how long the server and the app have been up, and the app process's memory. CPU, memory, disk and load are sampled every minute and graphed for the last 24 hours (kept in memory, so the graph starts again after a restart). Warnings appear when the disk is 80% full or more, memory is 90% used or more, swap is half used, or the load is above the number of cores. Inside Docker, CPU, memory, load and uptime are the host's; the hostname is the container's.

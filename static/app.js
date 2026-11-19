@@ -183,6 +183,7 @@ function showOutput(title, text) {
 
 /* ---------- navigation ---------- */
 const I = {
+  bell: '<path d="M4 11V7a4 4 0 0 1 8 0v4l1.5 2h-11zM6.5 14a1.5 1.5 0 0 0 3 0"/>',
   site: '<path d="M2 14h12M3 14V6l5-3 5 3v8M6 14v-3h4v3M6 8h1M9 8h1"/>',
   dash: '<path d="M2 2h5v6H2zM9 2h5v3H9zM9 7h5v7H9zM2 10h5v4H2z"/>', health: '<path d="M1 8h3l2-4 3 8 2-4h4"/>', ifs: '<path d="M2 4h12v8H2zM5 7v2M8 7v2M11 7v2"/>', vlan: '<path d="M2 3h12M2 8h12M2 13h12M5 3v10M11 3v10"/>',
   ip: '<circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2 2 2 10 0 12M8 2c-2 2-2 10 0 12"/>', route: '<path d="M3 13V8a3 3 0 013-3h7M10 2l3 3-3 3"/>', q: '<path d="M2 4h9M2 8h12M2 12h6"/>',
@@ -191,7 +192,7 @@ const I = {
   term: '<path d="M2 3h12v10H2zM4 6l2 2-2 2M8 10h4"/>', rtr: '<path d="M2 9h12v4H2zM5 11h.01M8 11h.01M4 9l2-5h4l2 5"/>', adopt: '<path d="M2 9h8v4H2zM12 3v6M9 6h6"/>', plan: '<path d="M2 3l4-1 4 2 4-1v11l-4 1-4-2-4 1zM6 2v11M10 4v11"/>', bill: '<path d="M3 2h10v12l-2-1-2 1-2-1-2 1-2-1zM5.5 5h5M5.5 8h5M5.5 11h3"/>',
 };
 const NAV = [
-  [null, [['dashboard', 'Dashboard', I.dash], ['health', 'Health check', I.health], ['sites', 'Sites', I.site], ['changes', 'Change log', I.log]]],
+  [null, [['dashboard', 'Dashboard', I.dash], ['health', 'Health check', I.health], ['alerts', 'Alerts', I.bell], ['sites', 'Sites', I.site], ['changes', 'Change log', I.log]]],
   ['Network', [['interfaces', 'Interfaces', I.ifs], ['graphs', 'Graphs', I.graph], ['netflow', 'Traffic per address', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
   ['IP', [['ipplan', 'IP plan', I.plan], ['addresses', 'Addresses', I.ip], ['routes', 'Routes', I.route], ['arp', 'ARP', I.ip], ['vpn', 'VPN instances', I.ip], ['neighbors', 'Neighbors (LLDP)', I.ip]]],
   ['Planning', [['netmap', 'Network map', I.plan], ['plans', 'Network plans', I.plan]]],

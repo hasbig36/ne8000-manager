@@ -39,6 +39,7 @@ import routers
 import ipam
 import sitereg
 import serverinfo
+import alerts
 import sitewatch
 import viewcache
 from device import DeviceError, RealRouter, _cidr, is_read_only
@@ -143,7 +144,8 @@ def close_router(r):
 OPEN = {"index", "static", "auth_login", "auth_me", "healthz", "otdr_event", "site_event"}     # otdr_event checks its own token or login
 # endpoints a viewer may POST to; everything else that changes something needs operator or admin
 VIEWER_POST = {"connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password", "sites_check", "sites_run", "ipam_layout", "ipam_renumber"}
-ADMIN_ONLY = {"users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
+ADMIN_ONLY = {"alerts_channel_add", "alerts_channel_delete", "alerts_test", "alerts_rules", "alerts_settings", "alerts_check_save", "alerts_check_delete",
+              "users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
               "routers_test_snmp", "adopt_discover", "adopt_scan", "adopt_build", "adopt_apply", "adopt_identify"}
 
 
@@ -1123,6 +1125,110 @@ def health_report():
     if not (SAVED.get(rid) or {}).get("snmp"):
         out["note"] = "Add this router's SNMP login under Manager > Routers so the health check can read its links and optics."
     return jsonify(out)
+
+
+# ---- alerts: Telegram, email, SMS, Slack/Teams/webhook ------------------------------
+SK_LABEL = {"power": "power", "access": "access", "cctv": "CCTV", "env": "environment", "device": "device"}
+
+
+def alert_sources():
+    """Everything wrong now, as alert problems: health findings and down sessions of every saved router, site alarms, this server."""
+    out = []
+    for r in list(SAVED.routers):
+        rid, name = r["id"], r.get("name") or r.get("host")
+        for f in HEALTH.report(rid).get("findings", []):
+            out.append({"key": f"{rid}:{f['id']}", "kind": alerts.HEALTH_MAP.get(f["kind"], "router"), "severity": f.get("severity", "warning"),
+                        "title": f"{f.get('title') or f['kind']}: {f.get('target', '')}".rstrip(": "), "detail": f.get("detail", ""),
+                        "target": f.get("target", ""), "description": f.get("description", ""), "where": name, "since": f.get("since")})
+        for kind, key, state, info, since in TRACK.down_sessions(rid):
+            out.append({"key": f"{rid}:{kind}:{key}", "kind": "session_down", "severity": "critical", "title": f"{kind.upper()} session down: {key}",
+                        "detail": (f"state {state}" if state else "down") + (f", {info}" if info else ""), "target": key, "where": name, "since": since})
+    for st in SITEREG.sites():
+        for a in SITEREG.alarms(st["id"]):
+            out.append({"key": f"site:{st['id']}:{a['kind']}:{a.get('asset', '')}:{a['event'] if a.get('source') != 'ping' else 'down'}", "kind": "site",
+                        "severity": a["severity"], "title": f"{st.get('code') or st['name']} {SK_LABEL.get(a['kind'], a['kind'])}: {a['event'].replace('_', ' ')}"
+                        + (f" ({a['asset']})" if a.get("asset") else ""), "detail": a.get("detail", ""), "target": a.get("asset", ""), "where": st["name"], "since": a.get("ts")})
+    for w in serverinfo.report(DATA_DIR)["warnings"]:
+        out.append({"key": "server:" + w["text"].split(":")[0][:40], "kind": "server", "severity": w["severity"], "title": "Server: " + w["text"].split(".")[0],
+                    "detail": w["text"], "where": "NE8000 Manager server"})
+    return out
+
+
+ALERTS = alerts.Alerts(DATA_DIR, alert_sources, health._safe_ping)
+
+
+def _alerts_do(fn):
+    try:
+        return fn()
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+
+@app.get("/api/alerts")
+def alerts_get():
+    return jsonify(ALERTS.public())
+
+
+@app.post("/api/alerts/channels")
+def alerts_channel_add():
+    d = request.get_json(silent=True) or {}
+    def go():
+        c = ALERTS.save_channel(d, d.get("id") or None)
+        AUDIT.log(me(), "alert_channel_saved", name=c["name"], type=c["type"])
+        return jsonify(ALERTS.public())
+    return _alerts_do(go)
+
+
+@app.delete("/api/alerts/channels/<cid>")
+def alerts_channel_delete(cid):
+    ALERTS.delete_channel(cid)
+    AUDIT.log(me(), "alert_channel_deleted", id=cid)
+    return jsonify(ALERTS.public())
+
+
+@app.post("/api/alerts/test")
+def alerts_test():
+    d = request.get_json(silent=True) or {}
+    def go():
+        ok, err = ALERTS.test_channel(d, d.get("id") or None)
+        return jsonify(ok=ok, error=err)
+    return _alerts_do(go)
+
+
+@app.post("/api/alerts/rules")
+def alerts_rules():
+    d = request.get_json(silent=True) or {}
+    return _alerts_do(lambda: (ALERTS.save_rules(d.get("rules") or []), AUDIT.log(me(), "alert_rules_saved"), jsonify(ALERTS.public()))[2])
+
+
+@app.post("/api/alerts/settings")
+def alerts_settings():
+    d = request.get_json(silent=True) or {}
+    return _alerts_do(lambda: (ALERTS.save_settings(d), jsonify(ALERTS.public()))[1])
+
+
+@app.post("/api/alerts/checks")
+def alerts_check_save():
+    d = request.get_json(silent=True) or {}
+    return _alerts_do(lambda: (ALERTS.save_check(d, d.get("id") or None), jsonify(ALERTS.public()))[1])
+
+
+@app.delete("/api/alerts/checks/<cid>")
+def alerts_check_delete(cid):
+    ALERTS.delete_check(cid)
+    return jsonify(ALERTS.public())
+
+
+@app.post("/api/alerts/ack")
+def alerts_ack():
+    d = request.get_json(silent=True) or {}
+    return _alerts_do(lambda: (ALERTS.ack(str(d.get("key") or ""), me()), jsonify(ALERTS.public()))[1])
+
+
+@app.post("/api/alerts/run")
+def alerts_run():
+    ALERTS.run_now()
+    return jsonify(ok=True)
 
 
 @app.get("/api/server")
@@ -2228,6 +2334,7 @@ if __name__ == "__main__":
         HIST.start()   # 5-minute interface history for every saved router with an SNMP login
     if env_on("NE8000_HEALTH", "1"):
         HEALTH.start()
+        ALERTS.start()      # alerts: send problems to Telegram, email, SMS, Slack/Teams/webhook every minute
         serverinfo.start(DATA_DIR)  # server health: CPU, memory and disk use every minute
         SITEREG.start()     # sites: ping the devices, power, door and camera systems registered at each, every minute
         SITES.start()   # major sites: ping and trace to Google, YouTube, Facebook... every 5 minutes

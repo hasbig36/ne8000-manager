@@ -303,6 +303,14 @@ class Tracker:
                               "WHERE rid=s.rid AND kind=s.kind AND key=s.key AND ts<=?)", (rid, kind, cut))
             return {k: (ts, a, b, c) for k, ts, a, b, c in rows}
 
+    def down_sessions(self, rid):
+        """[(kind, key, state, info, down_since)] for every BGP/OSPF/IS-IS/LDP session that is not up now."""
+        with self._db() as db:
+            q = ",".join("?" * len(SESSION_KINDS))
+            rows = db.execute(f"SELECT kind, key, value, info, COALESCE(down_at, since) FROM state WHERE rid=? AND kind IN ({q}) AND miss<?",
+                              (rid, *SESSION_KINDS, GONE_AFTER)).fetchall()
+        return [r for r in rows if r[2] not in UP]
+
     def tracked(self, rid):
         with self._db() as db:
             return {k: (n, ts) for k, n, ts in db.execute(

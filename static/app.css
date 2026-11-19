@@ -368,3 +368,8 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
 @media (max-width: 600px) { .srvgrid table.kv td:first-child { white-space: normal; width: 35%; padding-right: 8px; } }
 .srvgrid table.kv { table-layout: fixed; } .srvgrid table.kv td { white-space: normal; } .srvgrid table.kv td:first-child { width: 150px; }
 @media (max-width: 600px) { .srvgrid table.kv td:first-child { width: 110px; } }
+
+/* Alerts */
+.alrules td { vertical-align: top; }
+.alrules .arTo label { display: block; font-weight: 400; white-space: nowrap; font-size: 12.5px; }
+.alrules input.arInc, .alrules input.arExc { width: 130px; }
