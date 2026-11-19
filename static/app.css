@@ -278,3 +278,45 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
 .noc .vsel{display:flex;gap:6px;align-items:center}.noc .vsel select{max-width:240px}
 .noc .sshb.on{border-color:var(--ok);color:var(--ok)}
 @media (max-width:900px){.noc .side{display:none}}
+/* warnings on the map */
+.canvas.nmap .wbadge path,.canvas.nmap .link .wbadge path{stroke:#1a1208;stroke-width:1.2;stroke-dasharray:none;animation:none}.canvas.nmap .wbadge text{font:800 12px system-ui,sans-serif;fill:#1a1208;pointer-events:none}
+.canvas.nmap .wbadge text.n{font-size:10px;fill:var(--text);paint-order:stroke;stroke:var(--bg);stroke-width:3px}
+.canvas.nmap .wbadge.warn path{fill:#ffb020}.canvas.nmap .wbadge.crit path{fill:#ff4d4f}.canvas.nmap .wbadge.crit text{fill:#fff}
+.canvas.nmap .wbadge.crit{animation:wpulse 1.2s ease-in-out infinite}.canvas.nmap .wbadge{cursor:pointer}
+@keyframes wpulse{50%{opacity:.45}}
+@media (prefers-reduced-motion:reduce){.canvas.nmap .wbadge.crit{animation:none}}
+.wlist{display:flex;flex-direction:column;gap:6px;margin:6px 0 10px}.witem{border-left:3px solid #ffb020;background:var(--accent-soft);padding:6px 8px;border-radius:4px;font-size:12.5px}
+.witem.crit{border-left-color:#ff4d4f}.witem b{font-size:13px}.witem .muted{margin-top:3px;font-size:12px}
+.wdot.warn{color:#ffb020}.wdot.crit{color:#ff4d4f}.noc .warnc{color:#ffb020}.noc .tile.wt{cursor:pointer}
+.noc .wpick{cursor:pointer;padding:6px 0;border-bottom:1px solid var(--line)}.noc .wpick:hover{background:var(--accent-soft)}
+.noc .seg{display:inline-flex}.noc .seg button{background:var(--panel);color:var(--text);border:1px solid var(--line);padding:4px 10px;font-size:12.5px;cursor:pointer}
+.noc .seg button+button{border-left:none}.noc .seg button:first-child{border-radius:6px 0 0 6px}.noc .seg button:last-child{border-radius:0 6px 6px 0}
+.noc .seg button.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+.noc .gplace{margin-top:10px;display:flex;flex-direction:column;gap:4px;font-size:12.5px}
+/* the Kenya map */
+.canvas.nmap.geo{overflow:hidden;background:#07040f}.canvas.nmap.geo svg{cursor:grab}.canvas.nmap.geo svg:active{cursor:grabbing}
+.geo .gnear path{fill:#140b26;stroke:#3b2a5c;stroke-width:1;vector-effect:non-scaling-stroke}
+.geo .gland{fill:#25123f;stroke:#c48bff;stroke-width:1.6;vector-effect:non-scaling-stroke}.geo .gland-glow{fill:none;stroke:#a35cff;stroke-opacity:.22;stroke-width:12;vector-effect:non-scaling-stroke;stroke-linejoin:round}
+.geo .gcounty path{fill:transparent;stroke:#9a6ad6;stroke-opacity:.38;stroke-width:.8;vector-effect:non-scaling-stroke}.geo .gcounty path:hover{fill:#ffffff08}
+.geo .glake path{fill:#0f1e45;stroke:#3c5aa8;stroke-width:.8;vector-effect:non-scaling-stroke;pointer-events:none}
+.geo .gsea{fill:none;stroke:#3aa0ff;stroke-width:2;stroke-dasharray:7 5;vector-effect:non-scaling-stroke}.geo .gsea-l{fill:#7cc0ff;font-style:italic}
+.geo .gcredit{fill:#ffffff55;text-anchor:end;pointer-events:none}
+.geo .garc path{fill:none;vector-effect:non-scaling-stroke;stroke-linecap:round}.geo .garc{--c:#ff9a2e}
+.geo .garc path.glow{stroke:var(--c);stroke-opacity:.18;pointer-events:none}.geo .garc path.vis{stroke:var(--c);pointer-events:none}
+.geo .garc path.flow{stroke:#fff;stroke-opacity:.8;stroke-width:2;stroke-dasharray:3 14;animation:nmflow linear infinite;pointer-events:none}.geo .garc path.flow.rev{stroke-opacity:.35}
+.geo .garc path.hit{stroke:transparent;vector-effect:none;cursor:pointer}
+.geo .garc.nm-warn{--c:#ffd02e}.geo .garc.nm-bad{--c:#ff5a3c}.geo .garc.nm-down,.geo .garc.nm-bgpdown{--c:#ff2d55}
+.geo .garc.nm-down path.vis,.geo .garc.nm-bgpdown path.vis{stroke-dasharray:8 6;animation:nocblink 1s steps(2,start) infinite}
+.geo .garc text{fill:#fff;text-anchor:middle;font-weight:600;paint-order:stroke;stroke:#07040f;stroke-width:3px;stroke-opacity:.85;pointer-events:none}
+.geo .garc.sel path.vis{stroke:#fff}
+.geo .gsite{cursor:pointer}.geo .gsite .pin{fill:#ffb347;stroke:#fff;stroke-width:1.4;vector-effect:non-scaling-stroke}
+.geo .gsite .halo{fill:#ff9a2e;opacity:.16}.geo .gsite.hub .pin{fill:#ff7a00}.geo .gsite.hub .halo{opacity:.3;animation:ghub 2.4s ease-in-out infinite}
+.geo .gsite.nm-down .pin,.geo .gsite.nm-bgpdown .pin{fill:#ff2d55}.geo .gsite.sel .pin{fill:#fff}
+.geo .gsite text{fill:#fff;font-weight:700;letter-spacing:.4px;paint-order:stroke;stroke:#07040f;stroke-width:3px;stroke-opacity:.9}.geo .gsite text .n{fill:#ffb347;font-weight:600}
+.geo .gdev line{stroke:#ff9a2e;stroke-opacity:.5;vector-effect:non-scaling-stroke}.geo .gdev circle{fill:#ffd08a;stroke:#07040f;vector-effect:non-scaling-stroke}
+.geo .gdev text{fill:#f4e8ff;font-weight:500;letter-spacing:0}.geo .gdev.warn circle{fill:#ffb020}.geo .gdev.crit circle{fill:#ff4d4f}
+.geo .dim{opacity:.18}
+@keyframes ghub{50%{opacity:.08}}
+@media (prefers-reduced-motion:reduce){.geo .gsite.hub .halo,.geo .garc path.flow{animation:none}}
+.noc .nh{flex-wrap:nowrap}.noc .seg button,.noc .nh .clk,.noc .nh .btn{white-space:nowrap}.noc #ncInfo{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.noc .nh .clk{margin-left:0}
+.noc .tile .v{white-space:nowrap;font-size:clamp(20px,1.7vw,28px)}

@@ -9,6 +9,9 @@ latency target), then reports what is wrong or unusual:
   - SFP received / sent light outside the module's alarm levels, near them, or falling
   - links that went down or keep flapping
   - latency and packet loss, pinged from this server to the router and to customer CPEs
+  - a step in the shortest round trip ("distance changed"): traffic took a longer path
+  - links filling up (80% and more) before they are full
+  - fibre events (break, loss, distance to the fault) sent in by an OTDR / fibre monitoring system
   - router CPU, memory and temperature
 Nothing here talks to the router's CLI or changes anything.
 """
@@ -46,6 +49,9 @@ ADVICE = {
     "down": "Check the far-end equipment, its power, the fibre/cable and the SFP on both sides.",
     "flap": "A link that keeps going down and up: usually a loose or dirty connector, a failing SFP, or power problems at the far end.",
     "latency": "Delay usually comes from a full link on the way (queueing). Check usage and drops on the interfaces towards this address.",
+    "distance": "The shortest round trip went up and stayed up: traffic now takes a longer path (a protection switch, a reroute at a provider, or a fibre repaired along another route). Check for link or BGP changes at that time, and that the main path is back.",
+    "capacity": "The link is filling up. Plan an upgrade or move some customers before it reaches 90% at peak, when customers start to feel it.",
+    "otdr": "Send a team to the distance shown along this fibre route; compare it with the route records to find the spot (a manhole, a pole, a road crossing).",
     "loss": "Packets lost on the way: check drops and errors on the interfaces towards this address, and the device itself.",
     "cpu": "High CPU slows the router's own work (routing protocols, management). Check what changed: a traffic storm, an attack, or a debug left on.",
     "memory": "Memory close to full can make the router drop sessions or routes.",
@@ -103,6 +109,7 @@ class Health:
     def __init__(self, data_dir, saved, history):
         self.path = os.path.join(data_dir, "health.db")
         self.tpath = os.path.join(data_dir, "health_targets.json")
+        self.opath = os.path.join(data_dir, "otdr_events.json")
         self.saved, self.history = saved, history       # history owns the SNMP clients
         self.prev = {}          # (rid, ifname) -> previous counters
         self.findings = {}      # rid -> [finding]
@@ -297,11 +304,14 @@ class Health:
             sp = g("speed")
             if isinstance(sp, int) and sp > 0 and d["inb"] is not None and d["outb"] is not None:
                 use = max(d["inb"], d["outb"]) * 8 / (sp * 1e6) * 100
+                way = "in" if d["inb"] >= d["outb"] else "out"
                 if use >= 90:
-                    way = "in" if d["inb"] >= d["outb"] else "out"
                     found.append({**base, "id": "congestion:" + name, "kind": "congestion", "slow": True, "value": use,
                                   "severity": "critical" if use >= 98 else "warning", "title": "Link nearly full",
                                   "detail": f"{use:.0f}% used ({way}) of {_speed(sp)}.", "advice": ADVICE["congestion"]})
+                elif use >= 80:
+                    found.append({**base, "id": "capacity:" + name, "kind": "capacity", "slow": False, "value": use, "severity": "warning",
+                                  "title": "Port capacity running low", "detail": f"{use:.0f}% used ({way}) of {_speed(sp)}.", "advice": ADVICE["capacity"]})
         return n
 
     # ---- SFP light ---------------------------------------------------------------
@@ -382,6 +392,14 @@ class Health:
                     found.append({"id": "latency:" + t["ip"], "kind": "latency", "target": t["ip"], "description": t["label"], "slow": True,
                                   "severity": "critical" if r["avg"] > 3 * mean + 50 else "warning", "value": r["avg"], "title": "Latency up",
                                   "detail": f"{r['avg']:.1f} ms round trip, normally {mean:.1f} ms.", "advice": ADVICE["latency"]})
+            if r.get("min") is not None:
+                nb, mean, sd = self.learn(rid, t["ip"], "rtt_min", r["min"])
+                step = r["min"] - mean
+                if nb >= LEARN and step >= max(3, 4 * sd, 0.3 * mean):
+                    found.append({"id": "distance:" + t["ip"], "kind": "distance", "target": t["ip"], "description": t["label"], "slow": True,
+                                  "severity": "warning", "value": step, "title": "Distance changed (longer path)",
+                                  "detail": f"Shortest round trip {r['min']:.1f} ms, normally {mean:.1f} ms: about {step * 100:.0f} km more fibre on the way.",
+                                  "advice": ADVICE["distance"]})
             nb, mean, sd = self.learn(rid, t["ip"], "loss", r["loss"], clip=False)
             if r["received"] == 0:
                 if nb >= 3 and mean < 50:       # it normally answers; a device that never answers ping is not a problem
@@ -396,13 +414,55 @@ class Health:
         self.latency[rid] = rows
         return note
 
+    # ---- fibre events from an OTDR / fibre monitoring system ----------------------------
+    def _otdr_all(self):
+        try:
+            with open(self.opath) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def otdr(self, rid):
+        """The latest event per fibre route in the last 7 days, without the ones marked ok (cleared)."""
+        now = time.time()
+        return [e for e in self._otdr_all().get(rid, []) if e.get("event") != "ok" and now - e.get("ts", 0) < 7 * 86400]
+
+    def otdr_add(self, rid, ev):
+        link = str(ev.get("link") or ev.get("interface") or "").strip()[:120]
+        if not link:
+            raise ValueError("Say which fibre: link (an interface name or a line label).")
+        kind = str(ev.get("event") or "fault").strip().lower()[:40]
+        num = lambda k: round(float(ev[k]), 3) if ev.get(k) not in (None, "") else None
+        row = {"link": link, "event": kind, "km": num("distance_km"), "loss_db": num("loss_db"), "ts": int(ev.get("ts") or time.time()),
+               "severity": "critical" if kind in ("break", "cut", "fault") or str(ev.get("severity", "")).lower() == "critical" else "warning",
+               "source": str(ev.get("source") or "OTDR")[:60], "note": str(ev.get("note") or "")[:200]}
+        with self.lock:
+            allo = self._otdr_all()
+            rows = [e for e in allo.get(rid, []) if e["link"] != link][-199:] + [row]     # the latest event per route wins
+            allo[rid] = rows
+            tmp = self.opath + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(allo, f, indent=1)
+            os.replace(tmp, self.opath)
+        return row
+
     def report(self, rid):
         with self.lock:
             f = list(self.findings.get(rid, []))
+        f += [otdr_finding(e) for e in self.otdr(rid)]
+        with self.lock:
             st = dict(self.status.get(rid, {}))
             lat = list(self.latency.get(rid, []))
         f.sort(key=lambda x: (x["severity"] != "critical", not x.get("slow"), x["kind"], x["target"]))
         return {"findings": f, "status": st, "latency": lat, "targets": self.targets(rid), "interval": INTERVAL, "learn_hours": LEARN * INTERVAL // 3600}
+
+
+def otdr_finding(e):
+    what = {"break": "Fibre break", "cut": "Fibre break", "fault": "Fibre fault", "loss": "Fibre loss up", "bend": "Fibre bend", "reflectance": "Bad splice or connector"}.get(e["event"], "Fibre event: " + e["event"])
+    at = f" {e['km']:g} km along the route" if e.get("km") is not None else ""
+    return {"id": "otdr:" + e["link"], "kind": "otdr", "target": e["link"], "description": e.get("note", ""), "slow": True, "severity": e["severity"],
+            "value": e.get("km"), "title": f"{what} (OTDR)", "since": e["ts"],
+            "detail": f"{e['source']}: {what.lower()}{at}" + (f", {e['loss_db']:g} dB loss" if e.get("loss_db") is not None else "") + ".", "advice": ADVICE["otdr"]}
 
 
 def _safe_ping(ip):
@@ -435,6 +495,14 @@ def demo_report(ifs):
          "value": 3.2, "title": "Input errors (CRC)", "detail": "3.2 errors/s, 0.004% of packets received.", "advice": ADVICE["errors"], "since": now - 9000},
         {"id": "rxfall:GigabitEthernet0/1/6", "kind": "optics", "target": "GigabitEthernet0/1/6", "severity": "warning", "slow": False,
          "value": -17.8, "title": "SFP light falling", "detail": "Receiving -17.80 dBm, 3.1 dB below its normal -14.70 dBm.", "advice": ADVICE["rx_fall"], "since": now - 86400},
+        {"id": "distance:102.216.117.34", "kind": "distance", "target": "102.216.117.34", "description": "Shared reseller VLAN CPE", "severity": "warning", "slow": True,
+         "value": 6.1, "title": "Distance changed (longer path)", "detail": "Shortest round trip 8.3 ms, normally 2.2 ms: about 610 km more fibre on the way.",
+         "advice": ADVICE["distance"], "since": now - 1200},
+        {"id": "flap:GigabitEthernet0/1/4.200", "kind": "flap", "target": "GigabitEthernet0/1/4.200", "severity": "warning", "slow": True,
+         "title": "Link flapping", "detail": "Went down and up 3 times in the last 24 hours.", "advice": ADVICE["flap"], "since": now - 5400},
+        {"id": "capacity:100GE0/2/0", "kind": "capacity", "target": "100GE0/2/0", "severity": "warning", "slow": False,
+         "value": 84, "title": "Port capacity running low", "detail": "84% used (in) of 100 Gbit/s.", "advice": ADVICE["capacity"], "since": now - 3600},
+        otdr_finding({"link": "GigabitEthernet0/1/5", "event": "loss", "km": 12.4, "loss_db": 1.8, "ts": now - 7200, "severity": "warning", "source": "OTDR (demo)", "note": ""}),
     ]
     for x in f:
         x.setdefault("description", d(x["target"]))

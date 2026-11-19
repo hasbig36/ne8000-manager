@@ -7,6 +7,8 @@ Run:  python app.py                          (http://127.0.0.1:5000)
 Settings for hosting come from environment variables (see README, "Hosting").
 """
 import argparse
+import hmac
+import json
 import os
 import datetime
 import ipaddress
@@ -133,7 +135,7 @@ def close_router(r):
 
 
 # ---- app login ---------------------------------------------------------------------
-OPEN = {"index", "static", "auth_login", "auth_me", "healthz"}
+OPEN = {"index", "static", "auth_login", "auth_me", "healthz", "otdr_event"}     # otdr_event checks its own token or login
 # endpoints a viewer may POST to; everything else that changes something needs operator or admin
 VIEWER_POST = {"connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password"}
 ADMIN_ONLY = {"users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
@@ -1562,6 +1564,84 @@ def netmap_traffic():
     except Exception:
         pass
     return jsonify(ifs=out, peers=peers, at=time.time())
+
+
+DEMO_PLACES = {"u:64512": "MOMBASA", "s:100GE0/2/1": "MOMBASA", "g:GigabitEthernet0/1/4": "NAKURU", "c:GigabitEthernet0/1/4.100": "ELDORET",
+               "c:GigabitEthernet0/1/4.200": "KISUMU", "g:GigabitEthernet0/1/5": "ISIOLO", "c:GigabitEthernet0/1/6.301": "MARSABIT",
+               "c:GigabitEthernet0/1/6.302": "THIKA", "c:GigabitEthernet0/1/6.303": "MALINDI", "c:GigabitEthernet0/1/6.304": "KAKAMEGA",
+               "c:GigabitEthernet0/1/6.399": "MACHAKOS"}
+GEO_PATH = os.path.join(DATA_DIR, "netmap_places.json")
+GEO_LOCK = threading.Lock()
+
+
+def geo_load():
+    try:
+        with open(GEO_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+@app.get("/api/netmap/places")
+def netmap_places():
+    """Where each device of the map sits on the geographic NOC map (a town, set by hand), shared by everyone."""
+    r = router()
+    got = geo_load().get(netmap_key(r))
+    if got is None and r.demo:      # the demo network spread over Kenya, so the map has something to show
+        got = dict(DEMO_PLACES)
+    return jsonify(places=got or {})
+
+
+@app.post("/api/netmap/places")
+def netmap_places_set():
+    """Place devices: {"places": {node_id: "Town" or "" to go back to automatic}}. Only this app's data changes."""
+    r = router()
+    key, d = netmap_key(r), (request.get_json(force=True) or {}).get("places") or {}
+    with GEO_LOCK:
+        allp = geo_load()
+        cur = allp.setdefault(key, dict(DEMO_PLACES) if r.demo else {})
+        for k, v in list(d.items())[:2000]:
+            v = str(v or "").strip()[:60]
+            if v:
+                cur[str(k)[:200]] = v
+            else:
+                cur.pop(str(k), None)
+        tmp = GEO_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(allp, f, indent=1)
+        os.replace(tmp, GEO_PATH)
+    AUDIT.log(me(), "map_places", count=len(d))
+    return jsonify(places=cur)
+
+
+@app.post("/api/otdr")
+def otdr_event():
+    """A fibre event from an OTDR / fibre monitoring system, shown on the health page and the NOC map:
+    {"link": "GigabitEthernet0/1/6.301" or a line label, "event": "break|loss|bend|reflectance|ok", "distance_km": 12.4,
+     "loss_db": 1.8, "source": "EXFO FG-750", "note": "", "router": "<router address>"}. "ok" clears that route.
+    A monitoring system signs in with the header Authorization: Bearer <NE8000_OTDR_TOKEN>; a signed-in admin can post too."""
+    d = request.get_json(force=True) or {}
+    tok = os.environ.get("NE8000_OTDR_TOKEN", "")
+    if tok and hmac.compare_digest(request.headers.get("Authorization", "").encode(), ("Bearer " + tok).encode()):
+        who = "otdr-feed"
+        rid = str(d.get("router_id") or "") or next((x["id"] for x in SAVED.list() if x.get("host") == d.get("router")), "")
+    else:
+        u = current_user()
+        if not u:
+            return jsonify(error="Please log in, or send the OTDR token."), 401
+        if request.headers.get("X-Requested-With") != "ne8000":
+            return jsonify(error="Missing request header."), 403
+        if u["role"] != "admin":
+            return jsonify(error="Only admins can do this."), 403
+        who, rid = me(), session.get("router_id", "")
+    if not rid:
+        raise DeviceError("Say which router the fibre belongs to (router: its address), or connect to a saved router.")
+    try:
+        row = HEALTH.otdr_add(rid, d)
+    except (ValueError, TypeError) as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(who, "otdr_event", target=row["link"], event=row["event"], km=row["km"])
+    return jsonify(event=row)
 
 
 @app.post("/api/plans/auto")

@@ -288,7 +288,7 @@ PAGES.dashboard = async c => {
 };
 
 /* ----- smart health check: what is wrong or unusual, and what to do about it ----- */
-const HK = { errors: 'Errors', out_drops: 'Drops', in_drops: 'Drops', congestion: 'Full link', optics: 'SFP light', down: 'Link down', flap: 'Flapping', latency: 'Latency', loss: 'Loss', cpu: 'CPU', memory: 'Memory', temp: 'Temperature' };
+const HK = { errors: 'Errors', out_drops: 'Drops', in_drops: 'Drops', congestion: 'Full link', optics: 'SFP light', down: 'Link down', flap: 'Flapping', latency: 'Latency', loss: 'Loss', distance: 'Distance', capacity: 'Filling up', otdr: 'Fibre (OTDR)', cpu: 'CPU', memory: 'Memory', temp: 'Temperature' };
 function ago(t) { if (!t) return '-'; const s = Math.max(0, Date.now() / 1000 - t); return s < 90 ? 'just now' : s < 5400 ? Math.round(s / 60) + ' min ago' : s < 172800 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' days ago'; }
 PAGES.health = async c => {
   const h = await api('/api/health'); const f = h.findings || [], st = h.status || {}, lat = h.latency || [];
@@ -1737,7 +1737,7 @@ let NOC_THEME = null;
 function nocLeave() {
   if (NOC_THEME === null) return;
   if (NOC_THEME) document.documentElement.dataset.theme = NOC_THEME; else delete document.documentElement.dataset.theme;
-  NOC_THEME = null; NM.noc = null; NM.show = null; NM.focus = null; if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  NOC_THEME = null; NM.noc = null; NM.show = null; NM.focus = null; NM.geo = false; NM.userZoom = false; if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 }
 $('#nocBtn').onclick = () => { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {}); location.hash = 'noc'; };
 PAGES.noc = async c => {
@@ -1746,12 +1746,15 @@ PAGES.noc = async c => {
   const view = decodeURIComponent((location.hash.split('/')[1] || ''));   // #noc/<view>: a wall screen can stay on one view
   c.innerHTML = `<div class="noc"><div class="nh"><span class="ttl">NOC · ${esc($('#tName').textContent)}</span>
       <span class="vsel"><select id="ncV" title="show the whole network, one port group, one region or one device"><option value="">Whole network</option></select></span>
+      <span class="seg" id="ncM"><button data-m="d" title="the network as a diagram">Diagram</button><button data-m="g" title="the network on the map of Kenya">Kenya map</button></span>
+      <span class="seg"><button id="ncZo" title="zoom out (or the mouse wheel)">−</button><button id="ncZi" title="zoom in (or the mouse wheel)">+</button><button id="ncZf" title="fit everything on the screen">Fit</button></span>
       <span class="muted" id="ncInfo" style="font-size:12.5px">Reading the network…</span>
       <span class="clk" id="ncClk"></span><button class="btn sm sshb" id="ncSsh"></button><button class="btn sm" id="ncFs" title="full screen">⛶ Full screen</button><button class="btn sm" id="ncX" title="leave the NOC view (Esc)">✕ Exit</button></div>
     <div class="tiles"><div class="tile"><div class="l">Traffic in ▼ (upstreams)</div><div class="v" id="ncIn">-</div></div><div class="tile"><div class="l">Traffic out ▲ (upstreams)</div><div class="v" id="ncOut">-</div></div>
       <div class="tile"><div class="l">BGP sessions up</div><div class="v" id="ncB">-</div></div><div class="tile"><div class="l">Links down on the map</div><div class="v" id="ncD">-</div></div>
       <div class="tile"><div class="l">Interfaces down</div><div class="v" id="ncI">-</div></div><div class="tile"><div class="l">CPU · memory</div><div class="v" id="ncC">-</div></div>
-      <div class="tile"><div class="l">Changes, last hour</div><div class="v" id="ncE">-</div></div></div>
+      <div class="tile"><div class="l">Changes, last hour</div><div class="v" id="ncE">-</div></div>
+      <div class="tile wt" id="ncWt" title="click for the list"><div class="l">Warnings ⚠</div><div class="v" id="ncW">-</div></div></div>
     <div class="body"><div class="mapw"><div class="canvas nmap" id="nmC"></div></div><div class="side" id="ncS"><h3>Click a line or a device</h3><p class="muted">One click follows it to the router and dims the rest. Double-click shows how it is built. Click empty space to clear.</p></div></div>
     <div class="tick"><div class="run" id="ncT">Loading the latest events…</div></div></div>`;
   $('#ncX').onclick = () => { nocLeave(); location.hash = 'netmap'; };
@@ -1761,7 +1764,20 @@ PAGES.noc = async c => {
   sshBtn(); $('#ncSsh').onclick = async () => { if (/SSH/.test(VIA || $('#tHost').textContent)) return; if (await sshLogin('Sign in to the router over SSH to see configuration details (QoS, interface configuration).')) { sshBtn(); map(true); } };
   const clock = () => { const el = $('#ncClk'); if (el) el.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); };
   clock(); timers.push(setInterval(clock, 1000));
-  NM.sel = null; NM.focus = null; NM.show = null; NM.lastClick = null;
+  NM.sel = null; NM.focus = null; NM.show = null; NM.lastClick = null; NM.userZoom = false; GEO.sel = null;
+  try { NM.geo = localStorage.getItem('ne8000.nocmode') === 'geo'; } catch (e) { NM.geo = false; }
+  const modeBtns = () => $('#ncM').querySelectorAll('button').forEach(b => b.classList.toggle('on', (b.dataset.m === 'g') === !!NM.geo));
+  modeBtns();
+  $('#ncM').onclick = e => { const m = e.target.dataset.m; if (!m) return; NM.geo = m === 'g'; try { localStorage.setItem('ne8000.nocmode', NM.geo ? 'geo' : 'diagram'); } catch (x) { }
+    modeBtns(); NM.focus = null; NM.sel = null; GEO.sel = null; side(null); if (!NM.geo) { NM.userZoom = false; fit(); } nmDraw(); };
+  const zoomBy = (f, e) => {
+    if (NM.geo) return geoZoom(f, e);
+    const host = $('#nmC'), z0 = NM.zoom, z1 = Math.max(0.2, Math.min(3, z0 * f)); if (!host || z1 === z0) return;
+    const r = host.getBoundingClientRect(), ox = e ? e.clientX - r.left : host.clientWidth / 2, oy = e ? e.clientY - r.top : host.clientHeight / 2;
+    const sx = (host.scrollLeft + ox) / z0, sy = (host.scrollTop + oy) / z0;
+    NM.zoom = z1; NM.userZoom = true; nmDraw(); host.scrollLeft = sx * z1 - ox; host.scrollTop = sy * z1 - oy; };
+  $('#ncZi').onclick = () => zoomBy(1.25); $('#ncZo').onclick = () => zoomBy(1 / 1.25);
+  $('#ncZf').onclick = () => { if (NM.geo) return geoFit(); NM.userZoom = false; fit(); nmDraw(); };
   let T = null, picked = null;
   // views: port groups (the devices right under the router), regions (a name many devices start with), single devices
   const views = () => {
@@ -1790,42 +1806,59 @@ PAGES.noc = async c => {
   // one click: follow it to the router, dim the rest, show its numbers
   const side = async (x, kind) => {
     const el = $('#ncS'); if (!el) return;
-    if (!x) { el.innerHTML = `<h3>Click a line or a device</h3><p class="muted">One click follows it to the router and dims the rest. Double-click shows how it is built. Click empty space to clear.</p>`; return; }
+    if (!x) { el.innerHTML = `<h3>Click a line or a device</h3><p class="muted">One click follows it to the router and dims the rest. Double-click shows how it is built. Click empty space to clear.</p>
+      <p class="muted">A <span class="wdot warn">⚠</span> on a line, a device or a town is a warning: high or changed latency, a longer path, a port filling up, flapping, errors, falling light, a fibre event from the OTDR. Click it to see what and since when.</p>`; return; }
+    const wh = nmWarnHtml((NM.warn || {})[x.id]);
     if (kind === 'link') {
       const p = x.props, s = nmLinkState(x), t = NM.ifs[p.iface] || {};
-      el.innerHTML = `<h3>${esc(p.label || p.iface || 'Line')}</h3><div class="row" style="gap:18px;margin-bottom:8px"><div><div class="muted">Download ▼</div><div class="big">${rate(s.down || null)}</div></div><div><div class="muted">Upload ▲</div><div class="big">${rate(s.up || null)}</div></div></div>
+      el.innerHTML = `<h3>${esc(p.label || p.iface || 'Line')}</h3>${wh}<div class="row" style="gap:18px;margin-bottom:8px"><div><div class="muted">Download ▼</div><div class="big">${rate(s.down || null)}</div></div><div><div class="muted">Upload ▲</div><div class="big">${rate(s.up || null)}</div></div></div>
         <div id="ncG" style="height:120px"></div>` + kv([['Interface', esc(p.iface || '')], ['State', esc(t.phy || p.state || '')], ['VLAN', esc(p.vlan || '')], ['Address', esc(p.address || '')],
           ['Load', s.pct != null && p.iface ? Math.round(s.pct) + '%' : ''], ['QoS plan', p.plan_kbps ? Fmt.bps(p.plan_kbps * 1000) : ''], ['BGP', p.peers ? esc(p.peers.split(',').map(ip => `${ip} ${NM.peers[ip] || ''}`).join(', ')) : ''],
           ['Path', esc(T.up(x.to in T.parent && T.parent[x.to] === x.from ? x.to : x.from).filter(id => NM.data.diagram.nodes.some(n => n.id === id)).map(id => NM.data.diagram.nodes.find(n => n.id === id).label).reverse().join(' → '))]]) +
-        `<p class="muted" style="font-size:12px;margin-top:8px">Double-click the line for how it is built.</p>`;
+        `<p class="muted" style="font-size:12px;margin-top:8px">Double-click the line for how it is built.</p>` + (() => { const n = NM.data.diagram.nodes.find(y => y.id === (T.parent[x.to] === x.from ? x.to : x.from)); return n ? geoPlaceHtml(n) : ''; })();
+      geoPlaceBind();
       if (p.iface) { try { const r = await api('/api/traffic?names=' + encodeURIComponent(p.iface)), pts = r[p.iface] || [], dn = p.down === 'rx' ? 1 : 2;
         if ($('#ncG')) new TimeChart($('#ncG'), { fmt: Fmt.bps, small: true }).set([{ name: 'Download', color: '--s1', values: pts.map(v => [v[0], v[dn]]) }, { name: 'Upload', color: '--s2', values: pts.map(v => [v[0], v[3 - dn]]) }]); } catch (e) { } }
     } else {
       const kids = (T.kids[x.id] || []).length;
-      el.innerHTML = `<h3>${esc(x.label)}</h3>` + kv([['Type', esc((NODE_META[x.type] || {}).label || x.type)], ...Object.entries(x.props).filter(([k]) => !['existing'].includes(k)).map(([k, v]) => [k.replace(/_/g, ' '), esc(v)]), ['Devices under it', kids || '']]) +
-        `<p class="muted" style="font-size:12px;margin-top:8px">Double-click the device for how it is built.</p>`;
+      el.innerHTML = `<h3>${esc(x.label)}</h3>${wh}` + kv([['Type', esc((NODE_META[x.type] || {}).label || x.type)], ...Object.entries(x.props).filter(([k]) => !['existing'].includes(k)).map(([k, v]) => [k.replace(/_/g, ' '), esc(v)]), ['Devices under it', kids || '']]) +
+        `<p class="muted" style="font-size:12px;margin-top:8px">Double-click the device for how it is built.</p>` + geoPlaceHtml(x);
+      geoPlaceBind();
     }
   };
+  // every warning on the map, worst first; a click picks the line or the device
+  const warnList = () => {
+    const el = $('#ncS'), d = NM.data.diagram, W = NM.warn || {}; if (!el) return;
+    const items = Object.entries(W).map(([id, ws]) => [d.links.find(l => l.id === id) || d.nodes.find(n => n.id === id), ws, d.links.some(l => l.id === id) ? 'link' : 'node']).filter(([x]) => x)
+      .sort((a, b) => (nmWorst(a[1]) !== 'crit') - (nmWorst(b[1]) !== 'crit'));
+    el.innerHTML = `<h3>Warnings (${items.length})</h3>` + (items.length ? items.map(([x, ws, k], i) => `<div class="wpick" data-i="${i}"><b>${esc(k === 'link' ? x.props.label || x.props.iface || 'Line' : x.label)}</b>${nmWarnHtml(ws)}</div>`).join('') : '<p class="muted">Nothing wrong right now.</p>');
+    el.querySelectorAll('.wpick').forEach(w => w.onclick = () => { const [x, , k] = items[+w.dataset.i]; NM.sel = x.id; NM.noc.pick(x, k); nmDraw(); });
+  };
+  $('#ncWt').onclick = warnList;
   NM.noc = {
-    pick: (x, kind) => { picked = x ? [x, kind] : null;
+    pick: (x, kind) => { picked = x ? [x, kind] : null; if (!x && NM.geo) GEO.sel = null;
       if (!x) NM.focus = null;
       else if (kind === 'link') { const below = T.parent[x.to] === x.from ? x.to : x.from; NM.focus = new Set([...T.up(below), ...T.down(below), x.id]); }
       else NM.focus = new Set([...T.up(x.id), ...T.down(x.id)]);
       side(x, kind); },
     dbl: (x, kind) => nocDesign(x, kind, T),
+    zoom: zoomBy,
   };
   const map = async refresh => {
     try { NM.data = await api('/api/netmap' + (refresh ? '?refresh=1' : '')); T = nmTree();
       const sel = $('#ncV'); if (!sel) return; const cur = sel.value || view;
       sel.innerHTML = '<option value="">Whole network</option>' + views().map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`).join('');
-      applyView(sel.value); $('#ncInfo').textContent = NM.data.summary.split(' Not available')[0]; $('#ncInfo').title = (NM.data.warnings || []).join('\n'); fit();
+      applyView(sel.value); $('#ncInfo').textContent = NM.data.summary.split(' Not available')[0]; $('#ncInfo').title = (NM.data.warnings || []).join('\n'); if (!NM.userZoom) fit();
     } catch (e) { if ($('#ncInfo')) $('#ncInfo').textContent = e.message; } };
   const traffic = async () => { await nmTraffic(); if (!$('#ncD')) return;
     const down = NM.data.diagram.links.filter(l => /nm-down|nm-bgpdown/.test(nmLinkState(l).cls)).length; $('#ncD').textContent = down; $('#ncD').className = 'v ' + (down ? 'bad' : 'okc');
     const ups = new Set(NM.data.diagram.nodes.filter(n => n.type === 'upstream').map(n => n.id)), seen = new Set(); let tin = 0, tout = 0, any = false;
     NM.data.diagram.links.filter(l => (ups.has(l.from) || ups.has(l.to)) && l.props.iface).forEach(l => { if (seen.has(l.props.iface)) return; seen.add(l.props.iface); const s = nmLinkState(l); if (s.down || s.up) any = true; tin += s.down || 0; tout += s.up || 0; });
     $('#ncIn').textContent = any ? Fmt.bps(tin) : '-'; $('#ncOut').textContent = any ? Fmt.bps(tout) : '-';
-    if (picked && picked[1] === 'link') { const l = NM.data.diagram.links.find(x => x.id === picked[0].id); if (l) side(l, 'link'); } };
+    if (picked && picked[1] === 'link') { const l = NM.data.diagram.links.find(x => x.id === picked[0].id); if (l) side(l, 'link'); }
+    const all = Object.values(NM.warn || {}), crit = all.filter(ws => nmWorst(ws) === 'crit').length;
+    $('#ncW').innerHTML = all.length ? `${all.length}${crit ? ` <span style="font-size:13px;font-weight:500">${crit} critical</span>` : ''}` : '0'; $('#ncW').className = 'v ' + (crit ? 'bad' : all.length ? 'warnc' : 'okc');
+    if (NM.geo && GEO.sel && !picked) geoSide(); };
   const tiles = async () => {
     const [b, o, i, ev] = await Promise.all([api('/api/view/bgp').catch(() => null), api('/api/view/overview').catch(() => null), api('/api/view/interfaces').catch(() => null), api('/api/changes?days=1&limit=40').catch(() => null)]);
     if (!$('#ncB')) return; sshBtn();
@@ -1837,10 +1870,10 @@ PAGES.noc = async c => {
     if (ev) { const hr = ev.events.filter(e => e.ts > Date.now() / 1000 - 3600).length; $('#ncE').textContent = hr;
       $('#ncT').innerHTML = ev.events.length ? ev.events.slice(0, 25).map(e => `<span class="${['down', 'removed', 'dropped'].includes(e.change) ? 'bad' : ['up', 'added', 'back'].includes(e.change) ? 'okc' : ''}">${esc(new Date(e.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))} · ${esc((CHG_LABEL[e.kind] || e.kind) + ' ' + e.key + ' ' + e.change)}${e.info ? ' · ' + esc(e.info) : ''}</span>`).join('') : '<span>No changes in the last 24 hours.</span>'; }
   };
-  $('#ncV').onchange = () => { const v = $('#ncV').value; history.replaceState(null, '', '#noc' + (v ? '/' + encodeURIComponent(v) : '')); NM.focus = null; NM.sel = null; side(null); applyView(v); fit(); nmDraw(); };
-  await map(); await traffic(); tiles();
-  every(5000, traffic); every(10000, tiles); every(60000, () => map());
-  let rt = null; const ro = new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if ($('#nmC')) { fit(); nmDraw(); } else ro.disconnect(); }, 150); }); ro.observe($('#nmC'));
+  $('#ncV').onchange = () => { const v = $('#ncV').value; history.replaceState(null, '', '#noc' + (v ? '/' + encodeURIComponent(v) : '')); NM.focus = null; NM.sel = null; GEO.sel = null; side(null); applyView(v); NM.userZoom = false; fit(); nmDraw(); };
+  await map(); await traffic(); tiles(); nmHealth();
+  every(5000, traffic); every(10000, tiles); every(60000, () => map()); every(30000, nmHealth);
+  let rt = null; const ro = new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if ($('#nmC')) { if (!NM.userZoom) fit(); nmDraw(); } else ro.disconnect(); }, 150); }); ro.observe($('#nmC'));
 };
 /* Double-click on the NOC map: how this line or device is built, from what the app knows (and the router's configuration with SSH). */
 async function nocDesign(x, kind, T) {

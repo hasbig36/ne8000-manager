@@ -364,9 +364,67 @@ PAGES.netmap = async c => {
   $('#nmZr').onclick = () => { nmSavePos({}); nmDraw(); };
   $('#nmFs').onclick = () => toggleFull($('#nmBox'));
   await load(false);
+  nmHealth(); every(30000, nmHealth);
   every(5000, nmTraffic);
   every(60000, () => load(false));
 };
+/* ---------- warnings on the map: what the health check, the change log and the live traffic say is wrong ---------- */
+// NM.health: /api/health (every 30 s); NM.bgpEv: BGP session events of the last 24 h
+async function nmHealth() {
+  const [h, ev] = await Promise.all([api('/api/health').catch(() => null), api('/api/changes?days=1&limit=1000&kind=bgp').catch(() => null)]);
+  if (h) NM.health = h; if (ev) NM.bgpEv = ev.events || [];
+  nmDraw();
+}
+const nmIp4 = s => { const m = String(s || '').match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/); return m ? ((+m[1] << 24) >>> 0) + (+m[2] << 16) + (+m[3] << 8) + +m[4] : null; };
+const inNet = (ip, cidr) => { const [a, b] = String(cidr || '').split('/'), x = nmIp4(ip), n = nmIp4(a); if (x == null || n == null || b == null) return false; const k = +b ? (~0 << (32 - b)) >>> 0 : 0; return ((x & k) >>> 0) === ((n & k) >>> 0); };
+const WARN_KIND = { latency: 'High latency', distance: 'Distance changed', loss: 'Packet loss', congestion: 'Port full', capacity: 'Capacity running low', flap: 'Flapping', bgpflap: 'BGP flapping',
+  errors: 'CRC errors', out_drops: 'Drops', in_drops: 'Drops', optics: 'Optical level', down: 'Down', bgpdown: 'BGP down', otdr: 'Fibre (OTDR)', cpu: 'CPU', memory: 'Memory', temp: 'Temperature' };
+// {line or device id: [{severity, kind, title, detail, advice, since}]}, worst first
+function nmWarnings() {
+  if (!NM.data) return {};
+  const d = NM.data.diagram, out = {}, root = (d.nodes.find(n => n.type === 'ne8000') || d.nodes[0] || {}).id;
+  const add = (id, w) => { const a = out[id] = out[id] || []; if (!a.some(x => x.kind === w.kind && x.title === w.title)) a.push(w); };
+  for (const f of (NM.health && NM.health.findings) || []) {
+    const w = { severity: f.severity, kind: f.kind, title: f.title, detail: f.detail, advice: f.advice, since: f.since, target: f.target };
+    if (['cpu', 'memory', 'temp'].includes(f.kind)) { add(root, w); continue; }
+    let ids = [];
+    if (nmIp4(f.target) != null) {
+      ids = d.links.filter(l => inNet(f.target, l.props.address) || (l.props.peers || '').split(',').includes(f.target)).map(l => l.id);
+      if (!ids.length) ids = d.nodes.filter(n => [n.props.mgmt_ip, n.props.peer_ip].includes(f.target)).map(n => n.id);
+      if (!ids.length && NM.health.status && f.target && f.description === 'Router (management address)') ids = [root];
+    } else {
+      ids = d.links.filter(l => l.props.iface === f.target).map(l => l.id);
+      if (!ids.length) ids = d.links.filter(l => l.props.label === f.target).map(l => l.id).concat(d.nodes.filter(n => n.label === f.target).map(n => n.id));
+      if (!ids.length) ids = d.links.filter(l => l.props.iface && l.props.iface.startsWith(f.target + '.')).map(l => l.id);
+    }
+    ids.forEach(id => add(id, w));
+  }
+  const flaps = {}; (NM.bgpEv || []).filter(e => e.change === 'down').forEach(e => flaps[e.key] = (flaps[e.key] || 0) + 1);
+  for (const l of d.links) {
+    const s = nmLinkState(l), p = l.props;
+    if (s.cls === 'nm-down') add(l.id, { severity: 'critical', kind: 'down', title: 'Link down', detail: s.text, advice: '' });
+    if (s.cls === 'nm-bgpdown') add(l.id, { severity: 'critical', kind: 'bgpdown', title: 'BGP session down', detail: s.text, advice: 'Check the line to the peer and the peer\'s router; the change log shows when it went down.' });
+    (p.peers || '').split(',').filter(ip => flaps[ip] >= 2).forEach(ip => add(l.id, { severity: flaps[ip] >= 4 ? 'critical' : 'warning', kind: 'bgpflap', title: 'BGP flapping',
+      detail: `${ip} went down ${flaps[ip]} times in the last 24 hours.`, advice: 'A session that keeps dropping: check the line for errors and drops, and the peer\'s router.' }));
+    if (p.iface && s.pct != null && s.pct >= 80 && !(out[l.id] || []).some(w => ['congestion', 'capacity'].includes(w.kind))) {
+      const plan = p.plan_kbps ? ' of its QoS plan ' + Fmt.bps(p.plan_kbps * 1000) : ' of the port';
+      add(l.id, s.pct >= 95 ? { severity: 'critical', kind: 'congestion', title: 'Port full', detail: `${Math.round(s.pct)}% used${plan}.`, advice: 'Customers behind it get slow speeds now. Upgrade the link or its plan, or move traffic.' }
+        : { severity: 'warning', kind: 'capacity', title: 'Capacity running low', detail: `${Math.round(s.pct)}% used${plan}.`, advice: 'Plan an upgrade before it is full at peak.' });
+    }
+  }
+  Object.values(out).forEach(a => a.sort((x, y) => (x.severity !== 'critical') - (y.severity !== 'critical')));
+  return out;
+}
+const nmWorst = ws => !ws || !ws.length ? '' : ws.some(w => w.severity === 'critical') ? 'crit' : 'warn';
+// the badge: a triangle with "!", red (critical, pulsing) or amber; the tooltip lists the problems
+const nmBadge = (ws, x, y, sc = 1) => !ws || !ws.length ? '' : `<g class="wbadge ${nmWorst(ws)}" transform="translate(${x},${y}) scale(${sc})"><title>${esc(ws.map(w => '⚠ ' + w.title + ': ' + w.detail).join('\n'))}</title>
+  <path d="M0 -10 L10 7.5 L-10 7.5Z"/><text y="5.5" text-anchor="middle">!</text>${ws.length > 1 ? `<text class="n" x="10" y="-4">${ws.length}</text>` : ''}</g>`;
+// the problems of one line or device, for the side panel and the selection card
+function nmWarnHtml(ws) {
+  if (!ws || !ws.length) return '';
+  return `<div class="wlist">${ws.map(w => `<div class="witem ${w.severity === 'critical' ? 'crit' : 'warn'}"><b>⚠ ${esc(w.title)}</b> <span class="faint">${esc(WARN_KIND[w.kind] || '')}${w.since ? ' · since ' + esc(ago(w.since)) : ''}</span>
+    <div>${esc(w.detail || '')}</div>${w.advice ? `<div class="muted">${esc(w.advice)}</div>` : ''}</div>`).join('')}</div>`;
+}
 async function nmTraffic() {
   try { const t = await api('/api/netmap/traffic'); NM.ifs = t.ifs; NM.peers = t.peers; } catch (e) { }
   nmDraw();
@@ -401,6 +459,8 @@ function nmRoute(a, b) {
 }
 function nmDraw() {
   const host = $('#nmC'); if (!host || !NM.data) return;
+  if (NM.geo && typeof geoDraw === 'function') return geoDraw(host);
+  host.classList.remove('geo');
   const pos = nmLoadPos(), z = NM.zoom;
   // NM.show: only these node ids (a device / region view); NM.focus: these node and line ids bright, the rest dimmed
   const nodes = NM.data.diagram.nodes.map(n => ({ ...n, x: pos[n.id] ? pos[n.id][0] : n.x, y: pos[n.id] ? pos[n.id][1] : n.y })).filter(n => !NM.show || NM.show.has(n.id));
@@ -408,6 +468,7 @@ function nmDraw() {
   const ox = NM.show && nodes.length ? Math.max(0, Math.min(...nodes.map(n => n.x)) - 40) : 0, oy = NM.show && nodes.length ? Math.max(0, Math.min(...nodes.map(n => n.y)) - 40) : 0;
   const W = Math.max(NM.show ? 300 : 1000, ...nodes.map(n => n.x - ox + NW + 60)), H = Math.max(NM.show ? 200 : 560, ...nodes.map(n => n.y - oy + NH + 60));
   const dim = id => NM.focus && !NM.focus.has(id) ? 'dim' : '';
+  const WN = NM.warn = nmWarnings();
   const links = NM.data.diagram.links.filter(l => byId[l.from] && byId[l.to]).map(l => {
     const a = byId[l.from], b = byId[l.to], s = nmLinkState(l), g = nmRoute(a, b);
     const w = s.down ? Math.min(9, 2 + Math.max(0, Math.log10(s.down / 1e5))) : 2;
@@ -417,15 +478,17 @@ function nmDraw() {
       ${s.down ? `<path class="flow" d="${g.d}" style="animation-duration:${sp(s.down)}s"/>` : ''}
       ${s.up > s.down * 0.05 && s.up ? `<path class="flow rev" d="${g.r}" style="animation-duration:${sp(s.up)}s"/>` : ''}
       <path class="hit" d="${g.d}"/>
-      ${label.map((t, i) => `<text x="${g.lx}" y="${g.ly + i * 14}" text-anchor="${g.anchor}" class="${i ? 'rate' : ''}">${esc(t)}</text>`).join('')}</g>`;
+      ${label.map((t, i) => `<text x="${g.lx}" y="${g.ly + i * 14}" text-anchor="${g.anchor}" class="${i ? 'rate' : ''}">${esc(t)}</text>`).join('')}
+      ${nmBadge(WN[l.id], g.anchor === 'start' ? g.lx - 18 : g.lx, g.anchor === 'start' ? g.ly - 4 : g.ly - 26, 1.35)}</g>`;
   }).join('');
   const ns = nodes.map(n => { const m = NODE_META[n.type] || NODE_META.router; const sub = n.props.mgmt_ip || n.props.splynx_id && ('Splynx ' + n.props.splynx_id + (n.props.location ? ' · ' + n.props.location : '')) || n.props.location || '';
     return `<g class="node ${NM.sel === n.id ? 'sel' : ''} ${dim(n.id)}" data-n="${n.id}" transform="translate(${n.x},${n.y})"><rect width="${NW}" height="${NH}" rx="8" style="stroke:var(${m.color})"/><rect width="5" height="${NH}" rx="2" style="fill:var(${m.color});stroke:none"/>
-      <text class="tag" x="14" y="17" style="fill:var(${m.color})">${m.tag}${n.props.status && n.type === 'reseller' && n.props.status !== 'active' ? ' · ' + esc(n.props.status.toUpperCase()) : ''}</text><text x="14" y="34">${esc(trunc(n.label, 22))}</text><text class="sub" x="14" y="50">${esc(trunc(sub, 26))}</text></g>`; }).join('');
+      <text class="tag" x="14" y="17" style="fill:var(${m.color})">${m.tag}${n.props.status && n.type === 'reseller' && n.props.status !== 'active' ? ' · ' + esc(n.props.status.toUpperCase()) : ''}</text><text x="14" y="34">${esc(trunc(n.label, 22))}</text><text class="sub" x="14" y="50">${esc(trunc(sub, 26))}</text>${nmBadge(WN[n.id], NW - 6, 4, 1.35)}</g>`; }).join('');
   const sl = host.scrollLeft, st = host.scrollTop;
   host.innerHTML = `<svg width="${W * z}" height="${H * z}" viewBox="${ox} ${oy} ${W} ${H}" id="nmSvg"><rect x="${ox}" y="${oy}" width="${W}" height="${H}" fill="transparent" data-bg="1"/>${links}${ns}</svg>`;
   host.scrollLeft = sl; host.scrollTop = st;
   const svg = $('#nmSvg'); let drag = null;
+  if (NM.noc) host.onwheel = e => { e.preventDefault(); NM.noc.zoom(e.deltaY < 0 ? 1.15 : 1 / 1.15, e); };
   const pt = e => { const r = svg.getBoundingClientRect(); return { x: (e.clientX - r.left) / z + ox, y: (e.clientY - r.top) / z + oy }; };
   // a second click on the same thing within 400 ms is a double click (the drawing is redrawn between the two clicks)
   const twice = id => { const now = Date.now(), d = NM.lastClick && NM.lastClick.id === id && now - NM.lastClick.t < 400; NM.lastClick = { id, t: now }; return d; };
@@ -435,11 +498,15 @@ function nmDraw() {
     if (lk) { const l = NM.data.diagram.links.find(x => x.id === lk.dataset.l);
       if (NM.noc) { if (twice(l.id)) return NM.noc.dbl(l, 'link'); NM.sel = l.id; NM.noc.pick(l, 'link'); nmDraw(); return; }
       if (NM.sel === l.id && l.props.iface) return showGraphs(l.props.iface); NM.sel = l.id; nmShowSel(l, 'link'); nmDraw(); return; }
-    NM.sel = null; if (NM.noc) NM.noc.pick(null); nmDraw();
+    pan = { x: e.clientX, y: e.clientY, sl: host.scrollLeft, st: host.scrollTop, moved: false }; svg.setPointerCapture(e.pointerId);
   };
-  svg.onpointermove = e => { if (!drag) return; const p = pt(e); drag.n.x = Math.max(0, Math.round((p.x - drag.dx) / 10) * 10); drag.n.y = Math.max(0, Math.round((p.y - drag.dy) / 10) * 10); drag.moved = true;
+  let pan = null;
+  svg.onpointermove = e => { if (pan) { const dx = e.clientX - pan.x, dy = e.clientY - pan.y; if (Math.abs(dx) + Math.abs(dy) > 4) pan.moved = true;
+      if (pan.moved) { host.scrollLeft = pan.sl - dx; host.scrollTop = pan.st - dy; } return; }
+    if (!drag) return; const p = pt(e); drag.n.x = Math.max(0, Math.round((p.x - drag.dx) / 10) * 10); drag.n.y = Math.max(0, Math.round((p.y - drag.dy) / 10) * 10); drag.moved = true;
     svg.querySelector(`[data-n="${CSS.escape(drag.n.id)}"]`).setAttribute('transform', `translate(${drag.n.x},${drag.n.y})`); };
-  svg.onpointerup = () => { if (!drag) return; if (drag.moved) { const p = nmLoadPos(); p[drag.n.id] = [drag.n.x, drag.n.y]; nmSavePos(p); }
+  svg.onpointerup = () => { if (pan) { const moved = pan.moved; pan = null; if (!moved) { NM.sel = null; if (NM.noc) NM.noc.pick(null); nmDraw(); } return; }
+    if (!drag) return; if (drag.moved) { const p = nmLoadPos(); p[drag.n.id] = [drag.n.x, drag.n.y]; nmSavePos(p); }
     else if (NM.noc) { const n = NM.data.diagram.nodes.find(x => x.id === drag.n.id); if (twice(n.id)) { drag = null; return NM.noc.dbl(n, 'node'); } NM.sel = n.id; NM.noc.pick(n, 'node'); }
     else { NM.sel = drag.n.id; nmShowSel(drag.n, 'node'); } drag = null; nmDraw(); };
 }
@@ -459,6 +526,6 @@ function nmShowSel(x, kind) {
     : (() => { const s = nmLinkState(x), t = NM.ifs[x.props.iface] || {}; return [['Line', x.props.label], ['Interface', x.props.iface], ['VLAN', x.props.vlan], ['Address', x.props.address], ['State', t.phy || x.props.state],
       ['Download ▼', nmRate(x.props.down === 'rx' ? t.rx : t.tx)], ['Upload ▲', nmRate(x.props.down === 'rx' ? t.tx : t.rx)], ['Utilisation in / out', t.in_util != null ? `${t.in_util}% / ${t.out_util}%` : ''],
       ['QoS plan', x.props.plan_kbps ? Fmt.bps(x.props.plan_kbps * 1000) : ''], ['Load vs plan', x.props.plan_kbps && s.pct != null ? Math.round(s.pct) + '%' : ''], ['BGP peers', x.props.peers ? x.props.peers.split(',').map(ip => `${ip} ${NM.peers[ip] || ''}`).join(', ') : '']]; })();
-  $('#nmSel').innerHTML = `<h3>Selection</h3><table class="tbl"><tbody>${rows.filter(([, v]) => v !== '' && v != null).map(([k, v]) => `<tr><td class="faint">${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</tbody></table>
+  $('#nmSel').innerHTML = `<h3>Selection</h3>${nmWarnHtml((NM.warn || {})[x.id])}<table class="tbl"><tbody>${rows.filter(([, v]) => v !== '' && v != null).map(([k, v]) => `<tr><td class="faint">${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</tbody></table>
     ${kind === 'link' && x.props.iface ? `<button class="btn sm" onclick="showGraphs(${attr(x.props.iface)})">Graphs for ${esc(x.props.iface)}</button>` : ''}`;
 }
