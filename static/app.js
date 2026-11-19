@@ -27,8 +27,8 @@ function sshLogin(why) {
     let last = ''; try { last = localStorage.getItem('ne8000.router') || ''; } catch (e) {}
     const m = $('#modal'), r = (ROUTER_LIST || []).find(x => x.id === last);
     m.innerHTML = `<h2>SSH login needed</h2><p class="muted">${esc(why || 'This needs the router command line.')} Monitoring keeps working over SNMP without it.</p>
-      <div class="form"><label>Router username</label><input id="sshU" autocomplete="username" value="${esc(r && r.username || '')}">
-      <label>Password</label><input id="sshP" type="password" autocomplete="current-password"></div>
+      <div class="form"><label>Router username</label><input id="sshU" name="router-user" autocomplete="off" value="${esc(r && r.username || '')}">
+      <label>Router password (not your app password)</label><input id="sshP" name="router-pass" type="password" autocomplete="new-password"></div>
       <div class="err"></div><div class="actions"><button class="btn" data-a="c">Not now</button><button class="btn primary" data-a="s">Sign in</button></div>`;
     $('#modalBg').classList.remove('hidden'); ($('#sshU').value ? $('#sshP') : $('#sshU')).focus();
     const finish = ok => { sshCancel = null; closeModal(); sshAsk = null; done(ok); };
@@ -110,7 +110,7 @@ function table(host, cols, rows, opts = {}) {
 /* ---------- change flow: form -> preview CLI -> commit / check ---------- */
 function closeModal() { $('#modalBg').classList.add('hidden'); $('#modal').innerHTML = ''; $('#modal').classList.remove('wide'); if (sshCancel) sshCancel(); if (cropCancel) cropCancel(); }
 $('#modalBg').addEventListener('mousedown', e => { if (e.target.id === 'modalBg') closeModal(); });
-document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (current === 'noc' && $('#modalBg').classList.contains('hidden')) { nocLeave(); location.hash = 'netmap'; } closeModal(); closeDrawer(); } });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (String(current).split('/')[0] === 'noc' && $('#modalBg').classList.contains('hidden')) { nocLeave(); location.hash = 'netmap'; } closeModal(); closeDrawer(); } });
 
 function field(f) {
   const v = f.value ?? '';
@@ -1737,40 +1737,140 @@ let NOC_THEME = null;
 function nocLeave() {
   if (NOC_THEME === null) return;
   if (NOC_THEME) document.documentElement.dataset.theme = NOC_THEME; else delete document.documentElement.dataset.theme;
-  NOC_THEME = null; if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  NOC_THEME = null; NM.noc = null; NM.show = null; NM.focus = null; if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 }
 $('#nocBtn').onclick = () => { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {}); location.hash = 'noc'; };
 PAGES.noc = async c => {
   if (NOC_THEME === null) NOC_THEME = document.documentElement.dataset.theme || '';
   document.documentElement.dataset.theme = 'dark';
-  c.innerHTML = `<div class="noc"><div class="nh"><span class="ttl">NOC · ${esc($('#tName').textContent)}</span><span class="muted" id="ncInfo">Reading the network…</span>
-      <span class="clk" id="ncClk"></span><button class="btn sm" id="ncFs" title="full screen">⛶ Full screen</button><button class="btn sm" id="ncX" title="leave the NOC view (Esc)">✕ Exit</button></div>
-    <div class="tiles"><div class="tile"><div class="l">BGP sessions up</div><div class="v" id="ncB">-</div></div><div class="tile"><div class="l">Links down on the map</div><div class="v" id="ncD">-</div></div>
-      <div class="tile"><div class="l">Interfaces down</div><div class="v" id="ncI">-</div></div><div class="tile"><div class="l">CPU</div><div class="v" id="ncC">-</div></div><div class="tile"><div class="l">Memory</div><div class="v" id="ncM">-</div></div>
+  const view = decodeURIComponent((location.hash.split('/')[1] || ''));   // #noc/<view>: a wall screen can stay on one view
+  c.innerHTML = `<div class="noc"><div class="nh"><span class="ttl">NOC · ${esc($('#tName').textContent)}</span>
+      <span class="vsel"><select id="ncV" title="show the whole network, one port group, one region or one device"><option value="">Whole network</option></select></span>
+      <span class="muted" id="ncInfo" style="font-size:12.5px">Reading the network…</span>
+      <span class="clk" id="ncClk"></span><button class="btn sm sshb" id="ncSsh"></button><button class="btn sm" id="ncFs" title="full screen">⛶ Full screen</button><button class="btn sm" id="ncX" title="leave the NOC view (Esc)">✕ Exit</button></div>
+    <div class="tiles"><div class="tile"><div class="l">Traffic in ▼ (upstreams)</div><div class="v" id="ncIn">-</div></div><div class="tile"><div class="l">Traffic out ▲ (upstreams)</div><div class="v" id="ncOut">-</div></div>
+      <div class="tile"><div class="l">BGP sessions up</div><div class="v" id="ncB">-</div></div><div class="tile"><div class="l">Links down on the map</div><div class="v" id="ncD">-</div></div>
+      <div class="tile"><div class="l">Interfaces down</div><div class="v" id="ncI">-</div></div><div class="tile"><div class="l">CPU · memory</div><div class="v" id="ncC">-</div></div>
       <div class="tile"><div class="l">Changes, last hour</div><div class="v" id="ncE">-</div></div></div>
-    <div class="mapw"><div class="canvas nmap" id="nmC"></div></div><div class="tick"><div class="run" id="ncT">Loading the latest events…</div></div></div>`;
+    <div class="body"><div class="mapw"><div class="canvas nmap" id="nmC"></div></div><div class="side" id="ncS"><h3>Click a line or a device</h3><p class="muted">One click follows it to the router and dims the rest. Double-click shows how it is built. Click empty space to clear.</p></div></div>
+    <div class="tick"><div class="run" id="ncT">Loading the latest events…</div></div></div>`;
   $('#ncX').onclick = () => { nocLeave(); location.hash = 'netmap'; };
   $('#ncFs').onclick = () => { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {}); };
+  const sshBtn = () => { const b = $('#ncSsh'); if (!b) return; const on = /SSH/.test(VIA || $('#tHost').textContent);
+    b.textContent = on ? 'SSH ✓' : 'Connect SSH'; b.classList.toggle('on', on); b.title = on ? 'signed in to the router over SSH' : 'traffic comes over SNMP; SSH adds configuration details (QoS, interface config)'; };
+  sshBtn(); $('#ncSsh').onclick = async () => { if (/SSH/.test(VIA || $('#tHost').textContent)) return; if (await sshLogin('Sign in to the router over SSH to see configuration details (QoS, interface configuration).')) { sshBtn(); map(true); } };
   const clock = () => { const el = $('#ncClk'); if (el) el.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); };
   clock(); timers.push(setInterval(clock, 1000));
+  NM.sel = null; NM.focus = null; NM.show = null; NM.lastClick = null;
+  let T = null, picked = null;
+  // views: port groups (the devices right under the router), regions (a name many devices start with), single devices
+  const views = () => {
+    const d = NM.data.diagram, t = T, out = [];
+    (t.kids[t.root] || []).map(id => d.nodes.find(n => n.id === id)).filter(n => n && n.type !== 'upstream').forEach(n => out.push(['n:' + n.id, 'Port group: ' + n.label]));
+    if (d.nodes.some(n => n.type === 'upstream')) out.push(['up', 'Upstreams and peers']);
+    const cnt = {}; d.nodes.forEach(n => { const w = (n.label.match(/^[A-Za-z]{3,}/) || [''])[0].toUpperCase(); if (w && !['NEW', 'VLAN', 'IBGP', 'AS'].includes(w)) cnt[w] = (cnt[w] || 0) + 1; });
+    Object.entries(cnt).filter(([, n]) => n >= 2).sort().forEach(([w, n]) => out.push(['r:' + w, `Region: ${w} (${n})`]));
+    d.nodes.filter(n => n.id !== t.root).slice().sort((x, y) => x.label.localeCompare(y.label)).forEach(n => out.push(['d:' + n.id, 'Device: ' + n.label]));
+    return out;
+  };
+  const applyView = v => {
+    const d = NM.data.diagram, t = T; NM.show = null;
+    if (v.startsWith('n:') || v.startsWith('d:')) { const id = v.slice(2); if (d.nodes.some(n => n.id === id)) NM.show = new Set([...t.up(id), ...t.down(id)]); }
+    else if (v === 'up') NM.show = new Set(d.nodes.filter(n => n.type === 'upstream').flatMap(n => t.up(n.id)));
+    else if (v.startsWith('r:')) { const w = v.slice(2); NM.show = new Set(d.nodes.filter(n => n.label.toUpperCase().startsWith(w)).flatMap(n => [...t.up(n.id), ...t.down(n.id)])); }
+    if (NM.show) d.nodes.forEach(n => { if (!NM.show.has(n.id)) NM.show.delete(n.id); });
+  };
   const fit = () => { const host = $('#nmC'); if (!host || !NM.data) return; const pos = nmLoadPos();
-    const ns = NM.data.diagram.nodes.map(n => pos[n.id] || [n.x, n.y]); const W = Math.max(1000, ...ns.map(p => p[0] + NW + 60)), H = Math.max(560, ...ns.map(p => p[1] + NH + 60));
+    const ns = NM.data.diagram.nodes.filter(n => !NM.show || NM.show.has(n.id)).map(n => pos[n.id] || [n.x, n.y]); if (!ns.length) return;
+    const x0 = NM.show ? Math.max(0, Math.min(...ns.map(p => p[0])) - 40) : 0, y0 = NM.show ? Math.max(0, Math.min(...ns.map(p => p[1])) - 40) : 0;
+    const W = Math.max(NM.show ? 300 : 1000, ...ns.map(p => p[0] - x0 + NW + 60)), H = Math.max(NM.show ? 200 : 560, ...ns.map(p => p[1] - y0 + NH + 60));
     NM.zoom = Math.max(0.3, Math.min(2, (host.clientWidth - 8) / W, (host.clientHeight - 8) / H)); };
-  const map = async () => { try { NM.data = await api('/api/netmap'); if ($('#ncInfo')) $('#ncInfo').textContent = NM.data.summary; fit(); } catch (e) { if ($('#ncInfo')) $('#ncInfo').textContent = e.message; } };
-  const traffic = async () => { await nmTraffic(); const down = document.querySelectorAll('#nmC .link.nm-down, #nmC .link.nm-bgpdown').length; const d = $('#ncD'); if (d) { d.textContent = down; d.className = 'v ' + (down ? 'bad' : 'okc'); } };
+  const rate = v => v == null ? '-' : Fmt.bps(v);
+  const kv = rows => `<table><tbody>${rows.filter(([, v]) => v !== '' && v != null && v !== '-').map(([k, v]) => `<tr><td>${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody></table>`;
+  // one click: follow it to the router, dim the rest, show its numbers
+  const side = async (x, kind) => {
+    const el = $('#ncS'); if (!el) return;
+    if (!x) { el.innerHTML = `<h3>Click a line or a device</h3><p class="muted">One click follows it to the router and dims the rest. Double-click shows how it is built. Click empty space to clear.</p>`; return; }
+    if (kind === 'link') {
+      const p = x.props, s = nmLinkState(x), t = NM.ifs[p.iface] || {};
+      el.innerHTML = `<h3>${esc(p.label || p.iface || 'Line')}</h3><div class="row" style="gap:18px;margin-bottom:8px"><div><div class="muted">Download ▼</div><div class="big">${rate(s.down || null)}</div></div><div><div class="muted">Upload ▲</div><div class="big">${rate(s.up || null)}</div></div></div>
+        <div id="ncG" style="height:120px"></div>` + kv([['Interface', esc(p.iface || '')], ['State', esc(t.phy || p.state || '')], ['VLAN', esc(p.vlan || '')], ['Address', esc(p.address || '')],
+          ['Load', s.pct != null && p.iface ? Math.round(s.pct) + '%' : ''], ['QoS plan', p.plan_kbps ? Fmt.bps(p.plan_kbps * 1000) : ''], ['BGP', p.peers ? esc(p.peers.split(',').map(ip => `${ip} ${NM.peers[ip] || ''}`).join(', ')) : ''],
+          ['Path', esc(T.up(x.to in T.parent && T.parent[x.to] === x.from ? x.to : x.from).filter(id => NM.data.diagram.nodes.some(n => n.id === id)).map(id => NM.data.diagram.nodes.find(n => n.id === id).label).reverse().join(' → '))]]) +
+        `<p class="muted" style="font-size:12px;margin-top:8px">Double-click the line for how it is built.</p>`;
+      if (p.iface) { try { const r = await api('/api/traffic?names=' + encodeURIComponent(p.iface)), pts = r[p.iface] || [], dn = p.down === 'rx' ? 1 : 2;
+        if ($('#ncG')) new TimeChart($('#ncG'), { fmt: Fmt.bps, small: true }).set([{ name: 'Download', color: '--s1', values: pts.map(v => [v[0], v[dn]]) }, { name: 'Upload', color: '--s2', values: pts.map(v => [v[0], v[3 - dn]]) }]); } catch (e) { } }
+    } else {
+      const kids = (T.kids[x.id] || []).length;
+      el.innerHTML = `<h3>${esc(x.label)}</h3>` + kv([['Type', esc((NODE_META[x.type] || {}).label || x.type)], ...Object.entries(x.props).filter(([k]) => !['existing'].includes(k)).map(([k, v]) => [k.replace(/_/g, ' '), esc(v)]), ['Devices under it', kids || '']]) +
+        `<p class="muted" style="font-size:12px;margin-top:8px">Double-click the device for how it is built.</p>`;
+    }
+  };
+  NM.noc = {
+    pick: (x, kind) => { picked = x ? [x, kind] : null;
+      if (!x) NM.focus = null;
+      else if (kind === 'link') { const below = T.parent[x.to] === x.from ? x.to : x.from; NM.focus = new Set([...T.up(below), ...T.down(below), x.id]); }
+      else NM.focus = new Set([...T.up(x.id), ...T.down(x.id)]);
+      side(x, kind); },
+    dbl: (x, kind) => nocDesign(x, kind, T),
+  };
+  const map = async refresh => {
+    try { NM.data = await api('/api/netmap' + (refresh ? '?refresh=1' : '')); T = nmTree();
+      const sel = $('#ncV'); if (!sel) return; const cur = sel.value || view;
+      sel.innerHTML = '<option value="">Whole network</option>' + views().map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`).join('');
+      applyView(sel.value); $('#ncInfo').textContent = NM.data.summary.split(' Not available')[0]; $('#ncInfo').title = (NM.data.warnings || []).join('\n'); fit();
+    } catch (e) { if ($('#ncInfo')) $('#ncInfo').textContent = e.message; } };
+  const traffic = async () => { await nmTraffic(); if (!$('#ncD')) return;
+    const down = NM.data.diagram.links.filter(l => /nm-down|nm-bgpdown/.test(nmLinkState(l).cls)).length; $('#ncD').textContent = down; $('#ncD').className = 'v ' + (down ? 'bad' : 'okc');
+    const ups = new Set(NM.data.diagram.nodes.filter(n => n.type === 'upstream').map(n => n.id)), seen = new Set(); let tin = 0, tout = 0, any = false;
+    NM.data.diagram.links.filter(l => (ups.has(l.from) || ups.has(l.to)) && l.props.iface).forEach(l => { if (seen.has(l.props.iface)) return; seen.add(l.props.iface); const s = nmLinkState(l); if (s.down || s.up) any = true; tin += s.down || 0; tout += s.up || 0; });
+    $('#ncIn').textContent = any ? Fmt.bps(tin) : '-'; $('#ncOut').textContent = any ? Fmt.bps(tout) : '-';
+    if (picked && picked[1] === 'link') { const l = NM.data.diagram.links.find(x => x.id === picked[0].id); if (l) side(l, 'link'); } };
   const tiles = async () => {
     const [b, o, i, ev] = await Promise.all([api('/api/view/bgp').catch(() => null), api('/api/view/overview').catch(() => null), api('/api/view/interfaces').catch(() => null), api('/api/changes?days=1&limit=40').catch(() => null)]);
-    if (!$('#ncB')) return;
-    if (b) { const up = b.peers.filter(p => p.state === 'Established').length; $('#ncB').textContent = `${up} / ${b.peers.length}`; $('#ncB').className = 'v ' + (up < b.peers.length ? 'bad' : 'okc'); }
-    if (o) { const cpu = o.cpu ?? (o.resources || {}).cpu, mem = o.memory && typeof o.memory === 'object' ? o.memory.percent : o.memory; $('#ncC').textContent = cpu != null ? cpu + '%' : '-'; $('#ncM').textContent = mem != null ? mem + '%' : '-'; }
+    if (!$('#ncB')) return; sshBtn();
+    if (b) { const ign = new Set(Object.values(b.config || {}).flat().filter(l => / ignore$/.test(l)).map(l => l.split(' ')[1]));
+      const live = b.peers.filter(p => !ign.has(p.peer) && !/admin/i.test(p.state)), up = live.filter(p => p.state === 'Established').length, off = b.peers.length - live.length;
+      $('#ncB').innerHTML = `${up} / ${live.length}${off ? ` <span class="muted" style="font-size:13px;font-weight:500">+${off} disabled</span>` : ''}`; $('#ncB').className = 'v ' + (up < live.length ? 'bad' : 'okc'); }
+    if (o) { const cpu = o.cpu, mem = o.memory && typeof o.memory === 'object' ? o.memory.percent : o.memory; $('#ncC').textContent = `${cpu != null ? cpu + '%' : '-'} · ${mem != null ? mem + '%' : '-'}`; }
     if (i) { const dn = i.filter(x => !x.admin_down && x.description && x.phy && x.phy !== 'up' && !String(x.phy).startsWith('*')).length; $('#ncI').textContent = dn; $('#ncI').className = 'v ' + (dn ? 'bad' : 'okc'); }
     if (ev) { const hr = ev.events.filter(e => e.ts > Date.now() / 1000 - 3600).length; $('#ncE').textContent = hr;
       $('#ncT').innerHTML = ev.events.length ? ev.events.slice(0, 25).map(e => `<span class="${['down', 'removed', 'dropped'].includes(e.change) ? 'bad' : ['up', 'added', 'back'].includes(e.change) ? 'okc' : ''}">${esc(new Date(e.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))} · ${esc((CHG_LABEL[e.kind] || e.kind) + ' ' + e.key + ' ' + e.change)}${e.info ? ' · ' + esc(e.info) : ''}</span>`).join('') : '<span>No changes in the last 24 hours.</span>'; }
   };
+  $('#ncV').onchange = () => { const v = $('#ncV').value; history.replaceState(null, '', '#noc' + (v ? '/' + encodeURIComponent(v) : '')); NM.focus = null; NM.sel = null; side(null); applyView(v); fit(); nmDraw(); };
   await map(); await traffic(); tiles();
-  every(5000, traffic); every(10000, tiles); every(60000, map);
+  every(5000, traffic); every(10000, tiles); every(60000, () => map());
   let rt = null; const ro = new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if ($('#nmC')) { fit(); nmDraw(); } else ro.disconnect(); }, 150); }); ro.observe($('#nmC'));
 };
+/* Double-click on the NOC map: how this line or device is built, from what the app knows (and the router's configuration with SSH). */
+async function nocDesign(x, kind, T) {
+  const m = $('#modal'); m.classList.add('wide');
+  const d = NM.data.diagram, line = kind === 'link' ? x : d.links.find(l => l.id === T.via[x.id]), node = kind === 'node' ? x : d.nodes.find(n => n.id === (T.parent[x.to] === x.from ? x.to : x.from));
+  const p = (line || {}).props || {}, iface = p.iface, kids = (T.kids[node.id] || []).map(id => [d.nodes.find(n => n.id === id), d.links.find(l => l.id === T.via[id])]).filter(([n]) => n);
+  const kv = rows => `<table class="tbl"><tbody>${rows.filter(([, v]) => v !== '' && v != null).map(([k, v]) => `<tr><td class="faint" style="white-space:nowrap">${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody></table>`;
+  m.innerHTML = `<h2>How it is built: ${esc(node.label)}</h2><div class="grid g2"><div><h3>Device</h3>${kv([['Type', esc((NODE_META[node.type] || {}).label || node.type)], ...Object.entries(node.props).filter(([k]) => k !== 'existing').map(([k, v]) => [k.replace(/_/g, ' '), esc(v)])])}
+      ${line ? `<h3 style="margin-top:12px">Line to it</h3>${kv([['Label', esc(p.label || '')], ['Interface', esc(iface || '')], ['VLAN', esc(p.vlan || '')], ['Address', esc(p.address || '')], ['QoS plan', p.plan_kbps ? Fmt.bps(p.plan_kbps * 1000) : ''], ['BGP peers', esc(p.peers || '')]])}` : ''}
+      ${kids.length ? `<h3 style="margin-top:12px">Under it (${kids.length})</h3>${kv(kids.slice(0, 40).map(([n, l]) => [n.label, esc([(l || {}).props && l.props.label, (l || {}).props && l.props.address].filter(Boolean).join(' · '))]))}` : ''}</div>
+    <div><h3>On the router</h3><div id="ndI" class="muted">${iface ? 'Reading ' + esc(iface) + '…' : 'No router interface on this line.'}</div><div id="ndA" style="margin-top:10px"></div></div></div>
+    <div class="actions"><button class="btn primary" data-a="x">Close</button></div>`;
+  $('#modalBg').classList.remove('hidden'); m.querySelector('[data-a=x]').onclick = closeModal;
+  const peers = (p.peers || '').split(',').filter(Boolean);
+  const b = peers.length ? await api('/api/view/bgp').catch(() => null) : null;
+  if (b && $('#ndA')) { const pol = {}; Object.values(b.config || {}).flat().forEach(l => { const mm = l.match(/^peer (\S+) route-policy (\S+) (import|export)$/); if (mm) (pol[mm[1]] = pol[mm[1]] || {})[mm[3]] = mm[2]; });
+    $('#ndA').innerHTML = '<h3>BGP</h3>' + kv(peers.map(ip => { const q = (b.peers || []).find(x => x.peer === ip) || {}; return [ip, esc(`${q.state || ''} · AS ${q.as || '-'} · ${Fmt.num(q.prefixes || 0)} routes received · policy in ${(pol[ip] || {}).import || '-'} / out ${(pol[ip] || {}).export || '-'}`)]; })); }
+  if (!iface) return;
+  try {
+    const r = await fetch('/api/interface?name=' + encodeURIComponent(iface)).then(x => x.json());
+    if (!$('#ndI')) return;
+    if (r.error) { $('#ndI').textContent = r.error; return; }
+    const arp = await api('/api/view/arp').then(a => (a.entries || []).filter(e => e.interface === iface)).catch(() => []);
+    $('#ndI').innerHTML = kv([['State', esc(`${r.state || ''} / ${r.protocol || ''}`)], ['Description', esc(r.description || '')], ['IP', esc(r.ip || '')], ['Speed', esc(r.speed || '')], ['MAC', esc(r.mac || '')],
+        ['In / out now', r.in_rate_bps != null ? `${Fmt.bps(r.in_rate_bps)} / ${Fmt.bps(r.out_rate_bps)}` : ''], ['CRC errors', r.crc_errors != null ? Fmt.num(r.crc_errors) : ''], ['Optic', r.optics ? esc(`rx ${r.optics.rx_dbm} dBm · tx ${r.optics.tx_dbm} dBm`) : ''],
+        ['Client MACs (ARP)', esc(arp.slice(0, 6).map(e => `${e.ip} ${e.mac}`).join(', '))]]) +
+      (r.config && r.config.length ? `<div class="lbl muted" style="margin-top:8px">Configuration</div><pre style="max-height:220px">${esc(['interface ' + iface, ...r.config.map(l => ' ' + l)].join('\n'))}</pre>`
+        : `<p class="muted" style="margin-top:8px">The configuration needs SSH. <button class="btn sm" onclick="sshLogin('Sign in to the router over SSH to see the interface configuration.').then(ok => ok && closeModal())">Connect SSH</button></p>`);
+  } catch (e) { if ($('#ndI')) $('#ndI').textContent = e.message; }
+}
 
 /* ---------- search everything (top bar; press / or Ctrl+K) ---------- */
 const GS = { res: [], on: -1, t: null, seq: 0 };

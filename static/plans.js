@@ -402,37 +402,57 @@ function nmRoute(a, b) {
 function nmDraw() {
   const host = $('#nmC'); if (!host || !NM.data) return;
   const pos = nmLoadPos(), z = NM.zoom;
-  const nodes = NM.data.diagram.nodes.map(n => ({ ...n, x: pos[n.id] ? pos[n.id][0] : n.x, y: pos[n.id] ? pos[n.id][1] : n.y }));
+  // NM.show: only these node ids (a device / region view); NM.focus: these node and line ids bright, the rest dimmed
+  const nodes = NM.data.diagram.nodes.map(n => ({ ...n, x: pos[n.id] ? pos[n.id][0] : n.x, y: pos[n.id] ? pos[n.id][1] : n.y })).filter(n => !NM.show || NM.show.has(n.id));
   const byId = Object.fromEntries(nodes.map(n => [n.id, n]));
-  const W = Math.max(1000, ...nodes.map(n => n.x + NW + 60)), H = Math.max(560, ...nodes.map(n => n.y + NH + 60));
+  const ox = NM.show && nodes.length ? Math.max(0, Math.min(...nodes.map(n => n.x)) - 40) : 0, oy = NM.show && nodes.length ? Math.max(0, Math.min(...nodes.map(n => n.y)) - 40) : 0;
+  const W = Math.max(NM.show ? 300 : 1000, ...nodes.map(n => n.x - ox + NW + 60)), H = Math.max(NM.show ? 200 : 560, ...nodes.map(n => n.y - oy + NH + 60));
+  const dim = id => NM.focus && !NM.focus.has(id) ? 'dim' : '';
   const links = NM.data.diagram.links.filter(l => byId[l.from] && byId[l.to]).map(l => {
     const a = byId[l.from], b = byId[l.to], s = nmLinkState(l), g = nmRoute(a, b);
     const w = s.down ? Math.min(9, 2 + Math.max(0, Math.log10(s.down / 1e5))) : 2;
     const sp = v => Math.max(0.4, 3.2 - Math.log10(Math.max(1, v / 1e6))).toFixed(2);
     const label = [l.props.label, s.text].filter(Boolean);
-    return `<g class="link ${s.cls} ${NM.sel === l.id ? 'sel' : ''}" data-l="${l.id}"><path class="vis" d="${g.d}" style="stroke-width:${w}"/>
+    return `<g class="link ${s.cls} ${NM.sel === l.id ? 'sel' : ''} ${dim(l.id)}" data-l="${l.id}"><path class="vis" d="${g.d}" style="stroke-width:${w}"/>
       ${s.down ? `<path class="flow" d="${g.d}" style="animation-duration:${sp(s.down)}s"/>` : ''}
       ${s.up > s.down * 0.05 && s.up ? `<path class="flow rev" d="${g.r}" style="animation-duration:${sp(s.up)}s"/>` : ''}
       <path class="hit" d="${g.d}"/>
       ${label.map((t, i) => `<text x="${g.lx}" y="${g.ly + i * 14}" text-anchor="${g.anchor}" class="${i ? 'rate' : ''}">${esc(t)}</text>`).join('')}</g>`;
   }).join('');
   const ns = nodes.map(n => { const m = NODE_META[n.type] || NODE_META.router; const sub = n.props.mgmt_ip || n.props.splynx_id && ('Splynx ' + n.props.splynx_id + (n.props.location ? ' · ' + n.props.location : '')) || n.props.location || '';
-    return `<g class="node ${NM.sel === n.id ? 'sel' : ''}" data-n="${n.id}" transform="translate(${n.x},${n.y})"><rect width="${NW}" height="${NH}" rx="8" style="stroke:var(${m.color})"/><rect width="5" height="${NH}" rx="2" style="fill:var(${m.color});stroke:none"/>
+    return `<g class="node ${NM.sel === n.id ? 'sel' : ''} ${dim(n.id)}" data-n="${n.id}" transform="translate(${n.x},${n.y})"><rect width="${NW}" height="${NH}" rx="8" style="stroke:var(${m.color})"/><rect width="5" height="${NH}" rx="2" style="fill:var(${m.color});stroke:none"/>
       <text class="tag" x="14" y="17" style="fill:var(${m.color})">${m.tag}${n.props.status && n.type === 'reseller' && n.props.status !== 'active' ? ' · ' + esc(n.props.status.toUpperCase()) : ''}</text><text x="14" y="34">${esc(trunc(n.label, 22))}</text><text class="sub" x="14" y="50">${esc(trunc(sub, 26))}</text></g>`; }).join('');
   const sl = host.scrollLeft, st = host.scrollTop;
-  host.innerHTML = `<svg width="${W * z}" height="${H * z}" viewBox="0 0 ${W} ${H}" id="nmSvg"><rect width="100%" height="100%" fill="transparent" data-bg="1"/>${links}${ns}</svg>`;
+  host.innerHTML = `<svg width="${W * z}" height="${H * z}" viewBox="${ox} ${oy} ${W} ${H}" id="nmSvg"><rect x="${ox}" y="${oy}" width="${W}" height="${H}" fill="transparent" data-bg="1"/>${links}${ns}</svg>`;
   host.scrollLeft = sl; host.scrollTop = st;
   const svg = $('#nmSvg'); let drag = null;
-  const pt = e => { const r = svg.getBoundingClientRect(); return { x: (e.clientX - r.left) / z, y: (e.clientY - r.top) / z }; };
+  const pt = e => { const r = svg.getBoundingClientRect(); return { x: (e.clientX - r.left) / z + ox, y: (e.clientY - r.top) / z + oy }; };
+  // a second click on the same thing within 400 ms is a double click (the drawing is redrawn between the two clicks)
+  const twice = id => { const now = Date.now(), d = NM.lastClick && NM.lastClick.id === id && now - NM.lastClick.t < 400; NM.lastClick = { id, t: now }; return d; };
   svg.onpointerdown = e => {
     const g = e.target.closest('[data-n]'), lk = e.target.closest('[data-l]');
     if (g) { const n = byId[g.dataset.n], p = pt(e); drag = { n, dx: p.x - n.x, dy: p.y - n.y, moved: false }; svg.setPointerCapture(e.pointerId); return; }
-    if (lk) { const l = NM.data.diagram.links.find(x => x.id === lk.dataset.l); if (NM.sel === l.id && l.props.iface) return showGraphs(l.props.iface); NM.sel = l.id; nmShowSel(l, 'link'); nmDraw(); return; }
-    NM.sel = null; nmDraw();
+    if (lk) { const l = NM.data.diagram.links.find(x => x.id === lk.dataset.l);
+      if (NM.noc) { if (twice(l.id)) return NM.noc.dbl(l, 'link'); NM.sel = l.id; NM.noc.pick(l, 'link'); nmDraw(); return; }
+      if (NM.sel === l.id && l.props.iface) return showGraphs(l.props.iface); NM.sel = l.id; nmShowSel(l, 'link'); nmDraw(); return; }
+    NM.sel = null; if (NM.noc) NM.noc.pick(null); nmDraw();
   };
   svg.onpointermove = e => { if (!drag) return; const p = pt(e); drag.n.x = Math.max(0, Math.round((p.x - drag.dx) / 10) * 10); drag.n.y = Math.max(0, Math.round((p.y - drag.dy) / 10) * 10); drag.moved = true;
     svg.querySelector(`[data-n="${CSS.escape(drag.n.id)}"]`).setAttribute('transform', `translate(${drag.n.x},${drag.n.y})`); };
-  svg.onpointerup = () => { if (!drag) return; if (drag.moved) { const p = nmLoadPos(); p[drag.n.id] = [drag.n.x, drag.n.y]; nmSavePos(p); } else { NM.sel = drag.n.id; nmShowSel(drag.n, 'node'); } drag = null; nmDraw(); };
+  svg.onpointerup = () => { if (!drag) return; if (drag.moved) { const p = nmLoadPos(); p[drag.n.id] = [drag.n.x, drag.n.y]; nmSavePos(p); }
+    else if (NM.noc) { const n = NM.data.diagram.nodes.find(x => x.id === drag.n.id); if (twice(n.id)) { drag = null; return NM.noc.dbl(n, 'node'); } NM.sel = n.id; NM.noc.pick(n, 'node'); }
+    else { NM.sel = drag.n.id; nmShowSel(drag.n, 'node'); } drag = null; nmDraw(); };
+}
+/* The map as a tree from the NE8000: parent of every device, so a line or a device can be followed to the router. */
+function nmTree() {
+  const d = NM.data.diagram, root = (d.nodes.find(n => n.type === 'ne8000') || d.nodes[0] || {}).id, adj = {};
+  d.links.forEach(l => { (adj[l.from] = adj[l.from] || []).push([l.to, l.id]); (adj[l.to] = adj[l.to] || []).push([l.from, l.id]); });
+  const parent = { [root]: null }, via = {}, q = [root];
+  while (q.length) { const a = q.shift(); for (const [b, lid] of adj[a] || []) if (!(b in parent)) { parent[b] = a; via[b] = lid; q.push(b); } }
+  const kids = {}; Object.entries(parent).forEach(([k, p]) => { if (p) (kids[p] = kids[p] || []).push(k); });
+  const up = id => { const out = []; for (let x = id; x != null; x = parent[x]) { out.push(x); if (via[x]) out.push(via[x]); } return out; };
+  const down = id => { const out = [], st = [id]; while (st.length) { const x = st.pop(); out.push(x); for (const k of kids[x] || []) { out.push(via[k]); st.push(k); } } return out; };
+  return { root, parent, via, kids, up, down };
 }
 function nmShowSel(x, kind) {
   const rows = kind === 'node' ? [['Device', x.label], ['Type', (NODE_META[x.type] || {}).label], ...Object.entries(x.props).filter(([k]) => k !== 'existing')]
