@@ -180,11 +180,22 @@ class Audit:
         self.path = os.path.join(data_dir, "audit.log")
         self.lock = threading.Lock()
 
+    MAX_BYTES = 20 * 1024 * 1024     # then the log moves to audit.log.1 (the one before that is dropped)
+
     def log(self, user, event, **detail):
         line = json.dumps({"at": time.time(), "user": user, "event": event, **detail})
         with self.lock:
+            try:
+                if os.path.getsize(self.path) > self.MAX_BYTES:
+                    os.replace(self.path, self.path + ".1")
+            except OSError:
+                pass
             with open(self.path, "a") as f:
                 f.write(line + "\n")
+        if self.on_log:
+            self.on_log()
+
+    on_log = None    # called after every entry (the app marks the request as audited)
 
     def tail(self, n=300):
         if not os.path.exists(self.path):

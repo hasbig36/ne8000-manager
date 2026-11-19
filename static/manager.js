@@ -212,13 +212,34 @@ const AUDIT_TEXT = {
   billing_settings: 'billing settings', billing_sync_apply: 'billing sync (apply)', billing_map: 'billing port mapping', router_added: 'added router', router_changed: 'changed router', router_deleted: 'removed router', adopt_scan: 'scanned for devices', adopt_checked: 'checked an adopt config', adopt_applied: 'adopted a device', adopt_failed: 'adopt failed', plan_execute: 'ran plan', plan_deleted: 'deleted plan',
 };
 PAGES.audit = async c => {
-  const { events } = await api('/api/audit?n=500');
-  c.innerHTML = head('Audit log', 'who did what, newest first', `<button class="btn" onclick="refresh()">Refresh</button>`) + '<div class="card"><div id="adT"></div></div>';
+  const { events } = await api('/api/audit?n=3000');
+  const kind = e => e.event === 'opened' ? 'view' : e.event === 'command' ? 'command' : e.event === 'refused' || /_failed$/.test(e.event) ? 'refused'
+    : /^(login|logout|password_changed|router_connect|router_disconnect|router_ssh_added)$/.test(e.event) ? 'login' : 'change';
+  const KL = { view: ['opened', ''], change: ['changed', 'p-warn'], command: ['command', ''], login: ['sign-in', 'p-ok'], refused: ['refused', 'p-bad'] };
+  const users = [...new Set(events.map(e => e.user).filter(Boolean))].sort();
+  c.innerHTML = head('Audit log', 'who opened what and who changed what, newest first', `<button class="btn" id="adCsv">Export CSV</button><button class="btn" onclick="refresh()">Refresh</button>`) +
+    `<div class="card"><div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
+      <select id="adU"><option value="">All users</option>${users.map(u => `<option>${esc(u)}</option>`).join('')}</select>
+      <select id="adK"><option value="">Everything</option><option value="change">Changes</option><option value="view">Pages opened</option><option value="command">Console commands</option><option value="login">Sign-ins and router connects</option><option value="refused">Refused / failed</option></select>
+      <select id="adD"><option value="1">Last 24 hours</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option><option value="0">All kept</option></select>
+      <span class="faint" id="adN" style="align-self:center"></span></div><div id="adT"></div></div>`;
   const detail = e => {
-    const { at, user, event, lines, ...rest } = e;
-    const parts = Object.entries(rest).filter(([, v]) => v !== null && v !== undefined && v !== '').map(([k, v]) => `${k}: ${v}`);
-    return esc(parts.join(' · ')) + (Array.isArray(lines) ? `<pre class="mono" style="margin:4px 0 0;font-size:11.5px">${esc(lines.join('\n'))}</pre>` : '');
+    const { at, user, event, lines, page, title, what, method, path, status, detail: dt, ip, ...rest } = e;
+    const head = event === 'opened' ? `<b>${esc(title || page)}</b>${page && title && page !== title ? ` <span class="faint">#${esc(page)}</span>` : ''}`
+      : what ? `<b>${esc(String(what).replace(/_/g, ' '))}</b>${status ? ` <span class="faint">${esc(method || '')} ${esc(path || '')} → ${status}</span>` : ''}` : '';
+    const parts = Object.entries(rest).filter(([, v]) => v !== null && v !== undefined && v !== '').map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`);
+    return [head, dt ? `<div class="mono" style="font-size:11.5px;white-space:pre-wrap;word-break:break-word">${esc(dt)}</div>` : '', parts.length ? `<div class="faint">${esc(parts.join(' · '))}</div>` : '',
+      Array.isArray(lines) ? `<pre class="mono" style="margin:4px 0 0;font-size:11.5px">${esc(lines.join('\n'))}</pre>` : ''].filter(Boolean).join('');
   };
-  table($('#adT'), [{ t: 'When', k: 'at', f: e => when(e.at) }, { t: 'User', k: 'user' }, { t: 'Event', k: 'event', f: e => `<span class="pill ${e.event === 'login_failed' ? 'p-bad' : e.event === 'action' || e.event === 'plan_execute' || e.event === 'config' ? 'p-warn' : 'p-off'}">${esc(AUDIT_TEXT[e.event] || e.event)}</span>` },
-    { t: 'Details', k: 'host', cls: 'wrap', f: detail }], events, { sort: 'at', dir: -1, empty: 'Nothing logged yet' });
+  const rows = () => { const u = $('#adU').value, k = $('#adK').value, d = +$('#adD').value, since = d ? Date.now() / 1000 - d * 86400 : 0;
+    return events.filter(e => (!u || e.user === u) && (!k || kind(e) === k) && e.at >= since); };
+  const draw = () => { const r = rows(); $('#adN').textContent = `${r.length} entries`;
+    table($('#adT'), [{ t: 'When', k: 'at', f: e => when(e.at) }, { t: 'User', k: 'user' }, { t: 'What', k: 'event', f: e => { const [l, cl] = KL[kind(e)];
+        return `<span class="pill ${cl}">${esc(l)}</span>${!['opened', 'changed', 'command', 'refused'].includes(e.event) ? ` <span class="faint">${esc(e.event.replace(/_/g, ' '))}</span>` : ''}`; } },
+      { t: 'Details', k: 'host', cls: 'wrap', f: detail }, { t: 'From', k: 'ip', f: e => `<span class="faint mono">${esc(e.ip || '')}</span>` }], r, { sort: 'at', dir: -1, empty: 'Nothing logged for this choice' }); };
+  ['adU', 'adK', 'adD'].forEach(id => $('#' + id).onchange = draw); draw();
+  $('#adCsv').onclick = () => { const q = v => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const out = [['time', 'user', 'type', 'event', 'what', 'details', 'ip'].join(',')].concat(rows().map(e => { const { at, user, event, ip, ...rest } = e;
+      return [new Date(at * 1000).toISOString(), user, kind(e), event, rest.title || rest.what || '', JSON.stringify(rest), ip].map(q).join(','); }));
+    const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([out.join('\n')], { type: 'text/csv' })); a.download = `audit-${new Date().toISOString().slice(0, 10)}.csv`; a.click(); };
 };

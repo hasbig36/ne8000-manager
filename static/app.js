@@ -235,6 +235,7 @@ async function go(page, keepScroll) {
   if (keepScroll && old.length) { c.style.display = 'none'; host.prepend(c); }   // build the refreshed page behind the old one: no flash
   else { c.innerHTML = '<div class="muted">Loading…</div>'; host.replaceChildren(c); }
   const show = () => { if (my !== NAVSEQ) { c.remove(); return; } for (const o of host.querySelectorAll(':scope > .pagebox')) if (o !== c) o.remove(); c.style.display = ''; };
+  if (!keepScroll && ME) { const nav = NAV.flatMap(g => g[1]).find(x => x[0] === navKey); post('/api/audit/view', { page, title: nav ? nav[1] : ({ noc: 'NOC view', plan: 'Network plan' }[key] || page) }).catch(() => {}); }
   try { await PAGES[key](c, arg); show(); if (keepScroll && my === NAVSEQ) host.scrollTop = y; }
   catch (e) { if (my !== NAVSEQ || e.stale) { c.remove(); return; } show(); c.innerHTML = `<div class="card"><div class="err">${esc(e.message)}</div><button class="btn" onclick="refresh()">Retry</button></div>`; }
 }
@@ -906,6 +907,7 @@ function loopbackForm() { change({ title: 'New loopback', action: 'loopback.crea
 
 function closeDrawer() { const d = $('#drawer'); if (d._stop) d._stop(); d.classList.add('hidden'); d.innerHTML = ''; }
 async function interfaceDrawer(name) {
+  post('/api/audit/view', { page: 'interface/' + name, title: 'Interface ' + name }).catch(() => {});
   closeDrawer(); const d = $('#drawer'); d.classList.remove('hidden'); d.innerHTML = '<div class="muted">Loading…</div>';
   let info = await api('/api/interface?name=' + encodeURIComponent(name));
   const isSub = name.includes('.') || /^(vlanif|loopback|tunnel)/i.test(name);

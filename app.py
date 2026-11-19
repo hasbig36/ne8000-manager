@@ -143,7 +143,7 @@ def close_router(r):
 # ---- app login ---------------------------------------------------------------------
 OPEN = {"index", "static", "auth_login", "auth_me", "healthz", "otdr_event", "site_event"}     # otdr_event checks its own token or login
 # endpoints a viewer may POST to; everything else that changes something needs operator or admin
-VIEWER_POST = {"connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password", "sites_check", "sites_run", "ipam_layout", "ipam_renumber"}
+VIEWER_POST = {"audit_view", "connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password", "sites_check", "sites_run", "ipam_layout", "ipam_renumber"}
 ADMIN_ONLY = {"alerts_channel_add", "alerts_channel_delete", "alerts_test", "alerts_rules", "alerts_settings", "alerts_check_save", "alerts_check_delete",
               "users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
               "routers_test_snmp", "adopt_discover", "adopt_scan", "adopt_build", "adopt_apply", "adopt_identify"}
@@ -187,6 +187,75 @@ def guard():
     return None
 
 
+
+
+# ---- audit: what each user opened, and every change made through the app ----------------
+SECRET_KEY_RE = re.compile(r"pass|secret|token|api_?key|community|auth_key|priv_key|password|^key$|^url$|webhook", re.I)
+AUDIT_SKIP = {"audit_view", "auth_login", "auth_logout", "auth_me", "otdr_event", "site_event", "sites_check", "alerts_run", "health_run"}
+OPENED = {}       # (user, page) -> last time logged, so a page refreshed every few seconds is one entry
+
+
+def _mark_audited():
+    try:
+        g.audited = True
+    except RuntimeError:          # logged outside a request (background threads)
+        pass
+
+
+AUDIT.on_log = _mark_audited
+
+
+def audit_summary(d, depth=0):
+    """A request body as short readable text, with every secret masked."""
+    if isinstance(d, dict):
+        parts = []
+        for k, v in d.items():
+            if v in (None, "", [], {}):
+                continue
+            if SECRET_KEY_RE.search(str(k)) and not isinstance(v, (dict, list)):
+                parts.append(f"{k}: ••••")
+            else:
+                parts.append(f"{k}: {audit_summary(v, depth + 1)}")
+        return ("{" + ", ".join(parts) + "}") if depth else ", ".join(parts)
+    if isinstance(d, list):
+        if len(d) > 12:
+            return "[" + ", ".join(audit_summary(x, depth + 1) for x in d[:12]) + f", … {len(d) - 12} more]"
+        return "[" + ", ".join(audit_summary(x, depth + 1) for x in d) + "]"
+    t = str(d)
+    return t if len(t) <= 160 else t[:160] + "…"
+
+
+@app.post("/api/audit/view")
+def audit_view():
+    """The page a user just opened (sent by the page itself)."""
+    u = current_user()
+    d = request.get_json(silent=True) or {}
+    page = str(d.get("page") or "")[:80]
+    if u and page:
+        k, now = (u["username"], page), time.time()
+        if now - OPENED.get(k, 0) > 120:
+            OPENED[k] = now
+            AUDIT.log(u["username"], "opened", page=page, title=str(d.get("title") or "")[:80], ip=client_ip(),
+                      router=getattr(ROUTERS.get(session.get("sid")), "host", "") or "")
+    return jsonify(ok=True)
+
+
+@app.after_request
+def audit_changes(resp):
+    """Every change sent through the app is logged, even where the endpoint logs nothing itself."""
+    try:
+        if (request.method in ("POST", "PUT", "DELETE", "PATCH") and request.path.startswith("/api/")
+                and request.endpoint not in AUDIT_SKIP and not getattr(g, "audited", False)):
+            u = current_user()
+            if u:
+                body = request.get_json(silent=True)
+                detail = audit_summary(body)[:1500] if body else ""
+                ev = "refused" if resp.status_code >= 400 else "command" if request.endpoint == "cli" else "changed"
+                AUDIT.log(u["username"], ev, what=request.endpoint or request.path,
+                          method=request.method, path=request.path, status=resp.status_code, detail=detail, ip=client_ip())
+    except Exception as exc:          # the audit must never break a request
+        print(f"audit: {exc}", flush=True)
+    return resp
 
 
 @app.after_request
@@ -501,7 +570,7 @@ def adopt_apply():
 
 @app.get("/api/audit")
 def audit_log():
-    return jsonify(events=AUDIT.tail(int(request.args.get("n", 300))))
+    return jsonify(events=AUDIT.tail(max(1, min(5000, int(request.args.get("n", 300) or 300)))))
 
 
 def safe_name(value, label="name"):
