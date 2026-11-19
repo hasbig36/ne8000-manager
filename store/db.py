@@ -38,6 +38,10 @@ class DB:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(licences)")}
+        if "brand" not in cols:           # the buyer's own name and logo, shown in their copy
+            self.conn.execute("ALTER TABLE licences ADD COLUMN brand TEXT")
+            self.conn.execute("ALTER TABLE licences ADD COLUMN logo BLOB")
         self.lock = threading.RLock()
         try:
             os.chmod(path, 0o600)

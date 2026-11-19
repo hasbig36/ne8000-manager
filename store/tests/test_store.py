@@ -63,11 +63,17 @@ def csrf(c, path):
     return re.search(r'name="csrf" value="([^"]+)"', html).group(1)
 
 
-def buy(c, hosting="self", m8=3):
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 64
+
+
+def buy(c, hosting="self", m8=3, logo=None, brand=""):
     tok = csrf(c, "/buy")
-    r = c.post("/buy", data={"csrf": tok, "count_ne8000-m8": str(m8), "hosting": hosting, "name": "Jane Operator",
-                             "company": "FastNet Ltd", "email": "jane@fastnet.test", "phone": "0712345678",
-                             "password": "a-long-password", "terms": "1"})
+    data = {"csrf": tok, "count_ne8000-m8": str(m8), "hosting": hosting, "name": "Jane Operator",
+            "company": "FastNet Ltd", "email": "jane@fastnet.test", "phone": "0712345678",
+            "password": "a-long-password", "terms": "1", "brand": brand}
+    if logo is not None:
+        data["logo"] = (io.BytesIO(logo), "logo.png")
+    r = c.post("/buy", data=data, content_type="multipart/form-data")
     assert r.status_code == 302, r.get_data(as_text=True)
     return r.headers["Location"].rsplit("/", 1)[-1]
 
@@ -168,12 +174,13 @@ def test_hosted_bank_flow_provisions_and_emails_login(client):
     assert client.post("/admin/login", data={"csrf": tok, "password": "admin-pass-123"}).status_code == 302
     tok = csrf(client, "/admin")
     client.post(f"/admin/orders/{o['id']}/confirm", data={"csrf": tok, "reference": "EQ123"})
-    for _ in range(50):
+    end = time.monotonic() + 10          # time.sleep is stubbed out for the store, so wait on the clock
+    while time.monotonic() < end:
         srv = client.store.server_for_licence(o["licence_id"])
         if srv and srv["ip"]:
             break
-        time.sleep(0.05)
-    assert srv["droplet_id"] == "1001" and srv["status"] == "installing" and srv["ip"] == "203.0.113.7"
+    assert srv, client.store.db.q("SELECT * FROM orders")
+    assert srv["droplet_id"] == "1001", srv["log"] and srv["status"] == "installing" and srv["ip"] == "203.0.113.7"
     name, slug, ud = client.fake["droplets"][-1]
     assert slug == "s-2vcpu-4gb" and "NE8000_LICENCE_KEY=NE8K-" in ud
     # the droplet reports back; the customer gets the login once and the password is wiped
@@ -226,3 +233,43 @@ def test_other_customers_cannot_see_orders(client):
     assert client.get(f"/pay/{ref}").status_code == 302      # sign in first
     assert client.get("/admin").status_code == 302
     assert client.post("/buy", data={"hosting": "self"}).status_code == 400   # no CSRF token
+
+
+def test_buyer_brand_name_and_logo_reach_the_app(client, tmp_path):
+    ref = buy(client, "self", 1, logo=PNG, brand="FastNet NOC")
+    o = client.store.order_by_ref(ref)
+    client.store.confirm_bank(o["id"], "R1", "admin")
+    lic = client.store.licence(o["licence_id"])
+    assert client.get(f"/api/brand-logo?key={lic['key']}").data == PNG
+    assert client.get("/api/brand-logo?key=NE8K-NOPE").status_code == 400
+    sys.path.insert(0, ROOT)
+    import licence as app_licence
+    import branding
+    env = {"NE8000_LICENCE_KEY": lic["key"], "NE8000_LICENCE_SERVER": "https://billing.test",
+           "NE8000_LICENCE_PUBKEY": client.store.signer.public_b64}
+    L = app_licence.Licence(str(tmp_path), env)
+    B = branding.Branding(str(tmp_path), L, env)
+    assert B.name == "Yubo"                       # the product name until the licence arrives
+    L._accept(client.store.token(lic["key"]))
+    assert B.name == "FastNet NOC"
+    version = L.payload["logo"]
+    assert B.wants_store_logo(version)
+    B.set_store_logo(PNG, version)
+    assert B.logo() == (PNG, "image/png") and not B.wants_store_logo(version)
+    # the buyer changes the logo in the billing account: the app takes the new one
+    tok = csrf(client, "/account")
+    jpg = b"\xff\xd8\xff" + b"\x01" * 40
+    client.post(f"/account/licence/{lic['id']}/brand", data={"csrf": tok, "brand": "FastNet", "logo": (io.BytesIO(jpg), "l.jpg")},
+                content_type="multipart/form-data")
+    L._accept(client.store.token(lic["key"]))
+    assert B.name == "FastNet" and B.wants_store_logo(L.payload["logo"])
+    # an admin's own logo in the app wins over the store's
+    B.save({"name": "Our NOC", "logo": "data:image/png;base64," + __import__("base64").b64encode(PNG).decode()})
+    assert B.name == "Our NOC" and not B.wants_store_logo(L.payload["logo"])
+    # SVG and other files are refused
+    with pytest.raises(Exception):
+        B.set_logo(b"<svg onload=alert(1)>")
+    tok = csrf(client, "/account")
+    r = client.post(f"/account/licence/{lic['id']}/brand", data={"csrf": tok, "brand": "x", "logo": (io.BytesIO(b"<svg/>"), "l.svg")},
+                    content_type="multipart/form-data")
+    assert r.status_code == 400

@@ -1,6 +1,6 @@
-# NE8000 Manager licence store
+# Yubo licence store
 
-Sell NE8000 Manager to other operators: a public **sales site** (features, pricing, checkout) and a
+Sell Yubo (the NE8000 Manager app) to other operators: a public **sales site** (features, pricing, checkout) and a
 **billing site** (customer accounts, invoices, renewals, admin), in one small Flask app.
 
 ## How a sale works
@@ -8,7 +8,8 @@ Sell NE8000 Manager to other operators: a public **sales site** (features, prici
    each extra device, per month** (settings `STORE_FIRST_DEVICE_USD`, `STORE_EXTRA_DEVICE_USD`, `STORE_PERIOD`).
 2. They see the recommended server size, and choose **their own server** or **hosted by us**
    (DigitalOcean monthly price + `STORE_HOSTING_MARKUP`%, 30% by default).
-3. They create a billing account and pay the invoice:
+3. They enter the **name and logo** their copy will show (white label: their staff see their brand,
+   not Yubo), create a billing account and pay the invoice:
    - **M-Pesa**: an STK push prompt on their phone. Daraja calls back, and the store asks Daraja again
      (STK query) before marking the invoice paid, so a fake callback cannot activate a licence.
    - **Bank transfer**: they see your bank details with the invoice number as reference; you mark it
@@ -22,6 +23,12 @@ Sell NE8000 Manager to other operators: a public **sales site** (features, prici
 5. Seven days before the month ends a renewal invoice is emailed. After the paid period plus
    `STORE_GRACE_DAYS` (7) the licence expires and the app stops connecting to routers until renewed.
    Customers can add devices from their account at any time ($30 each).
+
+## Buyer's name and logo
+The name and logo from checkout (changeable later in the billing account) travel in the signed licence:
+the app shows the name and downloads the logo from `/api/brand-logo`. An admin can override both in
+the app under Manager › Branding; a logo uploaded there is kept even if the buyer changes the store's.
+`STORE_NAME` (default Yubo) is the product name on the sales and billing sites.
 
 ## Licences in the app
 The store signs licences with an Ed25519 key it creates on first start (`data/licence_signing.key`,

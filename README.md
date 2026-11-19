@@ -1,4 +1,4 @@
-# NE8000 Manager
+# Yubo (NE8000 Manager)
 
 A Winbox-style web GUI for the Huawei NetEngine 8000 M8 (VRP8). It runs on a PC or server that can reach the router's management IP, connects over SSH, and you use it from any browser. No internet access is needed: there are no external scripts or fonts.
 
@@ -15,6 +15,12 @@ A Winbox-style web GUI for the Huawei NetEngine 8000 M8 (VRP8). It runs on a PC 
 | **System** | Resource graphs (CPU, memory, temperature, last hour), boards, power, fans, serial numbers, local users, sessions, clock, NTP, SNMP, alarms, log buffer | Users (add, delete, password), sysname, NTP servers, SNMP community, syslog server |
 | **Planning** | Saved network plans with drawing, tasks, executions and version history | Draw a design, generate or add tasks, check or execute them on the router, restore old versions |
 | **Tools** | Traffic monitor (up to 6 interfaces side by side), ping and traceroute with source/VPN, console for display commands, config editor, backup | Config editor with "check only" and "apply & commit", save to startup, download running config |
+
+### Branding (Manager › Branding)
+Admins set the name and logo shown on the sign-in page, top bar and browser tab (PNG, JPEG or WebP,
+up to 512 KB). The default name is Yubo. Copies sold through the store show the buyer's own company
+name and logo, taken from their order; their admin can change them here. `NE8000_BRAND_NAME` in `.env`
+also sets the name.
 
 ### Selling licences (store/)
 `store/` is a separate app that sells NE8000 Manager to other operators: a sales site, a billing site,

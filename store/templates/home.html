@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ store_name }}: manage your Huawei NE8000 from the browser{% endblock %}
+{% block title %}{{ store_name }}: manage your Huawei NE8000 network from the browser{% endblock %}
 {% block body %}
 <div class="hero"><div class="wrap">
   <div class="tag">For ISPs and network operators</div>
@@ -9,19 +9,20 @@
     <a class="btn primary big" href="/buy">Buy a licence</a>
     <a class="btn big" href="#pricing">See pricing</a>
   </div>
-  <img class="shot" src="{{ url_for('static', filename='shots/graphs.jpg') }}" alt="NE8000 Manager showing live and daily traffic graphs for a router interface" width="1280" height="900">
+  <img class="shot" src="{{ url_for('static', filename='shots/graphs.jpg') }}" alt="{{ store_name }} showing live and daily traffic graphs for a router interface" width="1280" height="900">
 </div></div>
 
 <section id="features"><div class="wrap">
   <div class="tag">Features</div>
   <h2>Everything your NOC does on the router, without the CLI</h2>
-  <p class="intro">NE8000 Manager connects to your routers over SSH and SNMP. Every change shows the exact VRP commands first, and you can check them on the router before you commit.</p>
+  <p class="intro">{{ store_name }} connects to your routers over SSH and SNMP. Every change shows the exact VRP commands first, and you can check them on the router before you commit.</p>
   <div class="grid3">
     <div class="card feature"><div class="ico">IF</div><h3>Interfaces and VLANs</h3><p>Every port and sub-interface with state, IPs, VLANs and utilisation. Create dot1q and QinQ sub-interfaces, VLANIFs and trunks in a form.</p></div>
     <div class="card feature"><div class="ico">Q</div><h3>Queues and QoS</h3><p>Rate-limit any interface like a simple queue, shape ports and watch live pass and drop counters per queue.</p></div>
     <div class="card feature"><div class="ico">BGP</div><h3>Routing</h3><p>BGP peers, prefixes and tables, OSPF, IS-IS and MPLS LDP. Add, reset and refresh peers safely.</p></div>
     <div class="card feature"><div class="ico">~</div><h3>Graphs and NetFlow</h3><p>Live, daily, weekly, monthly and yearly traffic per interface, and traffic per IP address from NetStream.</p></div>
     <div class="card feature"><div class="ico">$</div><h3>Splynx billing</h3><p>Blocked customers get their port shut, paid customers get it back, automatically and logged.</p></div>
+    <div class="card feature"><div class="ico">®</div><h3>Your brand, not ours</h3><p>Your company name and logo on the sign-in page, the top bar and the browser tab. Your staff see your system.</p></div>
     <div class="card feature"><div class="ico">!</div><h3>Health and alerts</h3><p>CPU, memory, optics, errors, BGP sessions and site power. Alerts to Telegram, email, SMS, Slack or Teams.</p></div>
   </div>
 </div></section>
@@ -76,6 +77,7 @@
         <li>Installed for you within minutes of payment</li>
         <li>Add devices any time from your billing account</li>
         <li>Updates included while the licence is active</li>
+        <li>Your company name and logo in the app</li>
       </ul>
     </div>
   </div>

@@ -18,6 +18,15 @@
     {% if lic.server %}<dt>Server</dt><dd>{% if lic.server.status == 'ready' %}<a href="{{ lic.server.url }}" target="_blank" rel="noopener">{{ lic.server.url }}</a>{% else %}<span class="pill {{ lic.server.status }}">{{ lic.server.status }}</span>{% endif %}</dd>{% endif %}
     {% if lic.renewal_usd %}<dt>Renewal</dt><dd>USD {{ '%.2f'|format(lic.renewal_usd) }} {{ period_label if period != 'once' else 'per month (hosting)' }}</dd>{% endif %}
   </dl>
+  <details style="border:0;padding:6px 0 10px"><summary class="small">Name and logo in the app: {{ lic.brand or me.company or me.name }}</summary>
+  <form method="post" action="/account/licence/{{ lic.id }}/brand" enctype="multipart/form-data" class="inline" style="margin-top:10px">
+    <input type="hidden" name="csrf" value="{{ csrf }}">
+    {% if lic.logo %}<img src="/account/licence/{{ lic.id }}/logo" alt="Current logo" style="height:32px;max-width:140px;object-fit:contain">{% endif %}
+    <div><label for="br{{ lic.id }}">Name shown</label><input id="br{{ lic.id }}" name="brand" type="text" maxlength="40" value="{{ lic.brand or '' }}"></div>
+    <div><label for="lg{{ lic.id }}">New logo</label><input id="lg{{ lic.id }}" name="logo" type="file" accept="image/png,image/jpeg,image/webp"></div>
+    <button class="btn sm">Save</button>
+  </form>
+  <p class="small muted" style="margin:6px 0 0">Your app picks up changes within 12 hours if it has no name or logo of its own; an admin can also set them in the app under Manager › Branding.</p></details>
   {% if lic.install %}<p class="small muted" style="margin-bottom:4px">Install on your Ubuntu server:</p><pre class="cmd">{{ lic.install }}</pre>{% endif %}
   {% if lic.status in ('active', 'expired') and lic.renewal_usd %}
   <form method="post" action="/account/licence/{{ lic.id }}/renew" style="display:inline"><input type="hidden" name="csrf" value="{{ csrf }}"><button class="btn primary sm">Renew now</button></form>

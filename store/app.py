@@ -1,4 +1,4 @@
-"""NE8000 Manager licence store: the public sales site and the billing site.
+"""Yubo licence store: the public sales site and the billing site.
 
 One small Flask app. With STORE_SALES_HOST and STORE_BILLING_HOST set (for example
 ne8000.co.ke and billing.ne8000.co.ke) the sales pages answer on the first and the billing
@@ -16,7 +16,7 @@ from flask import Flask, Response, abort, jsonify, redirect, render_template, re
 
 import pricing
 from mpesa import parse_callback
-from service import Store, StoreError, period_label
+from service import Store, StoreError, logo_mime, period_label
 
 DATA_DIR = os.path.abspath(os.environ.get("STORE_DATA_DIR") or os.path.join(os.path.dirname(__file__), "data"))
 SALES_HOST = os.environ.get("STORE_SALES_HOST", "").lower()
@@ -40,7 +40,7 @@ def _secret_key():
 
 app.secret_key = _secret_key()
 app.config.update(SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE="Lax", SESSION_COOKIE_SECURE=BEHIND_PROXY,
-                  PERMANENT_SESSION_LIFETIME=7 * 86400, MAX_CONTENT_LENGTH=64 * 1024)
+                  PERMANENT_SESSION_LIFETIME=7 * 86400, MAX_CONTENT_LENGTH=1024 * 1024)
 if BEHIND_PROXY:
     from werkzeug.middleware.proxy_fix import ProxyFix
     app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
@@ -100,6 +100,11 @@ def throttle(key):
     FAILS[key] = hits
     if len(hits) >= 8:
         abort(429, "Too many attempts. Wait 15 minutes.")
+
+
+def read_logo():
+    f = request.files.get("logo")
+    return f.read(512 * 1024 + 1) if f and f.filename else b""
 
 
 def client_ip():
@@ -201,7 +206,7 @@ def buy_post():
         raise StoreError("Please accept the licence terms.")
     o = STORE.checkout({"devices": devices, "hosting": f.get("hosting"), "email": f.get("email"), "name": f.get("name"),
                         "company": f.get("company"), "phone": f.get("phone"), "country": f.get("country"),
-                        "password": f.get("password")})
+                        "password": f.get("password"), "brand": f.get("brand"), "logo": read_logo()})
     session.clear()
     session.permanent = True
     session["cid"] = o["customer_id"]
@@ -264,6 +269,23 @@ def add_devices(lid):
     return redirect(url_for("pay", ref=STORE.add_devices_order(own_licence(lid), request.form.get("added"))["ref"]))
 
 
+@app.post("/account/licence/<int:lid>/brand")
+@customer_required
+def set_brand(lid):
+    check_csrf()
+    STORE.set_brand(own_licence(lid), request.form.get("brand"), read_logo())
+    return redirect(url_for("account"))
+
+
+@app.get("/account/licence/<int:lid>/logo")
+@customer_required
+def licence_logo(lid):
+    lic = own_licence(lid)
+    if not lic.get("logo"):
+        abort(404)
+    return Response(lic["logo"], mimetype=logo_mime(lic["logo"]))
+
+
 @app.get("/pay/<ref>")
 @customer_required
 def pay(ref):
@@ -315,6 +337,17 @@ def api_licence():
     except StoreError:
         FAILS.setdefault(("lic", client_ip()), []).append(time.time())
         raise
+
+
+@app.get("/api/brand-logo")
+def api_brand_logo():
+    throttle(("lic", client_ip()))
+    try:
+        data = STORE.brand_logo(request.args.get("key", ""))
+    except StoreError:
+        FAILS.setdefault(("lic", client_ip()), []).append(time.time())
+        raise
+    return Response(data, mimetype=logo_mime(data))
 
 
 @app.get("/api/pubkey")

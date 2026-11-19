@@ -4,6 +4,7 @@ Settings: SMTP_HOST, SMTP_PORT (587), SMTP_USER, SMTP_PASSWORD, SMTP_FROM, SMTP_
 Without SMTP_HOST the emails are written to <data dir>/outbox/ instead, so nothing is lost.
 """
 import os
+import secrets
 import smtplib
 import ssl
 import time
@@ -29,8 +30,8 @@ class Mailer:
         msg.set_content(body)
         if not self.host:
             os.makedirs(self.outbox, mode=0o700, exist_ok=True)
-            path = os.path.join(self.outbox, f"{int(time.time() * 1000)}.eml")
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT, 0o600)
+            path = os.path.join(self.outbox, f"{int(time.time() * 1000)}-{secrets.token_hex(4)}.eml")
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "wb") as f:
                 f.write(bytes(msg))
             return

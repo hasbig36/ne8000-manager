@@ -403,3 +403,10 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
   .noc .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:8px;padding:8px 12px 0}
   .noc .tile{padding:8px 10px}.noc .tile .v{font-size:21px}.noc .tile .l{font-size:10.5px;line-height:1.25}
 }
+
+/* branding: the buyer's own name and logo */
+#top .brand{display:flex;align-items:center;gap:8px}
+.brandLogo{height:26px;max-width:120px;object-fit:contain;border-radius:4px}
+h2.brandHead{display:flex;align-items:center;gap:10px}h2.brandHead .brandLogo{height:34px;max-width:160px}
+.brandPreview{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);font-weight:700;color:var(--accent)}
+.brandPreview img{height:30px;max-width:140px;object-fit:contain}

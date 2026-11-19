@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NE8000 Manager</title>
+<title>{{ brand.name }}</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%23c7000b'/%3E%3Cpath d='M3 11h10M3 8h10M3 5h10' stroke='white' stroke-width='1.5'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
 </head>
 <body>
 <div id="appLogin" class="hidden">
   <div class="card">
-    <h2>NE8000 Manager</h2>
+    <h2 class="brandHead">{% if brand.logo %}<img class="brandLogo" src="/brand/logo" alt="">{% endif %}<span class="brandName">{{ brand.name }}</span></h2>
     <div class="muted">Sign in to continue</div>
     <label for="auUser">Username</label><input id="auUser" autocomplete="username">
     <label for="auPass">Password</label><input id="auPass" type="password" autocomplete="current-password">
@@ -20,7 +20,7 @@
 </div>
 <div id="login" class="hidden">
   <div class="card">
-    <h2>NE8000 Manager</h2>
+    <h2 class="brandHead">{% if brand.logo %}<img class="brandLogo" src="/brand/logo" alt="">{% endif %}<span class="brandName">{{ brand.name }}</span></h2>
     <div class="muted">Huawei NetEngine 8000 M8 &middot; SNMP / SSH</div>
     <div id="pickRouter" class="hidden"><label for="routerSel">Router</label><select id="routerSel"></select></div>
     <div id="hostFields"><label for="host">Management IP / hostname</label><input id="host" placeholder="192.168.0.10" autocomplete="off">
@@ -38,7 +38,7 @@
 <div id="shell" class="hidden">
   <header id="top">
     <button class="btn ghost" id="menuBtn" aria-label="Menu">&#9776;</button>
-    <span class="brand">NE8000 Manager</span>
+    <span class="brand" data-brand="{{ brand.name }}">{% if brand.logo %}<img class="brandLogo" src="/brand/logo" alt="">{% endif %}<span class="brandName">{{ brand.name }}</span></span>
     <div class="gs" id="gs"><input id="gq" type="search" placeholder="Search everything" autocomplete="off" aria-label="Search everything (press /)"><div id="gqR" class="hidden" role="listbox"></div></div>
     <button class="btn sm" id="nocBtn" title="NOC view: the live network map full screen">NOC</button>
     <div class="meta"><span>Identity <b id="tName">-</b></span><span id="tSwitchW" style="display:none">Router <select id="tSwitch" title="switch to another saved router"></select></span><span>Host <b id="tHost">-</b></span><span>CPU <b id="tCpu">-</b></span><span>Memory <b id="tMem">-</b></span><span>Uptime <b id="tUp">-</b></span></div>

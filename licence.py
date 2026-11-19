@@ -9,7 +9,8 @@ of routers. When it is set (the store's install script and hosted servers set it
   has expired the app no longer connects to routers until it is renewed.
 
 A licence token is  NE8K1.<base64url JSON payload>.<base64url Ed25519 signature>.
-The payload has: key, customer, devices, expires (unix time), issued.
+The payload has: key, customer, brand (the name the buyer's copy shows), devices, expires
+(unix time), issued.
 """
 import base64
 import json
@@ -56,6 +57,7 @@ class Licence:
         self.path = os.path.join(data_dir, "licence.json")
         self.lock = threading.Lock()
         self.token, self.payload, self.error, self.checked = "", None, "", 0
+        self.on_refresh = None     # called after a good refresh (the app fetches the buyer's logo)
         if self.enabled and os.path.exists(self.path):
             try:
                 with open(self.path) as f:
@@ -86,6 +88,8 @@ class Licence:
                 token = json.load(resp).get("token", "")
             with self.lock:
                 self._accept(token)
+            if self.on_refresh:
+                self.on_refresh(self)
         except LicenceError as exc:
             self.error = str(exc)
         except Exception as exc:  # network, store down: keep the last good licence
@@ -125,3 +129,16 @@ class Licence:
             n = self.payload["devices"]
             raise LicenceError(f"Your licence covers {n} device{'s' if n != 1 else ''}. "
                                f"Add more devices at {self.server}/account.")
+
+
+def fetch_logo(lic, brand):
+    """Download the logo the buyer set in the store when it changed."""
+    version = str((lic.payload or {}).get("logo") or "")
+    if not (lic.enabled and brand.wants_store_logo(version)):
+        return
+    try:
+        q = urllib.parse.urlencode({"key": lic.key})
+        with urllib.request.urlopen(f"{lic.server}/api/brand-logo?{q}", timeout=20) as resp:
+            brand.set_store_logo(resp.read(512 * 1024 + 1), version)
+    except Exception:
+        pass

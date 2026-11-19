@@ -24,6 +24,7 @@ import actions
 import auth
 import backups
 import billing
+import branding
 import changes
 import adopt
 import health
@@ -64,6 +65,8 @@ USERS = auth.UserStore(DATA_DIR)
 AUDIT = auth.Audit(DATA_DIR)
 SAVED = routers.RouterStore(DATA_DIR)
 LICENCE = licence.Licence(DATA_DIR)   # off unless NE8000_LICENCE_KEY is set (copies sold through the store)
+BRAND = branding.Branding(DATA_DIR, LICENCE)   # Yubo, or the buyer's own name and logo
+LICENCE.on_refresh = lambda lic: licence.fetch_logo(lic, BRAND)
 HIST = history.History(DATA_DIR, SAVED)
 SITES = sitewatch.SiteWatch(DATA_DIR)
 HEALTH = health.Health(DATA_DIR, SAVED, HIST)
@@ -143,10 +146,10 @@ def close_router(r):
 
 
 # ---- app login ---------------------------------------------------------------------
-OPEN = {"index", "static", "auth_login", "auth_me", "healthz", "otdr_event", "site_event"}     # otdr_event checks its own token or login
+OPEN = {"index", "static", "brand_get", "brand_logo", "auth_login", "auth_me", "healthz", "otdr_event", "site_event"}     # otdr_event checks its own token or login
 # endpoints a viewer may POST to; everything else that changes something needs operator or admin
 VIEWER_POST = {"connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password", "sites_check", "sites_run", "ipam_layout", "ipam_renumber"}
-ADMIN_ONLY = {"alerts_channel_add", "alerts_channel_delete", "alerts_test", "alerts_rules", "alerts_settings", "alerts_check_save", "alerts_check_delete",
+ADMIN_ONLY = {"brand_save", "alerts_channel_add", "alerts_channel_delete", "alerts_test", "alerts_rules", "alerts_settings", "alerts_check_save", "alerts_check_delete",
               "users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
               "routers_test_snmp", "adopt_discover", "adopt_scan", "adopt_build", "adopt_apply", "adopt_identify"}
 
@@ -541,7 +544,27 @@ def handle_unexpected(exc):
 
 @app.get("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", brand=BRAND.public())
+
+
+@app.get("/api/brand")
+def brand_get():
+    return jsonify(BRAND.public())
+
+
+@app.get("/brand/logo")
+def brand_logo():
+    data, mime = BRAND.logo()
+    if not data:
+        return Response(status=404)
+    return Response(data, mimetype=mime, headers={"Cache-Control": "no-cache"})
+
+
+@app.put("/api/brand")
+def brand_save():
+    b = BRAND.save(request.get_json(force=True) or {})
+    AUDIT.log(me(), "branding_changed", name=b["name"], logo=b["logo"])
+    return jsonify(b)
 
 
 @app.post("/api/connect")
@@ -2372,4 +2395,4 @@ if __name__ == "__main__":
         proxy = dict(trusted_proxy=os.environ.get("NE8000_TRUSTED_PROXY", "*"), trusted_proxy_count=1,
                      trusted_proxy_headers={"x-forwarded-for", "x-forwarded-proto", "x-forwarded-host"},
                      clear_untrusted_proxy_headers=True) if BEHIND_PROXY else {}
-        serve(app, host=args.host, port=args.port, threads=args.threads, ident="NE8000 Manager", **proxy)
+        serve(app, host=args.host, port=args.port, threads=args.threads, ident="Yubo", **proxy)

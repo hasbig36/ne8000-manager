@@ -1,6 +1,7 @@
 """Licence signing. The store keeps an Ed25519 private key in <data dir>/licence_signing.key
 (created on first start); copies of the app check licences with the matching public key."""
 import base64
+import hashlib
 import json
 import os
 import time
@@ -37,7 +38,8 @@ class Signer:
     def token(self, lic, customer_name):
         """Signed licence for a licence row. Valid until paid_until plus the grace days."""
         expires = lic["paid_until"] + GRACE_DAYS * 86400 if lic["status"] == "active" else 0
-        payload = {"key": lic["key"], "customer": customer_name, "devices": int(lic["devices"]),
+        payload = {"key": lic["key"], "customer": customer_name, "brand": lic.get("brand") or customer_name,
+                   "logo": hashlib.sha256(lic["logo"]).hexdigest()[:16] if lic.get("logo") else "", "devices": int(lic["devices"]),
                    "expires": int(expires), "issued": int(time.time())}
         body = PREFIX + "." + _b64(json.dumps(payload, separators=(",", ":")).encode())
         return body + "." + _b64(self.key.sign(body.encode()))

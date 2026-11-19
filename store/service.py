@@ -24,6 +24,29 @@ class StoreError(Exception):
     pass
 
 
+LOGO_MAGIC = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")
+MAX_LOGO = 512 * 1024
+
+
+def logo_mime(data):
+    return "image/png" if data.startswith(b"\x89PNG") else "image/jpeg" if data.startswith(b"\xff\xd8") else "image/webp"
+
+
+def clean_brand(name, logo):
+    """The name and logo the buyer's copy shows (Manager > Branding in the app can change them later)."""
+    name = str(name or "").strip()[:40]
+    if any(ord(c) < 32 for c in name):
+        raise StoreError("Invalid company name.")
+    logo = logo or b""
+    if logo:
+        if len(logo) > MAX_LOGO:
+            raise StoreError("The logo can be up to 512 KB.")
+        webp = logo[:4] == b"RIFF" and logo[8:12] == b"WEBP"
+        if not (logo.startswith(LOGO_MAGIC) or webp):
+            raise StoreError("The logo must be a PNG, JPEG or WebP picture.")
+    return name, logo or None
+
+
 def period_label():
     return {"month": "per month", "year": "per year", "once": "one-time"}.get(pricing.PERIOD, "")
 
@@ -41,7 +64,7 @@ class Store:
         self.public_url = env.get("STORE_PUBLIC_URL", "http://127.0.0.1:8090").rstrip("/")
         self.app_dir = os.path.abspath(env.get("STORE_APP_DIR") or os.path.join(HERE, ".."))
         self.bank = {k: env.get(f"BANK_{k.upper()}", "") for k in ("name", "account_name", "account_number", "branch", "swift", "paybill")}
-        self.name = env.get("STORE_NAME", "NE8000 Manager")
+        self.name = env.get("STORE_NAME", "Yubo")
 
     # ------------------------------------------------------------------ quotes
     def quote(self, devices, hosting):
@@ -83,12 +106,13 @@ class Store:
         total = sum(x["count"] for x in items)
         hosting = d.get("hosting")
         q = self.quote(total, hosting)
+        brand, logo = clean_brand(d.get("brand") or d.get("company") or d.get("name"), d.get("logo"))
         with self.db.tx():
             cid = self._new_customer(d)
-            lid = self.db.run("INSERT INTO licences(key,customer_id,devices,device_list,hosting,server_slug,hosted_monthly,status,created) "
-                              "VALUES(?,?,?,?,?,?,?,?,?)", new_key(), cid, total, dumps(items), hosting,
-                              q["server"]["slug"], q["server"]["hosted_monthly"] if hosting == "hosted" else 0, "pending", now())
-            desc = f"NE8000 Manager licence, {total} device{'s' if total > 1 else ''}"
+            lid = self.db.run("INSERT INTO licences(key,customer_id,devices,device_list,hosting,server_slug,hosted_monthly,status,created,brand,logo) "
+                              "VALUES(?,?,?,?,?,?,?,?,?,?,?)", new_key(), cid, total, dumps(items), hosting,
+                              q["server"]["slug"], q["server"]["hosted_monthly"] if hosting == "hosted" else 0, "pending", now(), brand, logo)
+            desc = f"{self.name} licence, {total} device{'s' if total > 1 else ''}"
             if hosting == "hosted":
                 desc += f", hosted server ({q['server']['label']})"
             oid = self._order(cid, lid, "new", desc, q["total_usd"])
@@ -255,11 +279,24 @@ class Store:
         c = self.customer(lic["customer_id"])
         return self.signer.token(lic, c.get("company") or c["name"])
 
+    def brand_logo(self, key):
+        lic = self.licence_by_key(key)
+        if not lic or not lic.get("logo"):
+            raise StoreError("No logo.")
+        return lic["logo"]
+
+    def set_brand(self, lic, name, logo):
+        name, logo = clean_brand(name, logo)
+        if logo:
+            self.db.run("UPDATE licences SET brand=?, logo=? WHERE id=?", name, logo, lic["id"])
+        else:
+            self.db.run("UPDATE licences SET brand=? WHERE id=?", name, lic["id"])
+
     def install_command(self, lic):
         return f"curl -fsSL -H 'X-Licence-Key: {lic['key']}' {self.public_url}/api/install.sh | sudo sh"
 
     def _send_install(self, lic, c):
-        self.mail.send(c["email"], "Your NE8000 Manager licence and install command",
+        self.mail.send(c["email"], f"Your {self.name} licence and install command",
                        f"Hello {c['name']},\n\nYour licence is active for {lic['devices']} device(s).\n\n"
                        f"Licence key: {lic['key']}\n\n"
                        f"Install on your Ubuntu 22.04/24.04 server (it needs to reach your routers' management IPs):\n\n"
@@ -276,7 +313,7 @@ class Store:
             raise StoreError("Unknown or inactive licence key.")
         return "\n".join([
             "#!/bin/sh",
-            "# NE8000 Manager installer. Run as root on Ubuntu or Debian.",
+            f"# {self.name} installer. Run as root on Ubuntu or Debian.",
             "set -e",
             "DIR=${NE8000_DIR:-/opt/ne8000}",
             'mkdir -p "$DIR" && cd "$DIR"',
@@ -346,8 +383,8 @@ class Store:
         self.db.run("UPDATE servers SET status='ready', url=?, ip=COALESCE(NULLIF(ip,''),?), updated=? WHERE id=?", url, ip, now(), srv["id"])
         lic = self.licence(srv["licence_id"])
         c = self.customer(lic["customer_id"])
-        self.mail.send(c["email"], "Your NE8000 Manager server is ready",
-                       f"Hello {c['name']},\n\nYour hosted NE8000 Manager is installed and running.\n\n"
+        self.mail.send(c["email"], f"Your {self.name} server is ready",
+                       f"Hello {c['name']},\n\nYour hosted {self.name} is installed and running, with your name and logo.\n\n"
                        f"Address:  {url}\nUsername: admin\nPassword: {srv['admin_password']}\n\n"
                        f"Please change the password after your first sign-in (top right > Change password).\n"
                        f"Licence key: {lic['key']} ({lic['devices']} devices)\n\n"
@@ -371,7 +408,7 @@ class Store:
                     c = self.customer(lic["customer_id"])
                     end = time.strftime("%d %b %Y", time.gmtime(lic["paid_until"]))
                     self.mail.send(c["email"], f"Renewal invoice {o['ref']}",
-                                   f"Hello {c['name']},\n\nYour NE8000 Manager licence runs until {end}. "
+                                   f"Hello {c['name']},\n\nYour {self.name} licence runs until {end}. "
                                    f"Renewal: USD {o['amount_usd']:.2f} (KES {o['amount_kes']:,}).\n"
                                    f"Pay by M-Pesa or bank transfer: {self.public_url}/pay/{o['ref']}\n")
             if lic["paid_until"] + GRACE_DAYS * 86400 < t:
