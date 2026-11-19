@@ -1011,7 +1011,8 @@ Statistics last cleared:never
                ("172.16.0.0", "00e0-fc22-0001", "100GE0/2/0"), ("172.16.0.2", "00e0-fc22-0002", "100GE0/2/1"),
                ("10.20.100.11", "a4c6-4f00-1011", "GigabitEthernet0/1/4.100"), ("10.20.100.12", "a4c6-4f00-1012", "GigabitEthernet0/1/4.100"),
                ("192.168.0.1", "0050-56aa-0001", "GigabitEthernet0/0/0"),
-               ("102.216.117.2", "4c5e-0c11-0301", "GigabitEthernet0/1/6.301"), ("102.216.117.34", "4c5e-0c11-0304", "GigabitEthernet0/1/6.304")]
+               ("102.216.117.2", "4c5e-0c11-0301", "GigabitEthernet0/1/6.301"), ("102.216.117.34", "4c5e-0c11-0304", "GigabitEthernet0/1/6.304"),
+               ("10.99.99.2", "4c5e-0c11-0301", "GigabitEthernet0/1/6.399")]   # AlphaNet's router on two VLANs: a backup line
         for n, i in self.ifs.items():
             for a, _, _ in i["ips"]:
                 out.append(f"{a:<16}00e0-fc12-3456            I           {n}")

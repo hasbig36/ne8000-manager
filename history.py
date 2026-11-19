@@ -131,6 +131,18 @@ class History:
             db.execute("DELETE FROM h1 WHERE ts < ?", (now - KEEP_HOURLY,))
 
     # ---- queries ---------------------------------------------------------------
+    def ifnames(self, rid):
+        """Interfaces of a saved router seen in the last day, with their latest rates: [{name, rx, tx, ts}]."""
+        with self._db() as db:
+            rows = db.execute("""SELECT ifname, rx, tx, max(ts) FROM s5 WHERE rid=? AND ts>? GROUP BY ifname ORDER BY ifname""",
+                              (rid, time.time() - 86400)).fetchall()
+        return [{"name": r[0], "rx": r[1], "tx": r[2], "ts": r[3]} for r in rows]
+
+    def latest(self, rid, ifname):
+        with self._db() as db:
+            r = db.execute("SELECT ts, rx, tx FROM s5 WHERE rid=? AND ifname=? ORDER BY ts DESC LIMIT 1", (rid, ifname)).fetchone()
+        return {"ts": r[0], "rx": r[1], "tx": r[2]} if r else None
+
     def series(self, rid, ifname, rng):
         """[[t, rx_bps, tx_bps, rx_peak, tx_peak], ...] for 'day', 'week', 'month' or 'year'."""
         span = RANGES[rng]

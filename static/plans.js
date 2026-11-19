@@ -371,13 +371,15 @@ PAGES.netmap = async c => {
 /* ---------- warnings on the map: what the health check, the change log and the live traffic say is wrong ---------- */
 // NM.health: /api/health (every 30 s); NM.bgpEv: BGP session events of the last 24 h
 async function nmHealth() {
-  const [h, ev] = await Promise.all([api('/api/health').catch(() => null), api('/api/changes?days=1&limit=1000&kind=bgp').catch(() => null)]);
+  const [h, ev, arp, nb, ifv] = await Promise.all([api('/api/health').catch(() => null), api('/api/changes?days=1&limit=1000&kind=bgp').catch(() => null),
+    api('/api/view/arp').catch(() => null), api('/api/view/neighbors').catch(() => null), api('/api/view/interfaces').catch(() => null)]);
   if (h) NM.health = h; if (ev) NM.bgpEv = ev.events || [];
+  if (arp || nb) NM.redund = nmRedundancy(arp, nb, ifv);
   nmDraw();
 }
 const nmIp4 = s => { const m = String(s || '').match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/); return m ? ((+m[1] << 24) >>> 0) + (+m[2] << 16) + (+m[3] << 8) + +m[4] : null; };
 const inNet = (ip, cidr) => { const [a, b] = String(cidr || '').split('/'), x = nmIp4(ip), n = nmIp4(a); if (x == null || n == null || b == null) return false; const k = +b ? (~0 << (32 - b)) >>> 0 : 0; return ((x & k) >>> 0) === ((n & k) >>> 0); };
-const WARN_KIND = { latency: 'High latency', distance: 'Distance changed', loss: 'Packet loss', congestion: 'Port full', capacity: 'Capacity running low', flap: 'Flapping', bgpflap: 'BGP flapping',
+const WARN_KIND = { redundancy: 'Redundancy', farend: 'Far end', latency: 'High latency', distance: 'Distance changed', loss: 'Packet loss', congestion: 'Port full', capacity: 'Capacity running low', flap: 'Flapping', bgpflap: 'BGP flapping',
   errors: 'CRC errors', out_drops: 'Drops', in_drops: 'Drops', optics: 'Optical level', down: 'Down', bgpdown: 'BGP down', otdr: 'Fibre (OTDR)', cpu: 'CPU', memory: 'Memory', temp: 'Temperature' };
 // {line or device id: [{severity, kind, title, detail, advice, since}]}, worst first
 function nmWarnings() {
@@ -412,9 +414,46 @@ function nmWarnings() {
         : { severity: 'warning', kind: 'capacity', title: 'Capacity running low', detail: `${Math.round(s.pct)}% used${plan}.`, advice: 'Plan an upgrade before it is full at peak.' });
     }
   }
+  for (const l of d.links) {
+    const g = NM.redund && l.props.iface && NM.redund.byIface[nmIfNorm(l.props.iface)];
+    if (g && /down/.test(g.role)) add(l.id, { severity: g.role === 'all down' ? 'critical' : 'warning', kind: 'redundancy', title: 'Redundancy lost',
+      detail: `${g.label} is on ${g.members.length} links and ${g.members.filter(m => !m.up).map(m => m.name).join(', ')} is down: one more failure cuts it off.`, advice: 'Bring the down link back so the device has a backup again.' });
+    if (l.props.manual && l.props.far_iface) {
+      const f = (NM.far || {})[l.id], s = nmLinkState(l);
+      if (!f || Date.now() / 1000 - f.ts > 1200) add(l.id, { severity: 'warning', kind: 'farend', title: 'Far end not reporting', detail: `${l.props.far_name || 'The far router'} ${l.props.far_iface}: no SNMP data in the last 20 minutes.`, advice: 'Check that router\'s SNMP login under Manager > Routers.' });
+      else if (s.cls === 'nm-down' && (f.rx || 0) + (f.tx || 0) > 1e4) add(l.id, { severity: 'warning', kind: 'farend', title: 'The two ends disagree', detail: 'This end is down but the far end still counts traffic: the line may go elsewhere.', advice: 'Check the far-end interface picked for this line.' });
+    }
+  }
   Object.values(out).forEach(a => a.sort((x, y) => (x.severity !== 'critical') - (y.severity !== 'critical')));
   return out;
 }
+/* The same device on two or more links: the same LLDP neighbour name, or the same neighbour MAC (ARP) on several
+   interfaces. Each group says which link carries the traffic: primary and backup, both active, or a link down. */
+const nmIfNorm = n => String(n || '').replace(/^GE(?=\d)/i, 'GigabitEthernet').replace(/^XGE(?=\d)/i, 'XGigabitEthernet').replace(/^Eth-Trunk/i, 'Eth-Trunk');
+function nmRedundancy(arp, nb, ifv) {
+  const by = {}, add = (key, label, iface) => { const g = by[key] = by[key] || { key, label, ifaces: new Set() }; g.ifaces.add(nmIfNorm(iface)); };
+  ((nb && nb.lldp) || []).forEach(r => { if (r.neighbor && r.neighbor !== '-') add('lldp:' + r.neighbor, r.neighbor, r.local); });
+  const macs = {}; ((arp && arp.entries) || []).filter(e => /^D/.test(e.type || '') && /^[0-9a-f]{4}-/.test(e.mac || '')).forEach(e => (macs[e.mac] = macs[e.mac] || []).push(e));
+  Object.entries(macs).forEach(([mac, es]) => { const ifs = new Set(es.map(e => e.interface)); if (ifs.size >= 2 && ifs.size <= 6) es.forEach(e => add('mac:' + mac, `${mac} (${es.map(x => x.ip).join(', ')})`, e.interface)); });
+  const ifs = Object.fromEntries(((Array.isArray(ifv) ? ifv : (ifv && ifv.interfaces) || [])).map(i => [nmIfNorm(i.name), i]));
+  const groups = Object.values(by).filter(g => g.ifaces.size >= 2).map(g => {
+    const members = [...g.ifaces].map(n => { const i = ifs[n] || {}, t = NM.ifs[n] || {}, up = !i.phy || String(i.phy).startsWith('up') || t.phy === 'up';
+      const load = (t.rx || 0) + (t.tx || 0) || ((i.in_util || 0) + (i.out_util || 0)) * 1e6; return { name: n, up: up && !(t.phy && t.phy !== 'up'), load }; });
+    const up = members.filter(m => m.up), tot = up.reduce((a, m) => a + m.load, 0);
+    let role;
+    if (up.length < members.length) role = up.length ? 'backup down' : 'all down';
+    else if (!tot) role = 'both up, idle';
+    else { const top = up.reduce((a, m) => m.load > a.load ? m : a); role = top.load / tot >= 0.9 ? 'primary / backup' : 'both active';
+      members.forEach(m => { m.role = role === 'both active' ? 'active' : m === top ? 'primary' : 'backup'; }); }
+    members.forEach(m => { if (!m.role) m.role = m.up ? (role === 'both up, idle' ? 'idle' : 'up') : 'down'; });
+    return { key: g.key, label: g.label, role, members };
+  });
+  const byIface = {}; groups.forEach(g => g.members.forEach(m => byIface[m.name] = g));
+  return { groups, byIface };
+}
+const nmRedHtml = iface => { const g = NM.redund && NM.redund.byIface[nmIfNorm(iface)]; if (!g) return '';
+  return `<div class="witem ${/down/.test(g.role) ? 'crit' : ''}" style="${/down/.test(g.role) ? '' : 'border-left-color:var(--accent)'}"><b>Same device on ${g.members.length} links: ${esc(g.role)}</b>
+    <div class="muted">${esc(g.label)}</div>${g.members.map(m => `<div>${esc(m.name)}: <b>${esc(m.role)}</b>${m.load ? ' · ' + Fmt.bps(m.load) : ''}</div>`).join('')}</div>`; };
 const nmWorst = ws => !ws || !ws.length ? '' : ws.some(w => w.severity === 'critical') ? 'crit' : 'warn';
 // the badge: a triangle with "!", red (critical, pulsing) or amber; the tooltip lists the problems
 const nmBadge = (ws, x, y, sc = 1) => !ws || !ws.length ? '' : `<g class="wbadge ${nmWorst(ws)}" transform="translate(${x},${y}) scale(${sc})"><title>${esc(ws.map(w => '⚠ ' + w.title + ': ' + w.detail).join('\n'))}</title>
@@ -426,7 +465,7 @@ function nmWarnHtml(ws) {
     <div>${esc(w.detail || '')}</div>${w.advice ? `<div class="muted">${esc(w.advice)}</div>` : ''}</div>`).join('')}</div>`;
 }
 async function nmTraffic() {
-  try { const t = await api('/api/netmap/traffic'); NM.ifs = t.ifs; NM.peers = t.peers; } catch (e) { }
+  try { const t = await api('/api/netmap/traffic'); NM.ifs = t.ifs; NM.peers = t.peers; NM.far = t.far || {}; } catch (e) { }
   nmDraw();
 }
 const nmRate = b => b == null ? '' : Fmt.bps(b);
@@ -459,6 +498,8 @@ function nmRoute(a, b) {
 }
 function nmDraw() {
   const host = $('#nmC'); if (!host || !NM.data) return;
+  if (NM.sites && typeof sitesDraw === 'function') return sitesDraw(host);
+  host.classList.remove('swmap');
   if (NM.geo && typeof geoDraw === 'function') return geoDraw(host);
   host.classList.remove('geo');
   const pos = nmLoadPos(), z = NM.zoom;
@@ -473,7 +514,8 @@ function nmDraw() {
     const a = byId[l.from], b = byId[l.to], s = nmLinkState(l), g = nmRoute(a, b);
     const w = s.down ? Math.min(9, 2 + Math.max(0, Math.log10(s.down / 1e5))) : 2;
     const sp = v => Math.max(0.4, 3.2 - Math.log10(Math.max(1, v / 1e6))).toFixed(2);
-    const label = [l.props.label, s.text].filter(Boolean);
+    const rg = NM.redund && l.props.iface && NM.redund.byIface[nmIfNorm(l.props.iface)], rm = rg && rg.members.find(m => m.name === nmIfNorm(l.props.iface));
+    const label = [l.props.label, s.text, rg ? `${rg.members.length}× same device · ${rm ? rm.role : rg.role}` : ''].filter(Boolean);
     return `<g class="link ${s.cls} ${NM.sel === l.id ? 'sel' : ''} ${dim(l.id)}" data-l="${l.id}"><path class="vis" d="${g.d}" style="stroke-width:${w}"/>
       ${s.down ? `<path class="flow" d="${g.d}" style="animation-duration:${sp(s.down)}s"/>` : ''}
       ${s.up > s.down * 0.05 && s.up ? `<path class="flow rev" d="${g.r}" style="animation-duration:${sp(s.up)}s"/>` : ''}
@@ -527,5 +569,5 @@ function nmShowSel(x, kind) {
       ['Download ▼', nmRate(x.props.down === 'rx' ? t.rx : t.tx)], ['Upload ▲', nmRate(x.props.down === 'rx' ? t.tx : t.rx)], ['Utilisation in / out', t.in_util != null ? `${t.in_util}% / ${t.out_util}%` : ''],
       ['QoS plan', x.props.plan_kbps ? Fmt.bps(x.props.plan_kbps * 1000) : ''], ['Load vs plan', x.props.plan_kbps && s.pct != null ? Math.round(s.pct) + '%' : ''], ['BGP peers', x.props.peers ? x.props.peers.split(',').map(ip => `${ip} ${NM.peers[ip] || ''}`).join(', ') : '']]; })();
   $('#nmSel').innerHTML = `<h3>Selection</h3>${nmWarnHtml((NM.warn || {})[x.id])}<table class="tbl"><tbody>${rows.filter(([, v]) => v !== '' && v != null).map(([k, v]) => `<tr><td class="faint">${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</tbody></table>
-    ${kind === 'link' && x.props.iface ? `<button class="btn sm" onclick="showGraphs(${attr(x.props.iface)})">Graphs for ${esc(x.props.iface)}</button>` : ''}`;
+    ${kind === 'link' && x.props.iface ? nmRedHtml(x.props.iface) : ''}${kind === 'link' && x.props.iface ? `<button class="btn sm" onclick="showGraphs(${attr(x.props.iface)})">Graphs for ${esc(x.props.iface)}</button>` : ''}`;
 }

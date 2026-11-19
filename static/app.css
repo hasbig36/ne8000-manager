@@ -320,3 +320,19 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
 @media (prefers-reduced-motion:reduce){.geo .gsite.hub .halo,.geo .garc path.flow{animation:none}}
 .noc .nh{flex-wrap:nowrap}.noc .seg button,.noc .nh .clk,.noc .nh .btn{white-space:nowrap}.noc #ncInfo{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.noc .nh .clk{margin-left:0}
 .noc .tile .v{white-space:nowrap;font-size:clamp(20px,1.7vw,28px)}
+/* major sites */
+.canvas.nmap.swmap{background:#050506}.swmap .swland path{fill:#030303;stroke:#d8d8d8;stroke-width:1.3;vector-effect:non-scaling-stroke;stroke-linejoin:round}
+.swmap .swke{fill:#0a0a10;stroke:#ffffff;stroke-width:1.8;vector-effect:non-scaling-stroke}
+.swmap .swcab{fill:none;stroke:#1fae3a;stroke-width:1;stroke-opacity:.75;vector-effect:non-scaling-stroke;pointer-events:none}
+.swmap .swsub path,.swmap .swsub rect{fill:#21b33f}
+.swmap .swroute path.vis{fill:none;stroke:#2346ff;stroke-width:1.4;vector-effect:non-scaling-stroke;stroke-linejoin:round;pointer-events:none}
+.swmap .swroute path.hit{fill:none;stroke:transparent;cursor:pointer}.swmap .swroute.sel path.vis{stroke:#7f9bff;stroke-width:2.6}
+.swmap .swroute.bad path.vis{stroke:#ffb020}.swmap .swroute.down path.vis{stroke:#ff3b4a;stroke-dasharray:6 5}
+.swmap .swdot{fill:url(#swGlow);pointer-events:none}.swmap .swroute.bad .swdot{fill:#ffb020;opacity:.8}
+.swmap .swplace circle{fill:#2d5bff;stroke:#9fb4ff;vector-effect:non-scaling-stroke}.swmap .swplace.hub circle{fill:#3b6bff}
+.swmap .swplace rect{fill:#0b0b0e;opacity:.85}.swmap .swplace text{fill:#ffe14a;font-weight:700;pointer-events:none}
+.swmap .swsite{cursor:pointer}.swmap .swsite circle{fill:#22d3ee;stroke:#05080a;vector-effect:non-scaling-stroke}
+.swmap .swsite.bad circle{fill:#ffb020}.swmap .swsite.down circle{fill:#ff3b4a}
+.swmap .swsite text{fill:#e8f4ff;font-weight:700;paint-order:stroke;stroke:#050506;stroke-width:3px}.swmap .swsite text .ms{fill:#ffe14a;font-weight:600}
+.swmap .dim path.vis{stroke-opacity:.15}.swmap .dim .swdot{display:none}.swmap .dim text{fill-opacity:.3;stroke-opacity:.3}.swmap .dim circle{fill-opacity:.3;stroke-opacity:.3}.swmap .dim .wbadge{display:none}
+@media (prefers-reduced-motion:reduce){.swmap .swdot{display:none}}

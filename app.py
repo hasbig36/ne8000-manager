@@ -36,6 +36,7 @@ import panel
 import plans
 import policy
 import routers
+import sitewatch
 import viewcache
 from device import DeviceError, RealRouter, _cidr, is_read_only
 from snmp_router import SnmpRouter, SshRequired
@@ -58,6 +59,7 @@ USERS = auth.UserStore(DATA_DIR)
 AUDIT = auth.Audit(DATA_DIR)
 SAVED = routers.RouterStore(DATA_DIR)
 HIST = history.History(DATA_DIR, SAVED)
+SITES = sitewatch.SiteWatch(DATA_DIR)
 HEALTH = health.Health(DATA_DIR, SAVED, HIST)
 FLOWS = netflow.FlowCollector(SAVED, HIST, default_sampling=os.environ.get("NE8000_NETFLOW_SAMPLING", "1000"))
 NETMAP = netmap.NetMapStore(DATA_DIR)
@@ -1538,9 +1540,9 @@ def netmap_view():
     if hit and request.args.get("refresh") != "1" and time.time() - hit[0] < 600:
         if time.time() - hit[0] >= 60:
             netmap_background(r, key)
-        return jsonify({**hit[1], "changes": NETMAP.load(key)["changes"][-100:][::-1]})
+        return jsonify({**with_manual(hit[1], key), "changes": NETMAP.load(key)["changes"][-100:][::-1]})
     out = build_netmap(r, key)
-    return jsonify({**out, "changes": NETMAP.load(key)["changes"][-100:][::-1]})
+    return jsonify({**with_manual(out, key), "changes": NETMAP.load(key)["changes"][-100:][::-1]})
 
 
 @app.get("/api/netmap/traffic")
@@ -1550,7 +1552,8 @@ def netmap_traffic():
     hit = NETMAP_CACHE.get(netmap_key(r))
     if not hit:
         return jsonify(ifs={}, peers={})
-    names = sorted({l["props"]["iface"] for l in hit[1]["diagram"]["links"] if l["props"].get("iface")})
+    manual = links_load().get(netmap_key(r), [])
+    names = sorted({l["props"]["iface"] for l in hit[1]["diagram"]["links"] if l["props"].get("iface")} | {m["iface"] for m in manual if m.get("iface")})
     ifs = {i["name"]: i for i in VIEWCACHE.get(r, "interfaces")[0]}   # from memory: the map asks every 5 s
     series = r.traffic(names) if r.demo else {n: r.series("bps:" + n) for n in names} if isinstance(r, SnmpRouter) else {}
     out = {}
@@ -1563,13 +1566,142 @@ def netmap_traffic():
         peers = {p["peer"]: p["state"] for p in VIEWCACHE.get(r, "bgp")[0]["peers"]}
     except Exception:
         pass
-    return jsonify(ifs=out, peers=peers, at=time.time())
+    far = {}
+    for m in manual:     # the far end of a line drawn by hand, from that router's own SNMP history (5-minute rates)
+        if m.get("far_router") and m.get("far_iface"):
+            far["ml:" + m["id"]] = HIST.latest(m["far_router"], m["far_iface"])
+    return jsonify(ifs=out, peers=peers, far=far, at=time.time())
 
 
 DEMO_PLACES = {"u:64512": "MOMBASA", "s:100GE0/2/1": "MOMBASA", "g:GigabitEthernet0/1/4": "NAKURU", "c:GigabitEthernet0/1/4.100": "ELDORET",
                "c:GigabitEthernet0/1/4.200": "KISUMU", "g:GigabitEthernet0/1/5": "ISIOLO", "c:GigabitEthernet0/1/6.301": "MARSABIT",
                "c:GigabitEthernet0/1/6.302": "THIKA", "c:GigabitEthernet0/1/6.303": "MALINDI", "c:GigabitEthernet0/1/6.304": "KAKAMEGA",
                "c:GigabitEthernet0/1/6.399": "MACHAKOS"}
+LINKS_PATH = os.path.join(DATA_DIR, "netmap_links.json")
+
+
+def links_load():
+    try:
+        with open(LINKS_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def with_manual(out, key):
+    """The map plus the lines drawn by hand (and the devices they lead to that the router does not see)."""
+    rows = links_load().get(key, [])
+    if not rows:
+        return out
+    nodes, links = [dict(n) for n in out["diagram"]["nodes"]], list(out["diagram"]["links"])
+    byid = {n["id"]: n for n in nodes}
+    root = next((n["id"] for n in nodes if n["type"] == "ne8000"), nodes[0]["id"] if nodes else "")
+    under = {}
+    for m in rows:
+        frm = m.get("from") if m.get("from") in byid else root
+        to = m.get("to") if m.get("to") in byid else "m:" + m["id"]
+        if to not in byid:
+            p = byid.get(frm) or {"x": 40, "y": 40}
+            k = under[frm] = under.get(frm, 0) + 1
+            n = {"id": to, "type": m.get("to_type") or "router", "label": m.get("to_label") or "Remote site", "x": p["x"] + 230 * (k - 1), "y": p["y"] + 170,
+                 "props": {"location": m.get("town", ""), "drawn": "by hand", **({"monitored": m["far_name"]} if m.get("far_name") else {})}}
+            nodes.append(n)
+            byid[to] = n
+        links.append({"id": "ml:" + m["id"], "from": frm, "to": to, "props": {"iface": m.get("iface", ""), "label": m.get("label") or m.get("iface") or "Drawn line",
+                      "manual": "1", "down": "tx", "far_router": m.get("far_router", ""), "far_iface": m.get("far_iface", ""), "far_name": m.get("far_name", "")}})
+    return {**out, "diagram": {**out["diagram"], "nodes": nodes, "links": links}}
+
+
+@app.get("/api/netmap/links")
+def netmap_links():
+    return jsonify(links=links_load().get(netmap_key(router()), []))
+
+
+@app.post("/api/netmap/links")
+def netmap_links_save():
+    """Add or change a line drawn by hand: {id?, from, to (a device on the map, or empty for a new one), to_label, to_type, town,
+    iface (this router's interface), far_router (a saved router with SNMP), far_iface, label}. Only this app's data changes."""
+    r, d = router(), request.get_json(force=True) or {}
+    key = netmap_key(r)
+    s = lambda k, n=120: str(d.get(k) or "").strip()[:n]
+    row = {"id": s("id", 20) or uuid.uuid4().hex[:10], "from": s("from", 200), "to": s("to", 200), "to_label": s("to_label", 80), "to_type": s("to_type", 20),
+           "town": s("town", 60), "iface": s("iface", 80), "far_router": s("far_router", 60), "far_iface": s("far_iface", 80), "label": s("label", 80)}
+    if not row["iface"]:
+        raise DeviceError("Pick the router interface this line uses.")
+    if not row["to"] and not row["to_label"]:
+        raise DeviceError("Pick the device at the far end, or name a new one.")
+    if row["far_router"]:
+        far = SAVED.get(row["far_router"])
+        if not far:
+            raise DeviceError("That far-end router is not saved under Manager > Routers.")
+        row["far_name"] = far.get("name", "")
+        if (far.get("snmp")) and not row["far_iface"]:
+            raise DeviceError("The far end is monitored over SNMP: pick its interface too.")
+    with GEO_LOCK:
+        allp = links_load()
+        cur = [x for x in allp.get(key, []) if x["id"] != row["id"]] + [row]
+        allp[key] = cur[-500:]
+        tmp = LINKS_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(allp, f, indent=1)
+        os.replace(tmp, LINKS_PATH)
+    AUDIT.log(me(), "map_line", line=row["id"], iface=row["iface"], far=row["far_router"])
+    return jsonify(link=row)
+
+
+@app.delete("/api/netmap/links/<lid>")
+def netmap_links_delete(lid):
+    key = netmap_key(router())
+    with GEO_LOCK:
+        allp = links_load()
+        allp[key] = [x for x in allp.get(key, []) if x["id"] != lid]
+        tmp = LINKS_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(allp, f, indent=1)
+        os.replace(tmp, LINKS_PATH)
+    AUDIT.log(me(), "map_line_deleted", line=lid)
+    return jsonify(ok=True)
+
+
+@app.get("/api/netmap/remote")
+def netmap_remote():
+    """Saved routers with SNMP (for the far end of a line), or with ?rid= the interfaces that router reports."""
+    rid = request.args.get("rid", "")
+    if not rid:
+        return jsonify(routers=[{"id": x["id"], "name": x["name"], "host": x["host"], "snmp": bool(x.get("snmp"))} for x in SAVED.list()])
+    if r_demo():
+        return jsonify(interfaces=[{"name": n, "rx": 4e7, "tx": 9e7, "ts": time.time()} for n in ("GigabitEthernet0/0/1", "GigabitEthernet0/0/2", "XGigabitEthernet0/0/1")])
+    return jsonify(interfaces=HIST.ifnames(rid))
+
+
+def r_demo():
+    try:
+        return router().demo
+    except Exception:
+        return False
+
+
+@app.get("/api/sites")
+def sites_report():
+    """Major sites: delay, loss and path to Google, YouTube, Facebook... measured from this server through the router."""
+    if r_demo():
+        return jsonify(sitewatch.demo_report(SITES.sites()))
+    return jsonify(SITES.report())
+
+
+@app.post("/api/sites")
+def sites_set():
+    rows = (request.get_json(force=True) or {}).get("sites") or []
+    try:
+        out = SITES.set_sites(rows)
+    except ValueError as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "sites_list", count=len(out))
+    if not r_demo():
+        threading.Thread(target=SITES.check_all, daemon=True).start()
+    return jsonify(sites=out)
+
+
 GEO_PATH = os.path.join(DATA_DIR, "netmap_places.json")
 GEO_LOCK = threading.Lock()
 
@@ -1759,6 +1891,7 @@ if __name__ == "__main__":
         HIST.start()   # 5-minute interface history for every saved router with an SNMP login
     if env_on("NE8000_HEALTH", "1"):
         HEALTH.start()
+        SITES.start()   # major sites: ping and trace to Google, YouTube, Facebook... every 5 minutes
     if env_on("NE8000_CHANGES", "1"):
         TRACK.start()   # 24/7 change log over SNMP for every saved router with an SNMP login  # smart health check every 5 minutes (errors, drops, full links, optics, latency)
     if int(os.environ.get("NE8000_NETFLOW_PORT", "2055") or 0):

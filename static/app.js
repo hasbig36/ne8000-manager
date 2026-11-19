@@ -1737,7 +1737,7 @@ let NOC_THEME = null;
 function nocLeave() {
   if (NOC_THEME === null) return;
   if (NOC_THEME) document.documentElement.dataset.theme = NOC_THEME; else delete document.documentElement.dataset.theme;
-  NOC_THEME = null; NM.noc = null; NM.show = null; NM.focus = null; NM.geo = false; NM.userZoom = false; if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  NOC_THEME = null; NM.noc = null; NM.show = null; NM.focus = null; NM.geo = false; NM.sites = false; NM.userZoom = false; if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 }
 $('#nocBtn').onclick = () => { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {}); location.hash = 'noc'; };
 PAGES.noc = async c => {
@@ -1746,7 +1746,8 @@ PAGES.noc = async c => {
   const view = decodeURIComponent((location.hash.split('/')[1] || ''));   // #noc/<view>: a wall screen can stay on one view
   c.innerHTML = `<div class="noc"><div class="nh"><span class="ttl">NOC · ${esc($('#tName').textContent)}</span>
       <span class="vsel"><select id="ncV" title="show the whole network, one port group, one region or one device"><option value="">Whole network</option></select></span>
-      <span class="seg" id="ncM"><button data-m="d" title="the network as a diagram">Diagram</button><button data-m="g" title="the network on the map of Kenya">Kenya map</button></span>
+      <span class="seg" id="ncM"><button data-m="d" title="the network as a diagram">Diagram</button><button data-m="g" title="the network on the map of Kenya">Kenya map</button><button data-m="s" title="how Google, YouTube, Facebook and the other big sites are reached">Major sites</button></span>
+      <button class="btn sm" id="ncLine" title="draw a line the router cannot see by itself: pick the interface and where it goes">+ Line</button>
       <span class="seg"><button id="ncZo" title="zoom out (or the mouse wheel)">−</button><button id="ncZi" title="zoom in (or the mouse wheel)">+</button><button id="ncZf" title="fit everything on the screen">Fit</button></span>
       <span class="muted" id="ncInfo" style="font-size:12.5px">Reading the network…</span>
       <span class="clk" id="ncClk"></span><button class="btn sm sshb" id="ncSsh"></button><button class="btn sm" id="ncFs" title="full screen">⛶ Full screen</button><button class="btn sm" id="ncX" title="leave the NOC view (Esc)">✕ Exit</button></div>
@@ -1765,19 +1766,21 @@ PAGES.noc = async c => {
   const clock = () => { const el = $('#ncClk'); if (el) el.textContent = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }); };
   clock(); timers.push(setInterval(clock, 1000));
   NM.sel = null; NM.focus = null; NM.show = null; NM.lastClick = null; NM.userZoom = false; GEO.sel = null;
-  try { NM.geo = localStorage.getItem('ne8000.nocmode') === 'geo'; } catch (e) { NM.geo = false; }
-  const modeBtns = () => $('#ncM').querySelectorAll('button').forEach(b => b.classList.toggle('on', (b.dataset.m === 'g') === !!NM.geo));
+  let mode = 'd'; try { mode = { geo: 'g', sites: 's' }[localStorage.getItem('ne8000.nocmode')] || 'd'; } catch (e) { }
+  NM.geo = mode === 'g'; NM.sites = mode === 's'; SW.sel = null;
+  const modeBtns = () => $('#ncM').querySelectorAll('button').forEach(b => b.classList.toggle('on', b.dataset.m === (NM.sites ? 's' : NM.geo ? 'g' : 'd')));
   modeBtns();
-  $('#ncM').onclick = e => { const m = e.target.dataset.m; if (!m) return; NM.geo = m === 'g'; try { localStorage.setItem('ne8000.nocmode', NM.geo ? 'geo' : 'diagram'); } catch (x) { }
-    modeBtns(); NM.focus = null; NM.sel = null; GEO.sel = null; side(null); if (!NM.geo) { NM.userZoom = false; fit(); } nmDraw(); };
+  $('#ncM').onclick = e => { const m = e.target.dataset.m; if (!m) return; NM.geo = m === 'g'; NM.sites = m === 's'; try { localStorage.setItem('ne8000.nocmode', { g: 'geo', s: 'sites', d: 'diagram' }[m]); } catch (x) { }
+    modeBtns(); NM.focus = null; NM.sel = null; GEO.sel = null; SW.sel = null; side(null); if (m === 'd') { NM.userZoom = false; fit(); } if (NM.sites) { swSide(); if (!SW.data) swLoad(); } nmDraw(); };
   const zoomBy = (f, e) => {
+    if (NM.sites) return swZoom(f, e);
     if (NM.geo) return geoZoom(f, e);
     const host = $('#nmC'), z0 = NM.zoom, z1 = Math.max(0.2, Math.min(3, z0 * f)); if (!host || z1 === z0) return;
     const r = host.getBoundingClientRect(), ox = e ? e.clientX - r.left : host.clientWidth / 2, oy = e ? e.clientY - r.top : host.clientHeight / 2;
     const sx = (host.scrollLeft + ox) / z0, sy = (host.scrollTop + oy) / z0;
     NM.zoom = z1; NM.userZoom = true; nmDraw(); host.scrollLeft = sx * z1 - ox; host.scrollTop = sy * z1 - oy; };
   $('#ncZi').onclick = () => zoomBy(1.25); $('#ncZo').onclick = () => zoomBy(1 / 1.25);
-  $('#ncZf').onclick = () => { if (NM.geo) return geoFit(); NM.userZoom = false; fit(); nmDraw(); };
+  $('#ncZf').onclick = () => { if (NM.sites) return swFit(); if (NM.geo) return geoFit(); NM.userZoom = false; fit(); nmDraw(); };
   let T = null, picked = null;
   // views: port groups (the devices right under the router), regions (a name many devices start with), single devices
   const views = () => {
@@ -1814,9 +1817,13 @@ PAGES.noc = async c => {
       el.innerHTML = `<h3>${esc(p.label || p.iface || 'Line')}</h3>${wh}<div class="row" style="gap:18px;margin-bottom:8px"><div><div class="muted">Download ▼</div><div class="big">${rate(s.down || null)}</div></div><div><div class="muted">Upload ▲</div><div class="big">${rate(s.up || null)}</div></div></div>
         <div id="ncG" style="height:120px"></div>` + kv([['Interface', esc(p.iface || '')], ['State', esc(t.phy || p.state || '')], ['VLAN', esc(p.vlan || '')], ['Address', esc(p.address || '')],
           ['Load', s.pct != null && p.iface ? Math.round(s.pct) + '%' : ''], ['QoS plan', p.plan_kbps ? Fmt.bps(p.plan_kbps * 1000) : ''], ['BGP', p.peers ? esc(p.peers.split(',').map(ip => `${ip} ${NM.peers[ip] || ''}`).join(', ')) : ''],
+          ['Far end', p.manual && p.far_iface ? (() => { const f = (NM.far || {})[x.id]; return esc(`${p.far_name || ''} ${p.far_iface}`) + (f ? ` · ▼ ${Fmt.bps(f.rx)} ▲ ${Fmt.bps(f.tx)} <span class="faint">(${ago(f.ts)})</span>` : ' · <span class="faint">no data yet</span>'); })() : ''],
           ['Path', esc(T.up(x.to in T.parent && T.parent[x.to] === x.from ? x.to : x.from).filter(id => NM.data.diagram.nodes.some(n => n.id === id)).map(id => NM.data.diagram.nodes.find(n => n.id === id).label).reverse().join(' → '))]]) +
+        nmRedHtml(p.iface) + (p.manual ? `<p style="margin-top:8px"><span class="muted">Drawn by hand.</span> <button class="btn sm" id="ncLE">Edit</button> <button class="btn sm danger" id="ncLD">Delete</button></p>` : '') +
         `<p class="muted" style="font-size:12px;margin-top:8px">Double-click the line for how it is built.</p>` + (() => { const n = NM.data.diagram.nodes.find(y => y.id === (T.parent[x.to] === x.from ? x.to : x.from)); return n ? geoPlaceHtml(n) : ''; })();
       geoPlaceBind();
+      if (p.manual) { $('#ncLE').onclick = () => nocLine(x.id.slice(3), () => map());
+        $('#ncLD').onclick = async () => { if (!confirm('Delete this line from the map? Nothing changes on the router.')) return; await api('/api/netmap/links/' + x.id.slice(3), { method: 'DELETE' }); toast('Line deleted'); side(null); map(); }; }
       if (p.iface) { try { const r = await api('/api/traffic?names=' + encodeURIComponent(p.iface)), pts = r[p.iface] || [], dn = p.down === 'rx' ? 1 : 2;
         if ($('#ncG')) new TimeChart($('#ncG'), { fmt: Fmt.bps, small: true }).set([{ name: 'Download', color: '--s1', values: pts.map(v => [v[0], v[dn]]) }, { name: 'Upload', color: '--s2', values: pts.map(v => [v[0], v[3 - dn]]) }]); } catch (e) { } }
     } else {
@@ -1862,6 +1869,7 @@ PAGES.noc = async c => {
   const tiles = async () => {
     const [b, o, i, ev] = await Promise.all([api('/api/view/bgp').catch(() => null), api('/api/view/overview').catch(() => null), api('/api/view/interfaces').catch(() => null), api('/api/changes?days=1&limit=40').catch(() => null)]);
     if (!$('#ncB')) return; sshBtn();
+    if (b) NM.bgpView = b;
     if (b) { const ign = new Set(Object.values(b.config || {}).flat().filter(l => / ignore$/.test(l)).map(l => l.split(' ')[1]));
       const live = b.peers.filter(p => !ign.has(p.peer) && !/admin/i.test(p.state)), up = live.filter(p => p.state === 'Established').length, off = b.peers.length - live.length;
       $('#ncB').innerHTML = `${up} / ${live.length}${off ? ` <span class="muted" style="font-size:13px;font-weight:500">+${off} disabled</span>` : ''}`; $('#ncB').className = 'v ' + (up < live.length ? 'bad' : 'okc'); }
@@ -1871,10 +1879,45 @@ PAGES.noc = async c => {
       $('#ncT').innerHTML = ev.events.length ? ev.events.slice(0, 25).map(e => `<span class="${['down', 'removed', 'dropped'].includes(e.change) ? 'bad' : ['up', 'added', 'back'].includes(e.change) ? 'okc' : ''}">${esc(new Date(e.ts * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }))} · ${esc((CHG_LABEL[e.kind] || e.kind) + ' ' + e.key + ' ' + e.change)}${e.info ? ' · ' + esc(e.info) : ''}</span>`).join('') : '<span>No changes in the last 24 hours.</span>'; }
   };
   $('#ncV').onchange = () => { const v = $('#ncV').value; history.replaceState(null, '', '#noc' + (v ? '/' + encodeURIComponent(v) : '')); NM.focus = null; NM.sel = null; GEO.sel = null; side(null); applyView(v); NM.userZoom = false; fit(); nmDraw(); };
-  await map(); await traffic(); tiles(); nmHealth();
-  every(5000, traffic); every(10000, tiles); every(60000, () => map()); every(30000, nmHealth);
+  await map(); await traffic(); tiles(); nmHealth(); swLoad().then(() => { if (NM.sites && !picked) swSide(); });
+  every(5000, traffic); every(10000, tiles); every(60000, () => map()); every(30000, nmHealth); every(60000, () => swLoad().then(() => { if (NM.sites && $('#ncS') && !SW.sel) swSide(); }));
+  $('#ncLine').onclick = () => nocLine(null, () => map());
   let rt = null; const ro = new ResizeObserver(() => { clearTimeout(rt); rt = setTimeout(() => { if ($('#nmC')) { if (!NM.userZoom) fit(); nmDraw(); } else ro.disconnect(); }, 150); }); ro.observe($('#nmC'));
 };
+/* Draw a line by hand (or change one): the router interface it uses and where it goes. When the far end is a router
+   the app monitors over SNMP, its interface too, so the line shows traffic from both ends. Only the app's map changes. */
+async function nocLine(id, after) {
+  const d = NM.data.diagram, m = $('#modal');
+  const [ifv, rem, cur] = await Promise.all([api('/api/view/interfaces').catch(() => []), api('/api/netmap/remote').catch(() => ({ routers: [] })), api('/api/netmap/links').catch(() => ({ links: [] }))]);
+  const row = id ? (cur.links || []).find(x => x.id === id) || {} : {};
+  const root = (d.nodes.find(n => n.type === 'ne8000') || d.nodes[0] || {}).id, ifs = (Array.isArray(ifv) ? ifv : ifv.interfaces || []).map(i => i.name);
+  const opt = (v, l, sel) => `<option value="${esc(v)}" ${v === sel ? 'selected' : ''}>${esc(l)}</option>`;
+  const nodes = d.nodes.filter(n => !n.id.startsWith('m:')).slice().sort((a, b) => a.label.localeCompare(b.label));
+  m.innerHTML = `<h2>${id ? 'Change the line' : 'Draw a line'}</h2><p class="muted">For a link the router cannot see by itself (no LLDP, no customer VLAN). Only the app's map changes, never the router.</p>
+    <div class="form"><label>From</label><select id="lnF">${nodes.map(n => opt(n.id, n.label, row.from || root)).join('')}</select>
+      <label>Router interface</label><input id="lnI" list="lnIL" value="${esc(row.iface || '')}" placeholder="GigabitEthernet0/1/6.310"><datalist id="lnIL">${ifs.map(n => `<option value="${esc(n)}">`).join('')}</datalist>
+      <label>To</label><select id="lnT">${opt('', 'A new device…', row.to || '')}${nodes.map(n => opt(n.id, n.label, row.to)).join('')}</select>
+      <label class="lnN">New device name</label><input class="lnN" id="lnN" value="${esc(row.to_label || '')}" placeholder="MARSABIT-BTS-01">
+      <label class="lnN">Type</label><select class="lnN" id="lnY">${['router', 'switch', 'ap', 'olt', 'customer', 'reseller', 'server'].map(t => opt(t, (NODE_META[t] || {}).label || t, row.to_type || 'router')).join('')}</select>
+      <label class="lnN">Town</label><select class="lnN" id="lnW">${opt('', 'from the name', row.town || '')}${Object.keys(KE_TOWNS).sort().map(t => opt(t, t, row.town)).join('')}</select>
+      <label>Far-end router (SNMP)</label><select id="lnR">${opt('', 'not monitored', row.far_router || '')}${(rem.routers || []).map(r => opt(r.id, `${r.name} (${r.host})${r.snmp ? '' : ' – no SNMP'}`, row.far_router)).join('')}</select>
+      <label class="lnFI">Its interface</label><select class="lnFI" id="lnFI"><option value="">Loading…</option></select>
+      <label>Label</label><input id="lnL" value="${esc(row.label || '')}" placeholder="Fibre to Marsabit (primary)"></div>
+    <div class="err"></div><div class="actions"><button class="btn" data-a="c">Cancel</button><button class="btn primary" data-a="s">Save</button></div>`;
+  $('#modalBg').classList.remove('hidden');
+  const showNew = () => m.querySelectorAll('.lnN').forEach(e => e.style.display = $('#lnT').value ? 'none' : '');
+  const loadFar = async () => { const rid = $('#lnR').value; m.querySelectorAll('.lnFI').forEach(e => e.style.display = rid ? '' : 'none'); if (!rid) return;
+    const r = await api('/api/netmap/remote?rid=' + encodeURIComponent(rid)).catch(() => ({ interfaces: [] }));
+    $('#lnFI').innerHTML = opt('', (r.interfaces || []).length ? 'pick its interface' : 'no SNMP data from that router yet', '') + (r.interfaces || []).map(i => opt(i.name, `${i.name}${i.rx != null ? ` · ▼ ${Fmt.bps(i.rx)} ▲ ${Fmt.bps(i.tx)}` : ''}`, row.far_iface)).join(''); };
+  $('#lnT').onchange = showNew; $('#lnR').onchange = loadFar; showNew(); loadFar();
+  m.querySelector('.actions').onclick = async e => {
+    if (e.target.dataset.a === 'c') return closeModal();
+    if (e.target.dataset.a !== 's') return;
+    try { await post('/api/netmap/links', { id, from: $('#lnF').value, iface: $('#lnI').value, to: $('#lnT').value, to_label: $('#lnN').value, to_type: $('#lnY').value, town: $('#lnW').value,
+        far_router: $('#lnR').value, far_iface: $('#lnFI').value, label: $('#lnL').value });
+      closeModal(); toast('Line saved on the map'); after && after(); } catch (err) { m.querySelector('.err').textContent = err.message; }
+  };
+}
 /* Double-click on the NOC map: how this line or device is built, from what the app knows (and the router's configuration with SSH). */
 async function nocDesign(x, kind, T) {
   const m = $('#modal'); m.classList.add('wide');
