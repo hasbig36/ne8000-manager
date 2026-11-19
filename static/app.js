@@ -204,6 +204,8 @@ const NAV = [
 ];
 $('#side').innerHTML = NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>` : '') + items.map(([k, t, ic]) =>
   `<a data-p="${k}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">${ic}</svg>${t}</a>`).join('')).join('');
+// Search and NOC live at the top of the left menu (moved, so their handlers stay)
+{ const st = document.createElement('div'); st.className = 'sideTop'; const nb = $('#nocBtn'); st.append($('#gs'), nb); nb.innerHTML = '▣ NOC view'; $('#side').prepend(st); }
 $('#side').onclick = e => { const a = e.target.closest('a[data-p]'); if (a) { location.hash = a.dataset.p; $('#side').classList.remove('open'); } };
 $('#menuBtn').onclick = () => $('#side').classList.toggle('open');
 
@@ -246,7 +248,9 @@ async function topbar() {
   const o = await api('/api/view/overview', { global: true });
   MODEL = o.model || MODEL;
   $('#tName').textContent = o.sysname; $('#tHost').textContent = o.host + (o.via ? ' · ' + o.via : ''); $('#tCpu').textContent = Fmt.pct(o.cpu);
-  $('#tMem').textContent = Fmt.pct(o.memory.percent); $('#tUp').textContent = (o.uptime || '').replace(/ minutes?/, 'm').replace(/ hours?,/, 'h').replace(/ days?,/, 'd');
+  $('#tMem').textContent = Fmt.pct(o.memory.percent); const up = (o.uptime || '').replace(/ minutes?/, 'm').replace(/ hours?,?/, 'h').replace(/ days?,?/, 'd'); $('#tUp').textContent = up.split(' ').slice(0, 2).join(' '); $('#tUp').parentNode.title = 'Up ' + (o.uptime || '');
+  $('#tCpu').parentNode.className = o.cpu >= 85 ? 'hi' : o.cpu >= 70 ? 'mid' : ''; $('#tMem').parentNode.className = o.memory.percent >= 90 ? 'hi' : o.memory.percent >= 80 ? 'mid' : '';
+  if ($('#tSwitch')) $('#tSwitch').title = `${o.sysname} · ${o.host}${o.via ? ' · ' + o.via : ''} (switch to another saved router)`;
   document.title = `${o.sysname} · NE8000 Manager`;
   return o;
 }

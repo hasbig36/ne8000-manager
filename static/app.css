@@ -373,3 +373,24 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
 .alrules td { vertical-align: top; }
 .alrules .arTo label { display: block; font-weight: 400; white-space: nowrap; font-size: 12.5px; }
 .alrules input.arInc, .alrules input.arExc { width: 130px; }
+
+/* top bar: one slim line of router status; Search and NOC sit at the top of the left menu */
+#side .sideTop{position:sticky;top:-8px;z-index:5;background:var(--side);padding:6px 12px 10px;margin-top:-8px;border-bottom:1px solid rgba(255,255,255,.08);display:flex;flex-direction:column;gap:6px}
+#side .sideTop .gs{flex:none;min-width:0;width:100%}
+#side .sideTop .gs input{width:100%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);color:var(--sidetext);border-radius:6px}
+#side .sideTop .gs input::placeholder{color:#8d99a6}
+#side .sideTop #gqR{position:fixed;top:92px;left:12px;width:min(560px,calc(100vw - 24px));color:var(--text)}
+#side .sideTop #gqR a{display:block;border-left:0;padding:6px 12px;color:var(--text)}
+#side .sideTop #nocBtn{display:block;width:100%;text-align:left;background:transparent;border:1px solid rgba(255,255,255,.14);color:var(--sidetext);border-radius:6px;padding:5px 10px}
+#side .sideTop #nocBtn:hover{background:var(--sidehi);color:#fff}
+#top{gap:12px}
+#top .meta{gap:6px;font-size:12px;align-items:center;min-width:0;flex:1 1 auto;justify-content:flex-end}
+#top .meta>span{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border:1px solid var(--line);border-radius:999px;background:var(--panel2);white-space:nowrap}
+#top .meta>span.mid b{color:#d48806}#top .meta>span.hi b{color:var(--bad,#e5484d)}
+#top .meta #tSwitch{border:0;padding:0;font-weight:600;max-width:170px}
+#top .right{margin-left:0;flex:none;gap:6px}
+#top .who{white-space:nowrap;margin-left:4px}
+@media (max-width:1450px){#top .meta>span:first-child{display:none}}
+@media (max-width:1250px){#top .meta>span:nth-child(3){display:none}}
+@media (max-width:1050px){#top .meta>span:nth-child(6){display:none}}
+@media (max-width:820px){#side .sideTop #gqR{top:150px}}
