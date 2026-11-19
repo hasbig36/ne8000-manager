@@ -197,7 +197,7 @@ const NAV = [
   ['Planning', [['netmap', 'Network map', I.plan], ['plans', 'Network plans', I.plan]]],
   ['Billing', [['billing', 'Splynx billing', I.bill]]],
   ['Routing', [['bgp', 'BGP', I.route], ['policies', 'Route policies', I.route], ['ospf', 'OSPF', I.route], ['isis', 'IS-IS', I.route], ['mpls', 'MPLS / LDP', I.route]]],
-  ['System', [['resources', 'Resources', I.graph], ['hardware', 'Hardware', I.hw], ['users', 'Router users', I.user], ['settings', 'Settings', I.sys], ['logs', 'Logs & alarms', I.log]]],
+  ['System', [['server', 'Server health', I.health], ['resources', 'Resources', I.graph], ['hardware', 'Hardware', I.hw], ['users', 'Router users', I.user], ['settings', 'Settings', I.sys], ['logs', 'Logs & alarms', I.log]]],
   ['Manager', [['account', 'My account', I.user], ['routers', 'Routers', I.rtr], ['adopt', 'Adopt devices', I.adopt], ['appusers', 'App users', I.user], ['audit', 'Audit log', I.log]]],
   ['Tools', [['traffic', 'Traffic monitor', I.graph], ['ping', 'Ping / Traceroute', I.tool], ['console', 'Console', I.term], ['config', 'Config editor', I.term], ['backup', 'Backup', I.tool]]],
 ];
@@ -292,7 +292,7 @@ PAGES.dashboard = async c => {
 const HK = { errors: 'Errors', out_drops: 'Drops', in_drops: 'Drops', congestion: 'Full link', optics: 'SFP light', down: 'Link down', flap: 'Flapping', latency: 'Latency', loss: 'Loss', distance: 'Distance', capacity: 'Filling up', otdr: 'Fibre (OTDR)', cpu: 'CPU', memory: 'Memory', temp: 'Temperature' };
 function ago(t) { if (!t) return '-'; const s = Math.max(0, Date.now() / 1000 - t); return s < 90 ? 'just now' : s < 5400 ? Math.round(s / 60) + ' min ago' : s < 172800 ? Math.round(s / 3600) + ' h ago' : Math.round(s / 86400) + ' days ago'; }
 PAGES.health = async c => {
-  const h = await api('/api/health'); const f = h.findings || [], st = h.status || {}, lat = h.latency || [];
+  const h = await api('/api/health').catch(e => ({ note: 'Router checks: ' + (e.message || e) + ' Server health below still works.' })); const f = h.findings || [], st = h.status || {}, lat = h.latency || [];
   const cr = f.filter(x => x.severity === 'critical').length, slow = f.filter(x => x.slow).length;
   const t = (l, v, s, col) => `<div class="tile"><div class="l">${l}</div><div class="v" ${col ? `style="color:var(${col})"` : ''}>${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`;
   const notes = [h.note, st.error, /^unavailable/.test(st.ping || '') ? 'Latency checks: ' + st.ping.replace(/^unavailable: /, '') + '. The server needs to be allowed to ping (Docker sets this by default).' : ''].filter(Boolean);
@@ -320,6 +320,12 @@ PAGES.health = async c => {
   $('#hRun').onclick = async () => { await post('/api/health/run'); toast('Checking now; results in about a minute.'); setTimeout(() => current === 'health' && refresh(), 45000); };
   $('#hTg').onclick = () => healthTargets(h.targets || []);
   every(60000, async () => { if ($('#modalBg').classList.contains('hidden')) refresh(); });
+};
+PAGES.server = async c => {
+  c.innerHTML = head('Server health', 'the machine this app is hosted on: CPU, memory, disk and uptime') +
+    `<div class="card" id="hSrv"><h3>Server health</h3><p class="muted">Reading the server…</p></div>`;
+  await serverHealth();
+  every(60000, () => serverHealth());
 };
 /* Server health card on the Health page: the machine the app is hosted on, its use now and over 24 h. */
 async function serverHealth() {
