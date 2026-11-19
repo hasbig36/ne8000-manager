@@ -97,7 +97,7 @@ function ipmBlockCard(st, plan) {
   }
   const pct = v => (v * 100 / st.size).toFixed(1);
   const name = (plan.blocks.find(x => x.cidr === st.cidr) || {}).name;
-  return `<div class="card"><h3 class="row"><span>${esc(st.cidr)} ${name ? `<span class="muted" style="font-weight:500">${esc(name)}</span>` : ''}</span><span class="sp"></span>${IPM.d.suggested ? '' : `<button class="btn sm danger" data-bd="${esc(st.cidr)}">Remove</button>`}</h3>
+  return `<div class="card"><h3 class="row"><span>${esc(st.cidr)} ${name ? `<span class="muted" style="font-weight:500">${esc(name)}</span>` : ''}</span><span class="sp"></span><button class="btn sm danger" data-bd="${esc(st.cidr)}" title="not our space? take it off the plan">Remove</button></h3>
     <div class="ipbar"><i style="width:${pct(st.used)}%;background:#3b82f6"></i><i style="width:${pct(st.booked)}%;background:repeating-linear-gradient(45deg,#3b82f6aa 0 3px,transparent 3px 6px)"></i></div>
     <div style="font-size:12.5px;margin:6px 0 10px;display:flex;flex-wrap:wrap;gap:6px 16px"><span><b>${st.used}</b> in use</span><span><b>${st.booked}</b> booked</span><span class="okc"><b>${st.free}</b> free of ${st.size}</span>
       <span class="faint">${st.gaps.length} free gap${st.gaps.length === 1 ? '' : 's'}${st.gaps.length ? `, largest ${st.gaps[0].size} at ${esc(st.gaps[0].from)}` : ''}</span></div>

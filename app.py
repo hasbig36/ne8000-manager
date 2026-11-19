@@ -1835,13 +1835,22 @@ def ipam_now():
     return netmap_key(r), IPAM.get(netmap_key(r)), ipam.used_from(data if isinstance(data, list) else (data or {}).get("interfaces", []))
 
 
+def ipam_own():
+    """The networks this router announces in BGP (its own address space), if BGP has been read."""
+    try:
+        data, _ = VIEWCACHE.get(router(), "bgp")
+        return ipam.announced((data or {}).get("config"))
+    except Exception:
+        return []
+
+
 @app.get("/api/ipam")
 def ipam_get():
     """IP plan: blocks, segments, bookings, what is in use on the router, each block's numbers and free gaps, and advice."""
     key, plan, used = ipam_now()
     suggested = not plan["blocks"]
     if suggested:
-        plan = {**plan, "blocks": [{"cidr": c, "name": "Public block (found on the router)"} for c in ipam.suggest_blocks(used)]}
+        plan = {**plan, "blocks": [{"cidr": c, "name": "Announced by the router" if own else "Public block (found on the router)"} for own in [ipam_own()] for c in ipam.suggest_blocks(used, own)]}
     return jsonify(plan=plan, suggested=suggested, used=used, purposes=ipam.PURPOSES, stats=[ipam.stats(b["cidr"], plan, used) for b in plan["blocks"]],
                    findings=ipam.findings(plan, used))
 
@@ -1866,7 +1875,7 @@ def ipam_allocate():
     key, plan, used = ipam_now()
     d = request.get_json(force=True) or {}
     if not plan["blocks"]:
-        plan["blocks"] = [{"cidr": c, "name": "Public block (found on the router)"} for c in ipam.suggest_blocks(used)]
+        plan["blocks"] = [{"cidr": c, "name": "Public block (found on the router)"} for c in ipam.suggest_blocks(used, ipam_own())]
     if not str(d.get("name") or "").strip():
         raise DeviceError("Say who or what the addresses are for.")
     try:

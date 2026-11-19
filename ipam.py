@@ -36,8 +36,30 @@ def used_from(interfaces):
     return out
 
 
-def suggest_blocks(used):
-    """The public blocks the router's addresses come from: the smallest prefix (at least a /24) covering each group."""
+def announced(bgp_config):
+    """The IPv4 networks the router announces itself (BGP `network` lines): the address space that is the operator's own."""
+    out = []
+    for lines in (bgp_config or {}).values():
+        for l in lines or []:
+            p = str(l).split()
+            if len(p) >= 3 and p[0] == "network":
+                try:
+                    n = net(f"{p[1]}/{p[2]}")
+                except ValueError:
+                    continue
+                if n.version == 4 and n.is_global and n.prefixlen <= 24:
+                    out.append(n)
+    return out
+
+
+def suggest_blocks(used, own=None):
+    """The operator's own public blocks: the networks the router announces that hold its addresses. Without those, the
+    smallest prefix (at least a /24) around each group of 3 or more public subnets; a single link subnet on its own is
+    an upstream's or an exchange's space, not ours."""
+    if own:
+        ins = [str(n) for n in own if any(net(u["net"]).subnet_of(n) for u in used if net(u["net"]).version == 4)]
+        if ins:
+            return sorted(set(ins), key=lambda s: net(s))
     groups = {}
     for u in used:
         n = net(u["net"])
@@ -46,6 +68,8 @@ def suggest_blocks(used):
         groups.setdefault(net(f"{n.network_address}/22").network_address, []).append(n)
     out = []
     for nets in groups.values():
+        if len(nets) < 3:
+            continue
         lo, hi = min(int(n.network_address) for n in nets), max(int(n.broadcast_address) for n in nets)
         p = 24
         while p > 8:
