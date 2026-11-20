@@ -147,3 +147,11 @@ class SnmpClient:
         except Exception:
             pass
         self.loop.call_soon_threadsafe(self.loop.stop)
+
+
+def client_for(host, login, **kw):
+    """SnmpClient from a saved router's SNMP login: v3 (user + passwords) or v2c (community)."""
+    if login.get("version") == "v2c":
+        return SnmpClient(host, community=login["community"], port=login.get("port", 161), **kw)
+    return SnmpClient(host, user=login["user"], auth_proto=login["auth_proto"], auth_key=login["auth_key"],
+                      priv_proto=login["priv_proto"], priv_key=login["priv_key"], port=login.get("port", 161), **kw)

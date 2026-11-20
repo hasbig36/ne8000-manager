@@ -403,3 +403,6 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
   .noc .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:8px;padding:8px 12px 0}
   .noc .tile{padding:8px 10px}.noc .tile .v{font-size:21px}.noc .tile .l{font-size:10.5px;line-height:1.25}
 }
+
+/* MikroTik routers: read-only in the app, and no IS-IS or VRP config editor */
+body[data-vendor=mikrotik] #side a[data-p=isis], body[data-vendor=mikrotik] #side a[data-p=config], body[data-vendor=mikrotik] #saveBtn { display: none !important; }

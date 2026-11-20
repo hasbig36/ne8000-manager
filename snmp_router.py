@@ -77,6 +77,7 @@ def _ip_from_index(idx):
 
 class SnmpRouter(Router):
     via = "SNMP"
+    rates_all = True          # every interface's traffic is polled
 
     def __init__(self, host, snmp, ssh_port=22):
         super().__init__(host)
@@ -84,8 +85,11 @@ class SnmpRouter(Router):
         self.ssh = None
         self.ssh_user = ""
         try:
-            self.snmp = SnmpClient(host, user=snmp["user"], auth_proto=snmp["auth_proto"], auth_key=snmp["auth_key"],
-                                   priv_proto=snmp["priv_proto"], priv_key=snmp["priv_key"], port=snmp.get("port", 161))
+            if snmp.get("version") == "v2c":
+                self.snmp = SnmpClient(host, community=snmp["community"], port=snmp.get("port", 161))
+            else:
+                self.snmp = SnmpClient(host, user=snmp["user"], auth_proto=snmp["auth_proto"], auth_key=snmp["auth_key"],
+                                       priv_proto=snmp["priv_proto"], priv_key=snmp["priv_key"], port=snmp.get("port", 161))
             got = self.snmp.get(SYS + ".5.0")
         except SnmpError as exc:
             self._close_snmp()

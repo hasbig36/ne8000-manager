@@ -25,7 +25,7 @@ import sqlite3
 import threading
 import time
 
-from snmp import SnmpClient, SnmpError, mac as fmt_mac, text
+from snmp import SnmpClient, SnmpError, client_for, mac as fmt_mac, text
 
 POLL = 60                     # seconds between SNMP polls
 STAT_EVERY = 290              # store a number at most this often (about every 5 minutes)
@@ -364,8 +364,7 @@ class Tracker:
             return cur[1]
         if cur:
             cur[1].close()
-        c = SnmpClient(full["host"], user=snmp["user"], auth_proto=snmp["auth_proto"], auth_key=snmp["auth_key"],
-                       priv_proto=snmp["priv_proto"], priv_key=snmp["priv_key"], port=snmp.get("port", 161), timeout=5)
+        c = client_for(full["host"], snmp, timeout=5)
         self.clients[rid] = (key, c)
         return c
 

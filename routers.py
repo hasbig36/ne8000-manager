@@ -17,6 +17,8 @@ from auth import AuthError, _write_private
 HOST_RE = re.compile(r"^[A-Za-z0-9.:\-\[\]]{1,253}$")
 SNMP_AUTH = ("sha256", "sha384", "sha512", "sha224", "sha", "md5")
 SNMP_PRIV = ("aes128", "aes192", "aes256", "des")
+VENDORS = ("huawei", "mikrotik")
+MT_API = ("api", "api-ssl", "rest", "rest-http")      # RouterOS API 8728 / 8729, REST over https 443 / http 80
 
 
 class RouterStore:
@@ -52,11 +54,39 @@ class RouterStore:
         if len(notes) > 200 or any(ord(c) < 32 for c in notes):
             raise AuthError("Notes can be up to 200 characters on one line.")
         site = str(d.get("site") or "").strip()[:20]          # the site it is at (Sites); checked by the app
-        return {"name": name, "host": host, "port": port, "username": username, "notes": notes, "site": site}
+        out = {"name": name, "host": host, "port": port, "username": username, "notes": notes, "site": site}
+        vendor = (d.get("vendor") or "huawei").lower()
+        if vendor not in VENDORS:
+            raise AuthError("Unsupported router make.")
+        if vendor != "huawei":       # Huawei routers keep exactly the fields they always had
+            api = (d.get("api") or "api").lower()
+            if api not in MT_API:
+                raise AuthError("Unsupported MikroTik API type.")
+            try:
+                api_port = int(d.get("api_port") or 0)
+            except (TypeError, ValueError):
+                raise AuthError("Invalid API port.")
+            if api_port and not 1 <= api_port <= 65535:
+                raise AuthError("Invalid API port.")
+            out.update(vendor=vendor, api=api, api_port=api_port or None)
+        return out
 
     @staticmethod
     def _clean_snmp(d, old):
         """SNMPv3 login from the form. Empty passwords keep the stored ones; snmp_user empty turns SNMP off."""
+        if (d.get("snmp_version") or "v3") == "v2c":      # community (MikroTik and other makes); read-only
+            community = d.get("snmp_community") or (old.get("community") if old and old.get("version") == "v2c" else "")
+            if not community:
+                return None
+            if len(community) > 64 or any(ord(c) < 33 for c in community):
+                raise AuthError("Invalid SNMP community.")
+            try:
+                port = int(d.get("snmp_port") or 161)
+            except (TypeError, ValueError):
+                raise AuthError("Invalid SNMP port.")
+            if not 1 <= port <= 65535:
+                raise AuthError("Invalid SNMP port.")
+            return {"version": "v2c", "community": community, "user": "", "port": port}
         user = (d.get("snmp_user") or "").strip()
         if not user:
             return None
@@ -86,7 +116,10 @@ class RouterStore:
         """What browsers see: never the SNMP passwords."""
         out = {k: v for k, v in r.items() if k != "snmp"}
         s = r.get("snmp")
-        out["snmp"] = {"user": s["user"], "auth_proto": s["auth_proto"], "priv_proto": s["priv_proto"], "port": s["port"]} if s else None
+        if s and s.get("version") == "v2c":
+            out["snmp"] = {"version": "v2c", "user": "", "port": s["port"]}
+        else:
+            out["snmp"] = {"user": s["user"], "auth_proto": s["auth_proto"], "priv_proto": s["priv_proto"], "port": s["port"]} if s else None
         return out
 
     def list(self):

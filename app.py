@@ -415,10 +415,10 @@ def routers_test_snmp(rid):
     saved = SAVED.get(rid)
     if not saved or not saved.get("snmp"):
         raise DeviceError("No SNMP login saved for this router.")
-    from snmp import SnmpClient, SnmpError, text
+    from snmp import SnmpError, client_for, text
     s = saved["snmp"]
     try:
-        c = SnmpClient(saved["host"], s["user"], s["auth_proto"], s["auth_key"], s["priv_proto"], s["priv_key"], port=s["port"])
+        c = client_for(saved["host"], s)
         try:
             got = c.get("1.3.6.1.2.1.1.5.0", "1.3.6.1.2.1.1.3.0")
         finally:
@@ -450,7 +450,7 @@ def adopt_discover():
     known = set(SAVED.hosts())
     if adopt_demo():
         return jsonify(devices=adopt.demo_lldp(known), errors=[], demo=True)
-    from snmp import SnmpClient
+    from snmp import client_for
     rows, errors = [], []
     for r in SAVED.list():
         full = SAVED.get(r["id"])
@@ -458,7 +458,7 @@ def adopt_discover():
         if not s:
             continue
         try:
-            c = SnmpClient(full["host"], s["user"], s["auth_proto"], s["auth_key"], s["priv_proto"], s["priv_key"], port=s["port"], timeout=5)
+            c = client_for(full["host"], s, timeout=5)
             try:
                 rows += adopt.lldp_candidates(c, r["name"], known)
             finally:
@@ -604,6 +604,41 @@ def index():
     return render_template("index.html")
 
 
+def connect_mikrotik(saved, host, ssh_port, snmp_login, username, password, data):
+    """A MikroTik: SNMP for monitoring when a login is saved, plus the RouterOS API when someone types a MikroTik login.
+    Read-only: nothing is ever changed on a MikroTik from the app yet."""
+    import mikrotik
+    transport = saved.get("api") or (data.get("api") if data.get("api") in mikrotik.TRANSPORTS else "api")
+    api_port = saved.get("api_port") or None
+    r, warning = None, ""
+    if snmp_login:
+        try:
+            r = mikrotik.MikroTikSnmpRouter(host, snmp_login, transport, api_port, ssh_port)
+        except DeviceError as exc:
+            AUDIT.log(me(), "router_snmp_failed", host=host, error=str(exc)[:200], ip=client_ip())
+            if not (username and password):
+                raise mikrotik.ApiRequired(f"{exc}. Enter a MikroTik login to connect over the API instead.")
+            warning = f"{exc}. Connected over the API instead."
+    if r is None and not (username and password):
+        raise mikrotik.ApiRequired("Enter a MikroTik login (a read-only user is enough).")
+    if username and password:
+        THROTTLE_ROUTER.check(me())
+        try:
+            if r is None:
+                r = mikrotik.MikroTikRouter(host, username, password, transport, api_port, ssh_port)
+            else:
+                r.attach_ssh(username, password)
+        except DeviceError as exc:
+            THROTTLE_ROUTER.fail(me())
+            AUDIT.log(me(), "router_connect_failed", host=host, ip=client_ip(), via=transport, why=fail_reason(exc, password))
+            if r is None:
+                raise
+            warning = f"Connected over SNMP, but the MikroTik API login failed: {exc}"
+        else:
+            THROTTLE_ROUTER.ok(me())
+    return r, warning
+
+
 @app.post("/api/connect")
 def connect():
     data = request.get_json(force=True)
@@ -634,7 +669,10 @@ def connect():
         check_router_allowed(host)
         username, password = data.get("username", ""), data.get("password", "")
         r = None
-        if snmp_login and not data.get("ssh_only"):
+        vendor = (saved or {}).get("vendor") or ("mikrotik" if data.get("vendor") == "mikrotik" else "huawei")
+        if vendor == "mikrotik":
+            r, warning = connect_mikrotik(saved or {}, host, port, snmp_login, username, password, data)
+        elif snmp_login and not data.get("ssh_only"):
             # SNMP first: no router password needed for monitoring. SSH joins if a login was typed.
             try:
                 r = SnmpRouter(host, snmp_login, port)
@@ -643,7 +681,7 @@ def connect():
                 if not (username and password):
                     raise SshRequired(f"{exc}. Enter your SSH login to connect over SSH instead.")
                 warning = f"{exc}. Connected over SSH instead."
-        if r is None or (username and password):
+        if vendor == "huawei" and (r is None or (username and password)):
             THROTTLE_ROUTER.check(me())
             try:
                 if r is None:
@@ -679,7 +717,7 @@ def connect():
     netmap_background(r, netmap_key(r))     # the map takes the longest to read: start it now too
     start_billing(r)
     AUDIT.log(me(), "router_connect", host=r.host, demo=r.demo, via=r.via, ip=client_ip())
-    return jsonify(ok=True, host=r.host, demo=r.demo, via=r.via, warning=warning)
+    return jsonify(ok=True, host=r.host, demo=r.demo, via=r.via, warning=warning, vendor=getattr(r, "vendor", "huawei"))
 
 
 @app.post("/api/connect/ssh")
@@ -718,7 +756,9 @@ def disconnect():
 def status():
     r = ROUTERS.get(session.get("sid"))
     return jsonify(connected=r is not None, host=r.host if r else None, demo=r.demo if r else False,
-                   via=r.via if r else None, ssh=bool(r and r.can_configure), router_id=session.get("router_id", "") if r else "")
+                   via=r.via if r else None, ssh=bool(r and r.can_configure), router_id=session.get("router_id", "") if r else "",
+                   vendor=getattr(r, "vendor", "huawei") if r else None,
+                   api=bool(r and getattr(r, "vendor", "") == "mikrotik" and (getattr(r, "api", None) or getattr(r, "ssh", None))))
 
 
 @app.get("/api/view/<name>")
@@ -898,11 +938,19 @@ def ip_toggle():
 @app.post("/api/cli")
 def cli():
     command = (request.get_json(force=True).get("command") or "").strip()
+    r = router()
+    if getattr(r, "vendor", "huawei") == "mikrotik":
+        import mikrotik
+        if not mikrotik.mt_read_only(command):
+            raise DeviceError("The console runs print, monitor, export, ping and traceroute only. Changes to MikroTik routers are not supported yet.")
+        if current_user()["role"] == "viewer" and "export" in command.lower():
+            raise auth.AuthError("Viewers cannot read the full configuration.")
+        r.check_table_size(command)
+        return jsonify(output=r.run(command, read_timeout=120))
     if not is_read_only(command):
         raise DeviceError("The console runs display, ping and tracert only. Use Config editor for changes.")
     if current_user()["role"] == "viewer" and "configuration" in command.lower():
         raise auth.AuthError("Viewers cannot read the full configuration.")
-    r = router()
     r.check_table_size(command)
     return jsonify(output=r.run(command, read_timeout=120))
 
@@ -1132,7 +1180,7 @@ def billing_usage():
                 plan[q["interface"]] = q["pir_kbps"] * 1000
     except Exception:
         pass
-    series = r.traffic(names) if names and (isinstance(r, SnmpRouter) or r.demo) else {}
+    series = r.traffic(names) if names and (getattr(r, "rates_all", False) or r.demo) else {}
     out = {}
     for n in names:
         i, pts = ifs.get(n, {}), series.get(n) or []
@@ -1714,7 +1762,7 @@ def build_netmap(r, key):
     diagram, summary, m = netdesign.discover(snap)
     rec = NETMAP.update(key, netmap.inventory(snap, m))
     out = {"key": key, "diagram": diagram, "summary": summary, "at": rec["at"], "warnings": snap["warnings"],
-           "rates": isinstance(r, SnmpRouter) or r.demo}
+           "rates": getattr(r, "rates_all", False) or r.demo}
     NETMAP_CACHE[key] = (time.time(), out)
     return out
 
@@ -1760,7 +1808,7 @@ def netmap_traffic():
     manual = links_load().get(netmap_key(r), [])
     names = sorted({l["props"]["iface"] for l in hit[1]["diagram"]["links"] if l["props"].get("iface")} | {m["iface"] for m in manual if m.get("iface")})
     ifs = {i["name"]: i for i in VIEWCACHE.get(r, "interfaces")[0]}   # from memory: the map asks every 5 s
-    series = r.traffic(names) if r.demo else {n: r.series("bps:" + n) for n in names} if isinstance(r, SnmpRouter) else {}
+    series = r.traffic(names) if r.demo else {n: r.series("bps:" + n) for n in names} if getattr(r, "rates_all", False) else {}
     out = {}
     for n in names:
         i, pts = ifs.get(n, {}), series.get(n) or []

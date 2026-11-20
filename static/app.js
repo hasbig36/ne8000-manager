@@ -26,14 +26,15 @@ function sshLogin(why) {
     sshCancel = () => { sshAsk = null; sshCancel = null; done(false); };   // closed by Esc or a click outside: same as Not now
     let last = ''; try { last = localStorage.getItem('ne8000.router') || ''; } catch (e) {}
     const m = $('#modal'), r = (ROUTER_LIST || []).find(x => x.id === last);
-    m.innerHTML = `<h2>SSH login needed</h2><p class="muted">${esc(why || 'This needs the router command line.')} Monitoring keeps working over SNMP without it.</p>
+    const mt = VENDOR === 'mikrotik';
+    m.innerHTML = `<h2>${mt ? 'MikroTik login needed' : 'SSH login needed'}</h2><p class="muted">${esc(why || 'This needs the router command line.')} Monitoring keeps working over SNMP without it.</p>
       <div class="form"><label>Router username</label><input id="sshU" name="router-user" autocomplete="off" value="${esc(r && r.username || '')}">
       <label>Router password (not your app password)</label><input id="sshP" name="router-pass" type="password" autocomplete="new-password"></div>
       <div class="err"></div><div class="actions"><button class="btn" data-a="c">Not now</button><button class="btn primary" data-a="s">Sign in</button></div>`;
     $('#modalBg').classList.remove('hidden'); ($('#sshU').value ? $('#sshP') : $('#sshU')).focus();
     const finish = ok => { sshCancel = null; closeModal(); sshAsk = null; done(ok); };
     const submit = async () => {
-      try { const x = await post('/api/connect/ssh', { username: $('#sshU').value, password: $('#sshP').value }); VIA = x.via; topbar().catch(() => {}); toast('SSH connected'); finish(true); }
+      try { const x = await post('/api/connect/ssh', { username: $('#sshU').value, password: $('#sshP').value }); VIA = x.via; topbar().catch(() => {}); toast(mt ? 'MikroTik API connected' : 'SSH connected'); finish(true); }
       catch (e) { m.querySelector('.err').textContent = e.message; }
     };
     $('#sshP').onkeydown = e => { if (e.key === 'Enter') submit(); };
@@ -210,7 +211,7 @@ $('#side').onclick = e => { const a = e.target.closest('a[data-p]'); if (a) { lo
 $('#menuBtn').onclick = () => $('#side').classList.toggle('open');
 
 let MODEL = '';
-let timers = [], charts = [], current = null, DEMO = false, VIA = '', ME = null, AUTH = {}, ROUTER_LIST = [];
+let timers = [], charts = [], current = null, DEMO = false, VIA = '', VENDOR = 'huawei', ME = null, AUTH = {}, ROUTER_LIST = [];
 function every(ms, fn) { const my = typeof NAVSEQ === 'undefined' ? 0 : NAVSEQ; timers.push(setInterval(() => { if (!document.hidden && my === NAVSEQ) fn().catch(e => { if (!e.stale) console.warn(e); }); }, ms)); }
 function cleanup() { timers.forEach(clearInterval); timers = []; charts.forEach(c => c.destroy()); charts = []; }
 function chart(host, opts) { const c = new TimeChart(host, opts); charts.push(c); return c; }
@@ -1687,11 +1688,13 @@ PAGES.ping = async c => {
     try { o.textContent = (await post('/api/cli', { command: build() })).output; } catch (e) { o.textContent = 'Error: ' + e.message; } };
 };
 
-const QUICK = ['display interface brief', 'display ip interface brief', 'display ip routing-table', 'display bgp peer', 'display ospf peer brief', 'display isis peer', 'display mpls ldp session', 'display arp all', 'display lldp neighbor brief', 'display alarm active', 'display device', 'display cpu-usage', 'display memory-usage', 'display optical-module brief', 'display logbuffer', 'display current-configuration'];
+const QUICK_HW = ['display interface brief', 'display ip interface brief', 'display ip routing-table', 'display bgp peer', 'display ospf peer brief', 'display isis peer', 'display mpls ldp session', 'display arp all', 'display lldp neighbor brief', 'display alarm active', 'display device', 'display cpu-usage', 'display memory-usage', 'display optical-module brief', 'display logbuffer', 'display current-configuration'];
+const QUICK_MT = ['/interface print', '/ip address print', '/ip route print count-only', '/routing bgp session print', '/routing ospf neighbor print', '/ip arp print', '/ip neighbor print', '/system resource print', '/system health print', '/log print', '/interface ethernet monitor sfp28-1 once', '/export'];
 let cliHist = [];
 PAGES.console = async c => {
-  c.innerHTML = head('Console', 'display, ping and tracert. Use Config editor for changes.') + `<div class="card"><div class="bar"><input id="cIn" class="mono" style="flex:1" placeholder="display interface GigabitEthernet0/1/0" list="cQ"><datalist id="cQ">${QUICK.map(q => `<option value="${q}">`).join('')}</datalist><button class="btn primary" id="cGo">Run</button></div>
-    <div class="bar">${QUICK.slice(0, 10).map(q => `<button class="btn sm" data-q="${q}">${q.replace('display ', '')}</button>`).join('')}</div><pre id="cOut" style="max-height:65vh">${esc(cliHist.at(-1)?.out || '')}</pre></div>`;
+  const QUICK = VENDOR === 'mikrotik' ? QUICK_MT : QUICK_HW, mt = VENDOR === 'mikrotik';
+  c.innerHTML = head('Console', mt ? 'RouterOS print, monitor, export, ping and traceroute (read-only)' : 'display, ping and tracert. Use Config editor for changes.') + `<div class="card"><div class="bar"><input id="cIn" class="mono" style="flex:1" placeholder="${mt ? '/ip route print where dst-address=0.0.0.0/0' : 'display interface GigabitEthernet0/1/0'}" list="cQ"><datalist id="cQ">${QUICK.map(q => `<option value="${q}">`).join('')}</datalist><button class="btn primary" id="cGo">Run</button></div>
+    <div class="bar">${QUICK.slice(0, 10).map(q => `<button class="btn sm" data-q="${q}">${q.replace('display ', '').replace(/^\//, '')}</button>`).join('')}</div><pre id="cOut" style="max-height:65vh">${esc(cliHist.at(-1)?.out || '')}</pre></div>`;
   let hi = cliHist.length;
   const run = async cmd => { if (!cmd) return; $('#cIn').value = cmd; $('#cOut').textContent = `<${$('#tName').textContent}>${cmd}\n…`;
     try { const r = await post('/api/cli', { command: cmd }); $('#cOut').textContent = `<${$('#tName').textContent}>${cmd}\n${r.output}`; cliHist.push({ cmd, out: $('#cOut').textContent }); hi = cliHist.length; }
@@ -2188,7 +2191,7 @@ async function start() {
   if (!s.connected) { $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden'); $('#tHost').textContent = 'not connected'; $('#logoutBtn').textContent = 'Connect router'; $('#saveBtn').style.display = 'none';
     $('#logoutBtn').onclick = () => { location.hash = ''; location.reload(); }; return go(want); }
   window.onhashchange = null;
-  DEMO = s.demo; VIA = s.via || ''; $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden');
+  DEMO = s.demo; VIA = s.via || ''; VENDOR = s.vendor || 'huawei'; document.body.dataset.vendor = VENDOR; $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden');
   routerSwitcher(s);
   topbar().catch(() => {}); setInterval(() => { if (!document.hidden) topbar().catch(() => {}); }, 30000);
   go(location.hash.slice(1) || 'dashboard');

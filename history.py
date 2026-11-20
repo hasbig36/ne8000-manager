@@ -12,7 +12,7 @@ import sqlite3
 import threading
 import time
 
-from snmp import SnmpClient, SnmpError, text
+from snmp import SnmpClient, SnmpError, client_for, text
 
 INTERVAL = 300
 KEEP_5MIN = 8 * 86400
@@ -80,8 +80,7 @@ class History:
             return cur[1]
         if cur:
             cur[1].close()
-        c = SnmpClient(full["host"], user=snmp["user"], auth_proto=snmp["auth_proto"], auth_key=snmp["auth_key"],
-                       priv_proto=snmp["priv_proto"], priv_key=snmp["priv_key"], port=snmp.get("port", 161), timeout=5)
+        c = client_for(full["host"], snmp, timeout=5)
         self.clients[rid] = (key, c)
         return c
 

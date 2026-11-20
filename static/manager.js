@@ -51,36 +51,47 @@ PAGES.routers = async c => {
   const [{ routers }] = await Promise.all([api('/api/routers'), srLoad().catch(() => null)]);
   c.innerHTML = head('Routers', 'the routers people can connect to', `<button class="btn primary" id="rtAdd">+ Router</button>`) +
     `<div class="card"><div id="rtT"></div><p class="faint" style="font-size:12.5px;margin-bottom:0">Once at least one router is saved, the app only connects to saved routers and the connect screen shows them as a list.
-    Router SSH passwords are never stored: each person types their own. An optional read-only SNMPv3 login is kept on this server (never shown here) so people can connect and monitor without one.</p></div>`;
-  table($('#rtT'), [{ t: 'Name', k: 'name', f: r => `<b>${esc(r.name)}</b>` }, { t: 'Address', k: 'host', f: r => `<span class="mono">${esc(r.host)}:${r.port}</span>` },
+    Router passwords (SSH, or the MikroTik API) are never stored: each person types their own. An optional read-only SNMP login is kept on this server (never shown here) so people can connect and monitor without one.</p></div>`;
+  table($('#rtT'), [{ t: 'Name', k: 'name', f: r => `<b>${esc(r.name)}</b>` }, { t: 'Make', k: 'vendor', f: r => r.vendor === 'mikrotik' ? `MikroTik <span class="faint">${esc(({ api: 'API', 'api-ssl': 'API-SSL', rest: 'REST', 'rest-http': 'REST http' })[r.api] || 'API')}</span>` : 'Huawei' }, { t: 'Address', k: 'host', f: r => `<span class="mono">${esc(r.host)}:${r.port}</span>` },
     { t: 'Default username', k: 'username', f: r => esc(r.username) || '<span class="faint">none</span>' },
     { t: 'Site', k: 'site', f: r => r.site ? esc(((SR.d && SR.d.sites.find(s => s.id === r.site)) || {}).code || '?') : '<span class="warnc">needs a site</span>' },
-    { t: 'SNMP', k: 'snmp', f: r => r.snmp ? `v3 <span class="mono">${esc(r.snmp.user)}</span>` : '<span class="faint">off (SSH only)</span>' }, { t: 'Notes', k: 'notes', cls: 'wrap', f: r => esc(r.notes) },
+    { t: 'SNMP', k: 'snmp', f: r => r.snmp ? (r.snmp.version === 'v2c' ? 'v2c community' : `v3 <span class="mono">${esc(r.snmp.user)}</span>`) : `<span class="faint">off (${r.vendor === 'mikrotik' ? 'API' : 'SSH'} only)</span>` }, { t: 'Notes', k: 'notes', cls: 'wrap', f: r => esc(r.notes) },
     { t: '', sort: false, cls: 'acts', f: r => `${r.snmp ? `<button class="btn sm" data-test="${esc(r.id)}">Test SNMP</button>` : ''}<button class="btn sm" data-edit="${esc(r.id)}">Edit</button><button class="btn sm danger" data-del="${esc(r.id)}">Delete</button>` }],
     routers, { filter: false, empty: 'No routers saved yet. Add one so people can pick it when connecting.' });
   const form = r => {
     const m = $('#modal'), v = k => r ? esc(r[k] ?? '') : '';
     m.innerHTML = `<h2>${r ? 'Edit ' + esc(r.name) : 'New router'}</h2><div class="form">
       <label>Name</label><input id="frName" value="${v('name')}" placeholder="BNG-NDOVU1" autocomplete="off">
+      <label>Make</label><select id="frVendor"><option value="huawei">Huawei (NE8000 and other VRP routers)</option><option value="mikrotik" ${r && r.vendor === 'mikrotik' ? 'selected' : ''}>MikroTik (RouterOS v6 / v7)</option></select>
       <label>Management IP / hostname</label><input id="frHost" value="${v('host')}" placeholder="192.168.0.10" autocomplete="off">
       <label>SSH port</label><input id="frPort" type="number" value="${r ? r.port : 22}">
+      <div class="mtOnly"><label>MikroTik API</label><select id="frApi">${[['api', 'API, port 8728 (v6 and v7)'], ['api-ssl', 'API-SSL, port 8729 (v6 and v7, encrypted)'], ['rest', 'REST over https, port 443 (v7)'], ['rest-http', 'REST over http, port 80 (v7, not encrypted)']].map(([k, t]) => `<option value="${k}" ${r && r.api === k ? 'selected' : ''}>${t}</option>`).join('')}</select>
+      <label>API port</label><input id="frApiPort" type="number" value="${r && r.api_port || ''}" placeholder="default for the type">
+      <div class="help">Used when someone signs in with a MikroTik login: BGP, OSPF, routes, logs, users and the console. A user in a group with read and api (or rest-api) rights only is enough. Read-only: the app changes nothing on MikroTik routers yet.</div></div>
       <label>Default username</label><input id="frUser" value="${v('username')}" placeholder="optional, filled in on the connect screen" autocomplete="off">
       <label>Notes</label><input id="frNotes" value="${v('notes')}" placeholder="optional" autocomplete="off">
       <label>Site *</label>${srPicker(((SR.d && SR.d.sites) || []).filter(s => !s.missing.length), r ? r.site : '', 'frSite')}<div class="help">Where it is. Only fully registered sites are listed (Sites).</div>
-      <h3 style="margin:14px 0 2px">SNMP (optional)</h3><div class="faint" style="font-size:12.5px">A read-only SNMPv3 login. With it, Connect uses SNMP first and SSH only when needed or if SNMP fails. Leave the user empty for SSH only.</div>
-      <label>SNMPv3 user</label><input id="fsUser" value="${r && r.snmp ? esc(r.snmp.user) : ''}" placeholder="e.g. ne8000mon" autocomplete="off">
+      <h3 style="margin:14px 0 2px">SNMP (optional)</h3><div class="faint" style="font-size:12.5px">A read-only SNMP login. With it, Connect uses SNMP first and the router login only when needed or if SNMP fails. Leave it empty for no SNMP.</div>
+      <label>SNMP version</label><select id="fsVer"><option value="v3">v3 (user and passwords)</option><option value="v2c" ${r && r.snmp && r.snmp.version === 'v2c' ? 'selected' : ''}>v2c (community)</option></select>
+      <div class="v2Only"><label>Community</label><input id="fsComm" type="password" autocomplete="new-password" placeholder="${r && r.snmp && r.snmp.version === 'v2c' ? 'leave empty to keep' : 'e.g. the read-only community'}"></div>
+      <div class="v3Only"><label>SNMPv3 user</label><input id="fsUser" value="${r && r.snmp ? esc(r.snmp.user) : ''}" placeholder="e.g. ne8000mon" autocomplete="off">
       <label>Authentication</label><select id="fsAuth">${['sha256', 'sha384', 'sha512', 'sha224', 'sha', 'md5'].map(p => `<option ${r && r.snmp && r.snmp.auth_proto === p ? 'selected' : ''} value="${p}">${p.toUpperCase()}</option>`).join('')}</select>
       <label>Authentication password</label><input id="fsAuthKey" type="password" autocomplete="new-password" placeholder="${r && r.snmp ? 'leave empty to keep' : '8 to 64 characters'}">
       <label>Privacy (encryption)</label><select id="fsPriv">${['aes128', 'aes192', 'aes256', 'des'].map(p => `<option ${r && r.snmp && r.snmp.priv_proto === p ? 'selected' : ''} value="${p}">${p.toUpperCase()}</option>`).join('')}</select>
-      <label>Privacy password</label><input id="fsPrivKey" type="password" autocomplete="new-password" placeholder="${r && r.snmp ? 'leave empty to keep' : '8 to 64 characters'}">
+      <label>Privacy password</label><input id="fsPrivKey" type="password" autocomplete="new-password" placeholder="${r && r.snmp ? 'leave empty to keep' : '8 to 64 characters'}"></div>
       <label>SNMP port</label><input id="fsPort" type="number" value="${r && r.snmp ? r.snmp.port : 161}"></div>
       <div class="err"></div><div class="actions"><button class="btn" data-a="c">Cancel</button><button class="btn primary" data-a="s">${r ? 'Save' : 'Add router'}</button></div>`;
     $('#modalBg').classList.remove('hidden'); $('#frName').focus();
+    const vis = () => { const mt = $('#frVendor').value === 'mikrotik', v2 = $('#fsVer').value === 'v2c';
+      m.querySelectorAll('.mtOnly').forEach(e => e.style.display = mt ? '' : 'none'); m.querySelector('.v2Only').style.display = v2 ? '' : 'none'; m.querySelector('.v3Only').style.display = v2 ? 'none' : '' };
+    $('#frVendor').onchange = vis; $('#fsVer').onchange = vis; vis();
     m.querySelector('.actions').onclick = async e => {
       if (e.target.dataset.a === 'c') return closeModal(); if (e.target.dataset.a !== 's') return;
       const body = { name: $('#frName').value, host: $('#frHost').value, port: $('#frPort').value, username: $('#frUser').value, notes: $('#frNotes').value, site: $('#frSite').value,
         snmp_user: $('#fsUser').value, snmp_auth_proto: $('#fsAuth').value, snmp_auth_key: $('#fsAuthKey').value, snmp_priv_proto: $('#fsPriv').value,
-        snmp_priv_key: $('#fsPrivKey').value, snmp_port: $('#fsPort').value };
+        snmp_priv_key: $('#fsPrivKey').value, snmp_port: $('#fsPort').value, snmp_version: $('#fsVer').value, snmp_community: $('#fsComm').value,
+        vendor: $('#frVendor').value, api: $('#frApi').value, api_port: $('#frApiPort').value };
+      if (body.snmp_version === 'v2c') body.snmp_user = '';
       try {
         if (r) await api('/api/routers/' + encodeURIComponent(r.id), { method: 'PUT', body: JSON.stringify(body) });
         else await post('/api/routers', body);

@@ -118,6 +118,30 @@ commit
 ```
 (Adjust to your AAA setup.)
 
+### MikroTik (RouterOS v6 and v7), read-only
+Add it under Manager › Routers with Make = MikroTik.
+
+- **SNMP** (v2c community or v3) gives the monitoring: interfaces and traffic, CPU, memory, temperatures, fans and power
+  supplies, SFP optics, neighbours, ARP. Allow it from the app server only:
+  ```
+  /snmp set enabled=yes
+  /snmp community add name=<community> addresses=<app server>/32 read-access=yes write-access=no
+  ```
+- **The RouterOS API** is used when someone signs in with a MikroTik login. It adds BGP sessions, OSPF, routes, logs,
+  router users, simple queues and the console (print, monitor, export, ping and traceroute only). Choose one of:
+  - API on 8728, or API-SSL on 8729 (v6 and v7);
+  - REST over https on 443, or over http on 80 (v7 only).
+
+  A read-only user is enough:
+  ```
+  /user group add name=ne8000-ro policy=read,api,rest-api,!write,!policy,!sensitive
+  /user add name=ne8000-ro group=ne8000-ro address=<app server>/32
+  ```
+- The console's `/export` reads the configuration over SSH with the same login (sensitive values stay hidden). Server
+  backups of MikroTik configurations come with the next step.
+- Nothing is changed on a MikroTik from the app yet. Configuration pages, the config editor and billing actions stay
+  Huawei-only.
+
 ## Run it
 You need Python 3.9 or newer.
 
