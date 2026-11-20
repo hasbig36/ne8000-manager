@@ -48,12 +48,12 @@ class PanelStore:
             pass
         return {"photo": bool(path), "version": int(os.path.getmtime(path)) if path else 0,
                 "marks": meta.get("marks") or {}, "size": meta.get("size") or 4.0, "by": meta.get("by", ""), "at": meta.get("at", 0),
-                "source": meta.get("source", "") if path else "", "removed": bool(meta.get("removed")) and not path}
+                "source": meta.get("source", "") if path else "", "maker_v": meta.get("maker_v", 1 if meta.get("source") else 0), "removed": bool(meta.get("removed")) and not path}
 
     def photo(self, key):
         return self._photo(self.key(key))
 
-    def set_photo(self, key, data_url, by="", source=""):
+    def set_photo(self, key, data_url, by="", source="", maker_v=0):
         key = self.key(key)
         m = re.match(r"^data:image/(?:jpeg|jpg|png);base64,(.+)$", str(data_url or ""), re.S)
         if not m:
@@ -80,6 +80,7 @@ class PanelStore:
             meta = {"marks": {}, "size": 4.0, "by": by, "at": int(time.time())}   # a new photo: the old positions no longer fit
             if source:      # the maker's product photo, credited under it
                 meta["source"] = str(source)[:300]
+                meta["maker_v"] = int(maker_v or 0)
             self._write_meta(key, meta)
         return self.get(key)
 
@@ -99,8 +100,9 @@ class PanelStore:
             raise ValueError("Too many ports.")
         size = min(15.0, max(1.0, float(size or 4.0)))
         with self.lock:
-            src = self.get(key).get("source", "")
-            self._write_meta(key, {"marks": out, "size": size, "by": by, "at": int(time.time()), **({"source": src} if src else {})})
+            old = self.get(key)
+            keep = {k: old[k] for k in ("source", "maker_v") if old.get(k)}
+            self._write_meta(key, {"marks": out, "size": size, "by": by, "at": int(time.time()), **keep})
         return self.get(key)
 
     def delete(self, key):

@@ -267,8 +267,8 @@ PAGES.dashboard = async c => {
     `<div class="tiles">${t('CPU', Fmt.pct(o.cpu), '', o.cpu)}${t('Memory', Fmt.pct(o.memory.percent), o.memory.total_kb ? `${Fmt.bytes(o.memory.used_kb * 1024)} of ${Fmt.bytes(o.memory.total_kb * 1024)}` : '', o.memory.percent)}
     ${t('Uptime', esc(o.uptime.replace(/ days?,?/, 'd').replace(/ hours?,?/, 'h').replace(/ minutes?/, 'm')), esc(o.patch ? 'Patch ' + o.patch : ''))}${t('Max temperature', Fmt.temp(o.max_temp), 'hottest sensor')}
     ${t('Ports up', `${o.interfaces.up} / ${o.interfaces.total}`, `${o.interfaces.admin_down} admin down · ${o.interfaces.all} interfaces total`)}
-    ${t('BGP established', `${o.bgp.established ?? 0} / ${o.bgp.total ?? 0}`, `AS ${esc(o.bgp.local_as || '-')} · RID ${esc(o.bgp.router_id || '-')}`)}
-    ${o.alarms.total == null ? t('Active alarms', '-', '<a href="#logs">sign in with SSH to read alarms</a>') : t('Active alarms', o.alarms.total, `${o.alarms.critical} major or critical`)}
+    ${VENDOR === 'mikrotik' && !o.bgp.total && !/API/.test(VIA) ? t('BGP established', '-', '<a href="#bgp">sign in with a MikroTik login to read BGP</a>') : t('BGP established', `${o.bgp.established ?? 0} / ${o.bgp.total ?? 0}`, `AS ${esc(o.bgp.local_as || '-')} · RID ${esc(o.bgp.router_id || '-')}`)}
+    ${o.alarms.total == null ? t('Active alarms', '-', `<a href="#logs">sign in with ${VENDOR === 'mikrotik' ? 'a MikroTik login' : 'SSH'} to read ${VENDOR === 'mikrotik' ? 'the log' : 'alarms'}</a>`) : t('Active alarms', o.alarms.total, `${o.alarms.critical} major or critical`)}
     <a class="tile" href="#health" id="dHealth" style="text-decoration:none;color:inherit"><div class="l">Health check</div><div class="v">…</div></a></div>
     <div class="card"><h3>Ports<span class="sp"></span><a href="#interfaces" class="btn sm">Interfaces</a></h3><div id="dPorts"><span class="muted">Loading…</span></div></div>
     <div class="grid g2"><div class="card"><h3>CPU <span class="sp"></span><a href="#resources" class="btn sm">Resources</a></h3><div id="cCpu"></div></div>
@@ -487,7 +487,9 @@ function chassisHtml(rows, hw) {
 /* ----- front panel photo: the router's own photo with each port marked on it, coloured live ----- */
 let PANEL = null;    // {photo, version, marks: {port: [x, y]}, size} for the connected router
 async function panelLoad() { try { PANEL = await api('/api/panel'); } catch (e) { if (e.stale) throw e; PANEL = { error: e.message, marks: {} }; }
-  if (!PANEL.photo && !PANEL.removed && !PANEL.error && VENDOR === 'mikrotik' && !DEMO && ME && ME.role !== 'viewer') await makerPhoto(false).catch(() => {});
+  // no photo yet, or an older maker's photo the app now picks better: (re)fetch it (your own photos are never replaced)
+  const stale = PANEL.photo && PANEL.source && (PANEL.maker_v || 1) < (PANEL.maker_current || 1);
+  if ((!PANEL.photo && !PANEL.removed || stale) && !PANEL.error && VENDOR === 'mikrotik' && !DEMO && ME && ME.role !== 'viewer') await makerPhoto(false).catch(() => {});
   await notesLoad(); return PANEL; }
 /* no photo yet: use the maker's product photo of this model (fetched once by the server from the maker's site, kept on it) */
 const MAKER_TRIED = new Set();
@@ -700,7 +702,9 @@ function portPanel(host, rows, opts = {}) {
       <span class="pdesc">${esc(p.description || '')}</span><span class="pio">In ${bar(+p.in_util || 0)} ${(+p.in_util || 0).toFixed(1)}%</span><span class="pio">Out ${bar(+p.out_util || 0)} ${(+p.out_util || 0).toFixed(1)}%</span>
       <span class="psub">${PORT_STATE[s]}${subs.length ? ` · ${subs.length} sub-interfaces, ${up} up` : ''}${p.in_errors + p.out_errors ? ` · <span style="color:var(--bad)">errors ${p.in_errors}/${p.out_errors}</span>` : ''}</span></button>
       <div class="ptiles">${shown.map(tile).join('') || `<span class="faint" style="font-size:12px;padding:6px">${subs.length ? 'None match this filter.' : 'No sub-interfaces.'}</span>`}</div></div>`; };
-  const count = k => k === 'all' ? '' : ` ${rows.filter(r => r.name.includes('.') && phys.some(p => r.name.startsWith(p.name + '.'))).filter(r => { const o = st.chip; st.chip = k; const y = keep(r); st.chip = o; return y; }).length}`;
+  // counts are of the services (sub-interfaces) on the ports; a router without sub-interfaces (MikroTik, switches) counts its ports
+  const subsAll = rows.filter(r => r.name.includes('.') && phys.some(p => r.name.startsWith(p.name + '.')));
+  const count = k => k === 'all' ? '' : ` ${(subsAll.length ? subsAll : phys).filter(r => { const o = st.chip; st.chip = k; const y = keep(r); st.chip = o; return y; }).length}`;
   const keepNotes = host.querySelector('.pnotes');
   host.innerHTML = `<div class="bar"><div class="seg pchips">${PORT_CHIPS.map(([k, l]) => `<button data-c="${k}" class="${st.chip === k ? 'on' : ''}">${l}${count(k)}</button>`).join('')}</div><span class="sp"></span>
     <div class="legend plegend"><span><i class="ps-up"></i>Up</span><span><i class="ps-half"></i>Protocol down</span><span><i class="ps-down"></i>Down</span><span><i class="ps-off"></i>Disabled</span><span><i class="pe"></i>Errors</span><span>bar = traffic</span></div></div>

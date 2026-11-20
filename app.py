@@ -1557,7 +1557,7 @@ def panel_key():
 
 @app.get("/api/panel")
 def panel_get():
-    return jsonify(PANELS.get(panel_key()))
+    return jsonify({**PANELS.get(panel_key()), "maker_current": makerphoto.VERSION})
 
 
 @app.get("/api/panel/photo")
@@ -1577,7 +1577,7 @@ def panel_photo_set():
     if source and not makerphoto._allowed(source, getattr(router(), "vendor", "huawei")):
         source = ""
     try:
-        out = PANELS.set_photo(panel_key(), body.get("image"), by=me(), source=source)
+        out = PANELS.set_photo(panel_key(), body.get("image"), by=me(), source=source, maker_v=makerphoto.VERSION if source else 0)
     except ValueError as exc:
         raise DeviceError(str(exc))
     AUDIT.log(me(), "panel_photo", host=router().host, **({"source": source} if source else {}))

@@ -11,7 +11,8 @@ import urllib.parse
 import urllib.request
 
 MAX_PAGE = 2 * 1024 * 1024
-MAX_IMAGE = 3 * 1024 * 1024
+MAX_IMAGE = 6 * 1024 * 1024
+VERSION = 2                      # bump when the choice of picture changes: older maker photos are fetched again
 RETRY_AFTER = 24 * 3600          # a model the maker's site had no photo for is asked again a day later
 UA = "Mozilla/5.0 (compatible; NE8000-Manager device photo)"
 KINDS = {b"\xff\xd8\xff": "image/jpeg", b"\x89PNG": "image/png", b"RIFF": "image/webp", b"GIF8": "image/gif"}
@@ -56,34 +57,24 @@ def _get(url, vendor, limit):
 
 
 def image_urls(html, page_url, model=""):
-    """Candidate photo URLs on a product page, best first: MikroTik's full-size product picture
-    (product_files/<MODEL>_<n>.png), then the large version of the page's preview image, then the preview."""
-    out = []
-    want = re.sub(r"[^a-z0-9]", "", str(model).lower())
-    for m in re.finditer(r'(?:https?:)?//[^"\'\s>()]*?/product_files/([^"\'\s>/()]+?)\.(png|jpe?g|webp)', html, re.I):
-        name = re.sub(r"[^a-z0-9]", "", m.group(1).lower())
-        if want and name.startswith(want[:max(6, len(want) - 4)]) and not re.search(r"thumb|dimension|doc|manual", m.group(1), re.I):
-            out.append(m.group(0))
+    """Candidate photo URLs on a product page, best first. MikroTik pages name the device's own picture
+    rb_images/<id>_tm.webp in og:image; the same id has a full-size _hi_res.png and smaller _xl/_lg webp.
+    (product_files/ PNGs are not used: those are block diagrams and drawings.)"""
     og = ""
     for pat in (r'<meta[^>]+property=["\']og:image(?::secure_url)?["\'][^>]+content=["\']([^"\']+)',
                 r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+property=["\']og:image',
                 r'<meta[^>]+name=["\']twitter:image["\'][^>]+content=["\']([^"\']+)'):
         m = re.search(pat, html, re.I)
         if m:
-            og = m.group(1).replace("&amp;", "&")
+            og = urllib.parse.urljoin(page_url, m.group(1).replace("&amp;", "&"))
             break
+    out = []
+    m = re.search(r"^(.*/rb_images/\d+)_[a-z]+\.(?:webp|png|jpe?g)$", og)
+    if m:
+        out += [m.group(1) + "_hi_res.png", m.group(1) + "_xl.webp", m.group(1) + "_lg.webp"]
     if og:
-        big = re.sub(r"_tm\.(webp|png|jpe?g)$", "_hi_res.png", og)
-        if big != og:
-            out.append(big)
         out.append(og)
-    seen, res = set(), []
-    for u in out:
-        u = urllib.parse.urljoin(page_url, "https:" + u if u.startswith("//") else u)
-        if u not in seen:
-            seen.add(u)
-            res.append(u)
-    return res
+    return list(dict.fromkeys(out))
 
 
 class MakerPhotos:
@@ -111,7 +102,7 @@ class MakerPhotos:
 
     def get(self, vendor, model):
         """(bytes, mime, source page) of the maker's photo for this model; PhotoError if there is none."""
-        key = f"{vendor}-{slug(model)}"
+        key = f"v{VERSION}-{vendor}-{slug(model)}"
         with self.lock:
             idx = self._index()
             e = idx.get(key)
