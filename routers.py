@@ -58,6 +58,16 @@ class RouterStore:
         vendor = (d.get("vendor") or "huawei").lower()
         if vendor not in VENDORS:
             raise AuthError("Unsupported router make.")
+        kind = (d.get("kind") or "router").lower()
+        if kind not in ("router", "switch"):
+            raise AuthError("Unsupported device type.")
+        if kind == "switch":
+            out["kind"] = "switch"
+            if vendor == "huawei":
+                vrp = (d.get("vrp") or "vrp5").lower()
+                if vrp not in ("vrp5", "vrp8"):
+                    raise AuthError("Unsupported Huawei software.")
+                out["vrp"] = vrp
         if vendor != "huawei":       # Huawei routers keep exactly the fields they always had
             api = (d.get("api") or "api").lower()
             if api not in MT_API:

@@ -934,6 +934,12 @@ class MikroTikRouter(Router):
     def isis(self):
         return {"configured": False, "processes": [], "interfaces": [], "peers": [], "routes": [], "lsdb": "", "note": NOT_HERE}
 
+    def switching(self):
+        from switches import SwitchViews, mikrotik_api_switching
+        macs, vlans, poe, pvid = mikrotik_api_switching(self, None)
+        nb = {r["local"]: r["neighbor"] for r in self.neighbors()["lldp"]}
+        return SwitchViews._assemble(self, macs, vlans, poe, None, {}, pvid, nb)
+
     def mpls(self):
         ldp = []
         for n in self.q_or_empty("/mpls/ldp/neighbor", ttl=30):
@@ -1028,7 +1034,10 @@ class ApiRequired(SshRequired):
     """This page needs the MikroTik API: the browser asks for a login and tries again."""
 
 
-class MikroTikSnmpRouter(SnmpRouter):
+from switches import SwitchViews, mikrotik_api_switching  # noqa: E402
+
+
+class MikroTikSnmpRouter(SwitchViews, SnmpRouter):
     """A MikroTik read over SNMP (v2c community or v3). Signing in with a MikroTik login adds the API for BGP, OSPF,
     routes, logs, users and the console; that login is kept in memory only."""
     vendor = "mikrotik"
@@ -1174,7 +1183,16 @@ class MikroTikSnmpRouter(SnmpRouter):
 
     def interfaces(self):
         rows = super().interfaces()
-        types = {r["name"]: r["iftype"] for r in self.if_table().values()}
+        table = self.if_table()
+        types = {r["name"]: r["iftype"] for r in table.values()}
+        listed = set(table)
+        for idx, addrs in self._ip_map().items():     # an address on an interface the ifXTable does not list (seen on RouterOS 7)
+            if idx in listed or not addrs:
+                continue
+            name = _txt(self._walk_or_empty_ttl(IF + ".2", 300).get(idx)) or f"ifIndex {idx}"
+            rows.append({"name": name, "phy": "up", "protocol": "up", "in_util": 0.0, "out_util": 0.0, "in_errors": 0, "out_errors": 0,
+                         "admin_down": False, "type": "vlanif", "speed_mbps": 0, "parent": "", "ip": addrs[0], "ipv6": [], "vpn": "",
+                         "description": "", "vlan": "", "mtu": "", "l2": False, "secondary": addrs[1:], "util_history": []})
         for r in rows:
             r["type"] = self._kind(r["name"], {"iftype": types.get(r["name"])})
             r["parent"] = ""
@@ -1270,3 +1288,15 @@ class MikroTikSnmpRouter(SnmpRouter):
 
     def queue_stats(self, name):
         return {"queues": [], "raw": NOT_HERE}
+
+    def switching(self):
+        if not self.ssh:
+            return SwitchViews.switching(self)
+        macs, vlans, poe, pvid = mikrotik_api_switching(self.ssh, None)
+        if not poe:
+            poe, _ = self.snmp_poe({i: _txt(v) for i, v in self.walk(IFX + ".1", 300).items()})
+        _, ports = self._port_names()
+        stp = {ports.get(p, p): v for p, v in ((p, {1: "disabled", 2: "blocking", 3: "listening", 4: "learning", 5: "forwarding"}.get(v, ""))
+                                               for p, v in self._w("1.3.6.1.2.1.17.2.15.1.3", 30).items())}
+        nb = {r["local"]: r["neighbor"] for r in self.neighbors()["lldp"]}
+        return self._assemble(macs, vlans, poe, None, stp, pvid, nb)

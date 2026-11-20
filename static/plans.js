@@ -424,7 +424,8 @@ function nmWarnings() {
       else if (s.cls === 'nm-down' && (f.rx || 0) + (f.tx || 0) > 1e4) add(l.id, { severity: 'warning', kind: 'farend', title: 'The two ends disagree', detail: 'This end is down but the far end still counts traffic: the line may go elsewhere.', advice: 'Check the far-end interface picked for this line.' });
     }
   }
-  Object.values(out).forEach(a => a.sort((x, y) => (x.severity !== 'critical') - (y.severity !== 'critical')));
+  for (const id of Object.keys(out)) if (nmMuted('map:' + id)) out[id] = out[id].map(w => ({ ...w, muted: true }));
+  Object.values(out).forEach(a => a.sort((x, y) => (!!x.muted - !!y.muted) || (x.severity !== 'critical') - (y.severity !== 'critical')));
   return out;
 }
 /* The same device on two or more links: the same LLDP neighbour name, or the same neighbour MAC (ARP) on several
@@ -454,15 +455,29 @@ function nmRedundancy(arp, nb, ifv) {
 const nmRedHtml = iface => { const g = NM.redund && NM.redund.byIface[nmIfNorm(iface)]; if (!g) return '';
   return `<div class="witem ${/down/.test(g.role) ? 'crit' : ''}" style="${/down/.test(g.role) ? '' : 'border-left-color:var(--accent)'}"><b>Same device on ${g.members.length} links: ${esc(g.role)}</b>
     <div class="muted">${esc(g.label)}</div>${g.members.map(m => `<div>${esc(m.name)}: <b>${esc(m.role)}</b>${m.load ? ' · ' + Fmt.bps(m.load) : ''}</div>`).join('')}</div>`; };
-const nmWorst = ws => !ws || !ws.length ? '' : ws.some(w => w.severity === 'critical') ? 'crit' : 'warn';
+const nmLive = ws => (ws || []).filter(w => !w.muted);     // muted problems stay listed but stop counting
+const nmWorst = ws => { ws = nmLive(ws); return !ws.length ? '' : ws.some(w => w.severity === 'critical') ? 'crit' : 'warn'; };
 // the badge: a triangle with "!", red (critical, pulsing) or amber; the tooltip lists the problems
-const nmBadge = (ws, x, y, sc = 1) => !ws || !ws.length ? '' : `<g class="wbadge ${nmWorst(ws)}" transform="translate(${x},${y}) scale(${sc})"><title>${esc(ws.map(w => '⚠ ' + w.title + ': ' + w.detail).join('\n'))}</title>
+const nmBadge = (ws, x, y, sc = 1) => (ws = nmLive(ws), !ws.length) ? '' : `<g class="wbadge ${nmWorst(ws)}" transform="translate(${x},${y}) scale(${sc})"><title>${esc(ws.map(w => '⚠ ' + w.title + ': ' + w.detail).join('\n'))}</title>
   <path d="M0 -10 L10 7.5 L-10 7.5Z"/><text y="5.5" text-anchor="middle">!</text>${ws.length > 1 ? `<text class="n" x="10" y="-4">${ws.length}</text>` : ''}</g>`;
 // the problems of one line or device, for the side panel and the selection card
-function nmWarnHtml(ws) {
+function nmWarnHtml(ws, muteId) {
   if (!ws || !ws.length) return '';
-  return `<div class="wlist">${ws.map(w => `<div class="witem ${w.severity === 'critical' ? 'crit' : 'warn'}"><b>⚠ ${esc(w.title)}</b> <span class="faint">${esc(WARN_KIND[w.kind] || '')}${w.since ? ' · since ' + esc(ago(w.since)) : ''}</span>
-    <div>${esc(w.detail || '')}</div>${w.advice ? `<div class="muted">${esc(w.advice)}</div>` : ''}</div>`).join('')}</div>`;
+  const m = muteId && nmMuted(muteId), can = muteId && !DEMO && ME && ME.role !== 'viewer';
+  return `<div class="wlist">${ws.map(w => `<div class="witem ${w.muted ? 'muted' : w.severity === 'critical' ? 'crit' : 'warn'}"${w.muted ? ' style="opacity:.6;border-left-color:var(--faint)"' : ''}><b>⚠ ${esc(w.title)}</b> <span class="faint">${esc(WARN_KIND[w.kind] || '')}${w.since ? ' · since ' + esc(ago(w.since)) : ''}${w.muted ? ' · muted' : ''}</span>
+    <div>${esc(w.detail || '')}</div>${w.advice ? `<div class="muted">${esc(w.advice)}</div>` : ''}</div>`).join('')}
+    ${can ? (m ? `<div class="faint" style="font-size:12px">Muted by ${esc(m.by)}${m.note ? ': ' + esc(m.note) : ''}${m.until ? ' · until ' + esc(new Date(m.until * 1000).toLocaleString()) : ''} <button class="btn sm" onclick='nmMute(${attr(muteId)}, false)'>Unmute</button></div>`
+      : `<button class="btn sm" title="A known problem (down on purpose, being rebuilt): keep it listed but stop counting it and stop alerts" onclick='nmMute(${attr(muteId)}, true)'>Mute</button>`) : ''}</div>`;
+}
+const nmMuted = id => ((NM.health && NM.health.mutes) || {})[id];
+async function nmMute(id, on) {
+  try {
+    if (on) { const note = prompt('Why mute this? (e.g. "KIXP port down on purpose until the new cross-connect")', ''); if (note === null) return;
+      const days = prompt('Mute for how many days? Leave empty to keep it muted until you unmute it.', ''); if (days === null) return;
+      await post('/api/health/mute', { id, note, days: +days || 0 }); toast('Muted'); }
+    else { await post('/api/health/unmute', { id }); toast('Unmuted'); }
+    NM.health = await api('/api/health'); if (typeof nmDraw === 'function') nmDraw(); if (current === 'noc' || current === 'netmap') refresh();
+  } catch (e) { toast(e.message, true); }
 }
 async function nmTraffic() {
   try { const t = await api('/api/netmap/traffic'); NM.ifs = t.ifs; NM.peers = t.peers; NM.far = t.far || {}; } catch (e) { }
@@ -568,6 +583,6 @@ function nmShowSel(x, kind) {
     : (() => { const s = nmLinkState(x), t = NM.ifs[x.props.iface] || {}; return [['Line', x.props.label], ['Interface', x.props.iface], ['VLAN', x.props.vlan], ['Address', x.props.address], ['State', t.phy || x.props.state],
       ['Download ▼', nmRate(x.props.down === 'rx' ? t.rx : t.tx)], ['Upload ▲', nmRate(x.props.down === 'rx' ? t.tx : t.rx)], ['Utilisation in / out', t.in_util != null ? `${t.in_util}% / ${t.out_util}%` : ''],
       ['QoS plan', x.props.plan_kbps ? Fmt.bps(x.props.plan_kbps * 1000) : ''], ['Load vs plan', x.props.plan_kbps && s.pct != null ? Math.round(s.pct) + '%' : ''], ['BGP peers', x.props.peers ? x.props.peers.split(',').map(ip => `${ip} ${NM.peers[ip] || ''}`).join(', ') : '']]; })();
-  $('#nmSel').innerHTML = `<h3>Selection</h3>${nmWarnHtml((NM.warn || {})[x.id])}<table class="tbl"><tbody>${rows.filter(([, v]) => v !== '' && v != null).map(([k, v]) => `<tr><td class="faint">${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</tbody></table>
+  $('#nmSel').innerHTML = `<h3>Selection</h3>${nmWarnHtml((NM.warn || {})[x.id], 'map:' + x.id)}<table class="tbl"><tbody>${rows.filter(([, v]) => v !== '' && v != null).map(([k, v]) => `<tr><td class="faint">${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</tbody></table>
     ${kind === 'link' && x.props.iface ? nmRedHtml(x.props.iface) : ''}${kind === 'link' && x.props.iface ? `<button class="btn sm" onclick="showGraphs(${attr(x.props.iface)})">Graphs for ${esc(x.props.iface)}</button>` : ''}`;
 }

@@ -406,3 +406,9 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
 
 /* MikroTik routers: read-only in the app, and no IS-IS or VRP config editor */
 body[data-vendor=mikrotik] #side a[data-p=isis], body[data-vendor=mikrotik] #side a[data-p=config], body[data-vendor=mikrotik] #saveBtn { display: none !important; }
+/* Switching page only for switches and MikroTik devices; switches have no routing pages or billing */
+#side a[data-p=switching] { display: none; }
+body[data-kind=switch] #side a[data-p=switching], body[data-vendor=mikrotik] #side a[data-p=switching] { display: flex; }
+body[data-kind=switch] #side a[data-p=bgp], body[data-kind=switch] #side a[data-p=policies], body[data-kind=switch] #side a[data-p=ospf],
+body[data-kind=switch] #side a[data-p=isis], body[data-kind=switch] #side a[data-p=mpls], body[data-kind=switch] #side a[data-p=vpn],
+body[data-kind=switch] #side a[data-p=billing], body[data-kind=switch] #side a[data-p=config], body[data-kind=switch] #saveBtn { display: none !important; }

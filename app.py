@@ -107,7 +107,7 @@ ROUTERS = {}   # browser session id -> Router. Credentials are never stored.
 NAME_RE = re.compile(r"^[A-Za-z0-9/.:\-_]{1,64}$")
 
 VIEWS = ("overview", "interfaces", "vlans", "qos", "arp", "neighbors", "vpn_instances", "bgp", "ospf", "isis", "mpls",
-         "system", "hardware", "logs", "route_policies")
+         "system", "hardware", "logs", "route_policies", "switching")
 
 
 def router():
@@ -240,6 +240,90 @@ def audit_view():
     return jsonify(ok=True)
 
 
+VALUE_FILES_MAX = 512 * 1024      # settings files compared before and after a change (bigger stores are skipped)
+VALUE_SKIP = {"alerts_state.json", "billing_state.json", "audit.log"}
+
+
+def _settings_snapshot():
+    """The app's own settings files (routers, alerts, sites, IP plan...) as they are now: {file: (mtime, data)}."""
+    out = {}
+    try:
+        names = os.listdir(DATA_DIR)
+    except OSError:
+        return out
+    for n in names:
+        if not n.endswith(".json") or n in VALUE_SKIP:
+            continue
+        f = os.path.join(DATA_DIR, n)
+        try:
+            st = os.stat(f)
+            if st.st_size <= VALUE_FILES_MAX:
+                out[n] = (st.st_mtime, f)
+        except OSError:
+            pass
+    return out
+
+
+def _read_json(f):
+    try:
+        with open(f) as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
+def _flatten(d, prefix="", out=None):
+    out = {} if out is None else out
+    if isinstance(d, dict):
+        for k, v in d.items():
+            _flatten(v, f"{prefix}.{k}" if prefix else str(k), out)
+    elif isinstance(d, list) and d and all(isinstance(x, dict) for x in d):
+        for i, x in enumerate(d):      # lists of records: keyed by their id or name, so a removal does not shift the rest
+            key = x.get("id") or x.get("name") or x.get("key") or str(i)
+            _flatten(x, f"{prefix}[{key}]", out)
+    else:
+        out[prefix] = d
+    return out
+
+
+def _show(path, v):
+    if v is None:
+        return "—"
+    if any(SECRET_KEY_RE.search(part) or part in ("hash", "salt", "secret_key", "otp") for part in re.split(r"[.\[\]]", path) if part):
+        return "••••"
+    t = json.dumps(v, ensure_ascii=False) if isinstance(v, (list, dict, bool)) else str(v)
+    return t if len(t) <= 80 else t[:80] + "…"
+
+
+def value_changes(before):
+    """What a change did to the app's settings: ["file: key: old → new", ...] (secrets masked, at most 25)."""
+    out = []
+    for n, (mt, f) in _settings_snapshot().items():
+        old = before.get(n)
+        if old and old[0] == mt:
+            continue
+        new_d, old_d = _flatten(_read_json(f)), _flatten(old[2]) if old else {}
+        for k in sorted(set(new_d) | set(old_d)):
+            if k.endswith((".updated", ".created", ".time", ".at", ".ts")) or k in ("updated", "created"):
+                continue
+            if old_d.get(k) != new_d.get(k):
+                out.append(f"{n[:-5]}: {k}: {_show(k, old_d.get(k))} → {_show(k, new_d.get(k))}")
+                if len(out) >= 25:
+                    return out + ["…"]
+    return out
+
+
+@app.before_request
+def audit_before():
+    """Remember the settings before a change, so the audit log can show old → new values."""
+    if (request.method in ("POST", "PUT", "DELETE", "PATCH") and request.path.startswith("/api/")
+            and request.endpoint not in AUDIT_SKIP and request.endpoint not in ("cli", "audit_view")):
+        try:
+            g.values_before = {n: (mt, f, _read_json(f)) for n, (mt, f) in _settings_snapshot().items()}
+        except Exception:
+            g.values_before = None
+
+
 @app.after_request
 def audit_changes(resp):
     """Every change sent through the app is logged, even where the endpoint logs nothing itself."""
@@ -251,8 +335,15 @@ def audit_changes(resp):
                 body = request.get_json(silent=True)
                 detail = audit_summary(body)[:1500] if body else ""
                 ev = "refused" if resp.status_code >= 400 else "command" if request.endpoint == "cli" else "changed"
+                vals = value_changes(g.values_before) if ev == "changed" and getattr(g, "values_before", None) is not None else []
                 AUDIT.log(u["username"], ev, what=request.endpoint or request.path,
-                          method=request.method, path=request.path, status=resp.status_code, detail=detail, ip=client_ip())
+                          method=request.method, path=request.path, status=resp.status_code, detail=detail, ip=client_ip(),
+                          **({"values": vals} if vals else {}))
+        elif (resp.status_code < 400 and getattr(g, "audited", False) and getattr(g, "values_before", None) is not None):
+            vals = value_changes(g.values_before)       # the endpoint logged itself: add what it changed in the settings
+            u = current_user()
+            if vals and u:
+                AUDIT.log(u["username"], "values_changed", what=request.endpoint or request.path, values=vals, ip=client_ip())
     except Exception as exc:          # the audit must never break a request
         print(f"audit: {exc}", flush=True)
     return resp
@@ -639,6 +730,26 @@ def connect_mikrotik(saved, host, ssh_port, snmp_login, username, password, data
     return r, warning
 
 
+def connect_huawei_switch(saved, host, ssh_port, snmp_login, username, password):
+    """A Huawei switch: SNMP for monitoring (required), SSH with the switch's own CLI style when someone signs in. Read-only."""
+    import switches
+    if not snmp_login:
+        raise DeviceError("Switches are monitored over SNMP: add its SNMP login under Manager > Routers.")
+    r = switches.HuaweiSwitch(host, snmp_login, ssh_port, saved.get("vrp") or "vrp5")
+    warning = ""
+    if username and password:
+        THROTTLE_ROUTER.check(me())
+        try:
+            r.attach_ssh(username, password)
+        except DeviceError as exc:
+            THROTTLE_ROUTER.fail(me())
+            AUDIT.log(me(), "router_connect_failed", host=host, ip=client_ip(), via="ssh", why=fail_reason(exc, password))
+            warning = f"Connected over SNMP, but the SSH login failed: {exc}"
+        else:
+            THROTTLE_ROUTER.ok(me())
+    return r, warning
+
+
 @app.post("/api/connect")
 def connect():
     data = request.get_json(force=True)
@@ -672,6 +783,8 @@ def connect():
         vendor = (saved or {}).get("vendor") or ("mikrotik" if data.get("vendor") == "mikrotik" else "huawei")
         if vendor == "mikrotik":
             r, warning = connect_mikrotik(saved or {}, host, port, snmp_login, username, password, data)
+        elif (saved or {}).get("kind") == "switch":
+            r, warning = connect_huawei_switch(saved, host, port, snmp_login, username, password)
         elif snmp_login and not data.get("ssh_only"):
             # SNMP first: no router password needed for monitoring. SSH joins if a login was typed.
             try:
@@ -681,7 +794,7 @@ def connect():
                 if not (username and password):
                     raise SshRequired(f"{exc}. Enter your SSH login to connect over SSH instead.")
                 warning = f"{exc}. Connected over SSH instead."
-        if vendor == "huawei" and (r is None or (username and password)):
+        if vendor == "huawei" and (saved or {}).get("kind") != "switch" and (r is None or (username and password)):
             THROTTLE_ROUTER.check(me())
             try:
                 if r is None:
@@ -709,6 +822,8 @@ def connect():
     else:
         r.billing = billing.BillingEngine(r, config_file=os.path.join(DATA_DIR, "billing.json"),
                                           state_file=os.path.join(DATA_DIR, "billing_state.json"))
+    if not r.demo and (saved or {}).get("kind") == "switch":
+        r.kind = "switch"
     session["sid"] = uuid.uuid4().hex
     session["router_id"] = "" if r.demo else (data.get("router_id") or "")
     ROUTERS[session["sid"]] = r
@@ -717,7 +832,7 @@ def connect():
     netmap_background(r, netmap_key(r))     # the map takes the longest to read: start it now too
     start_billing(r)
     AUDIT.log(me(), "router_connect", host=r.host, demo=r.demo, via=r.via, ip=client_ip())
-    return jsonify(ok=True, host=r.host, demo=r.demo, via=r.via, warning=warning, vendor=getattr(r, "vendor", "huawei"))
+    return jsonify(ok=True, host=r.host, demo=r.demo, via=r.via, warning=warning, vendor=getattr(r, "vendor", "huawei"), kind=getattr(r, "kind", "router"))
 
 
 @app.post("/api/connect/ssh")
@@ -757,7 +872,7 @@ def status():
     r = ROUTERS.get(session.get("sid"))
     return jsonify(connected=r is not None, host=r.host if r else None, demo=r.demo if r else False,
                    via=r.via if r else None, ssh=bool(r and r.can_configure), router_id=session.get("router_id", "") if r else "",
-                   vendor=getattr(r, "vendor", "huawei") if r else None,
+                   vendor=getattr(r, "vendor", "huawei") if r else None, kind=getattr(r, "kind", "router") if r else None,
                    api=bool(r and getattr(r, "vendor", "") == "mikrotik" and (getattr(r, "api", None) or getattr(r, "ssh", None))))
 
 
@@ -1229,6 +1344,64 @@ def demo_flow_subnets(r):
     return out
 
 
+# ---- muted problems: a known issue (a peer that is down on purpose, a link being rebuilt) stops counting ------------
+MUTES_PATH = os.path.join(DATA_DIR, "health_muted.json")
+MUTES_LOCK = threading.Lock()
+
+
+def mutes_load():
+    try:
+        with open(MUTES_PATH) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def mutes(rid):
+    """{problem id: {by, at, note, until}} for a router, without the expired ones."""
+    now = time.time()
+    return {k: v for k, v in (mutes_load().get(rid) or {}).items() if not v.get("until") or v["until"] > now}
+
+
+def split_muted(rid, findings):
+    m = mutes(rid)
+    return [f for f in findings if f["id"] not in m], [{**f, "muted": m[f["id"]]} for f in findings if f["id"] in m]
+
+
+@app.post("/api/health/mute")
+def health_mute():
+    rid = session.get("router_id", "")
+    if not rid:
+        raise DeviceError("Muting works for saved routers only.")
+    d = request.get_json(force=True)
+    fid = str(d.get("id") or "")[:200]
+    if not fid:
+        raise DeviceError("Which problem?")
+    note = str(d.get("note") or "").strip()[:200]
+    try:
+        days = float(d.get("days") or 0)
+    except (TypeError, ValueError):
+        days = 0
+    with MUTES_LOCK:
+        allm = mutes_load()
+        allm.setdefault(rid, {})[fid] = {"by": me(), "at": time.time(), "note": note, "until": time.time() + days * 86400 if days > 0 else None}
+        auth._write_private(MUTES_PATH, json.dumps(allm, indent=1))
+    AUDIT.log(me(), "problem_muted", problem=fid, note=note, days=days or "until unmuted", router=rid)
+    return jsonify(ok=True)
+
+
+@app.post("/api/health/unmute")
+def health_unmute():
+    rid = session.get("router_id", "")
+    fid = str((request.get_json(force=True) or {}).get("id") or "")
+    with MUTES_LOCK:
+        allm = mutes_load()
+        (allm.get(rid) or {}).pop(fid, None)
+        auth._write_private(MUTES_PATH, json.dumps(allm, indent=1))
+    AUDIT.log(me(), "problem_unmuted", problem=fid, router=rid)
+    return jsonify(ok=True)
+
+
 @app.get("/api/health")
 def health_report():
     """Smart health check for the connected router: problems found, latency targets and when it last ran."""
@@ -1239,6 +1412,8 @@ def health_report():
     if not rid:
         return jsonify(findings=[], status={}, latency=[], targets=[], note="The health check runs for saved routers only (Manager > Routers).")
     out = HEALTH.report(rid)
+    out["findings"], out["muted"] = split_muted(rid, out.get("findings", []))
+    out["mutes"] = mutes(rid)
     if not (SAVED.get(rid) or {}).get("snmp"):
         out["note"] = "Add this router's SNMP login under Manager > Routers so the health check can read its links and optics."
     return jsonify(out)
@@ -1253,11 +1428,16 @@ def alert_sources():
     out = []
     for r in list(SAVED.routers):
         rid, name = r["id"], r.get("name") or r.get("host")
+        muted = mutes(rid)
         for f in HEALTH.report(rid).get("findings", []):
+            if f["id"] in muted:
+                continue
             out.append({"key": f"{rid}:{f['id']}", "kind": alerts.HEALTH_MAP.get(f["kind"], "router"), "severity": f.get("severity", "warning"),
                         "title": f"{f.get('title') or f['kind']}: {f.get('target', '')}".rstrip(": "), "detail": f.get("detail", ""),
                         "target": f.get("target", ""), "description": f.get("description", ""), "where": name, "since": f.get("since")})
         for kind, key, state, info, since in TRACK.down_sessions(rid):
+            if f"session:{kind}:{key}" in muted:
+                continue
             out.append({"key": f"{rid}:{kind}:{key}", "kind": "session_down", "severity": "critical", "title": f"{kind.upper()} session down: {key}",
                         "detail": (f"state {state}" if state else "down") + (f", {info}" if info else ""), "target": key, "where": name, "since": since})
     for st in SITEREG.sites():

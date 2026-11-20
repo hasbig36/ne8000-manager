@@ -194,7 +194,7 @@ const I = {
 };
 const NAV = [
   [null, [['dashboard', 'Dashboard', I.dash], ['health', 'Health check', I.health], ['alerts', 'Alerts', I.bell], ['sites', 'Sites', I.site], ['changes', 'Change log', I.log]]],
-  ['Network', [['interfaces', 'Interfaces', I.ifs], ['graphs', 'Graphs', I.graph], ['netflow', 'Traffic per address', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
+  ['Network', [['interfaces', 'Interfaces', I.ifs], ['switching', 'Switching (ports, MACs, PoE)', I.vlan], ['graphs', 'Graphs', I.graph], ['netflow', 'Traffic per address', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
   ['IP', [['ipplan', 'IP plan', I.plan], ['addresses', 'Addresses', I.ip], ['routes', 'Routes', I.route], ['arp', 'ARP', I.ip], ['vpn', 'VPN instances', I.ip], ['neighbors', 'Neighbors (LLDP)', I.ip]]],
   ['Planning', [['netmap', 'Network map', I.plan], ['plans', 'Network plans', I.plan]]],
   ['Billing', [['billing', 'Splynx billing', I.bill]]],
@@ -301,6 +301,7 @@ function ago(t) { if (!t) return '-'; const s = Math.max(0, Date.now() / 1000 - 
 PAGES.health = async c => {
   const h = await api('/api/health').catch(e => ({ note: 'Router checks: ' + (e.message || e) + ' Server health below still works.' })); const f = h.findings || [], st = h.status || {}, lat = h.latency || [];
   const cr = f.filter(x => x.severity === 'critical').length, slow = f.filter(x => x.slow).length;
+  const muted = h.muted || [], canMute = !DEMO && ME && ME.role !== 'viewer' && !h.note;
   const t = (l, v, s, col) => `<div class="tile"><div class="l">${l}</div><div class="v" ${col ? `style="color:var(${col})"` : ''}>${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`;
   const notes = [h.note, st.error, /^unavailable/.test(st.ping || '') ? 'Latency checks: ' + st.ping.replace(/^unavailable: /, '') + '. The server needs to be allowed to ping (Docker sets this by default).' : ''].filter(Boolean);
   c.innerHTML = head('Health check', `checks every ${Math.round((h.interval || 300) / 60)} minutes and learns each link's normal levels`, `<button class="btn" id="hRun">Check now</button>`) +
@@ -309,6 +310,7 @@ PAGES.health = async c => {
     ${t('Slowing customers', slow, 'errors, drops, full links, latency', slow ? '--bad' : '--ok')}
     ${t('Checked', `${st.interfaces ?? 0} links`, `${st.optics ?? 0} SFPs · ${st.targets ?? 0} ping targets · ${st.time ? ago(st.time) : 'not yet'}`)}</div>
     <div class="card"><h3>Problems found</h3>${st.time || st.demo ? '' : `<p class="muted">The first check runs within 5 minutes of the server starting. "Unusual" levels need about ${h.learn_hours || 2} hours of history first; fixed limits (errors, full links, SFP alarm levels) apply straight away.</p>`}<div id="hF"></div></div>
+    ${muted.length ? `<div class="card"><h3>Muted <span class="muted" style="font-weight:400;font-size:12px">known problems that do not count and send no alerts</span></h3>${muted.map(x => `<div class="row" style="gap:8px;align-items:center;padding:4px 0;border-top:1px solid var(--line)"><span class="pill">${esc(x.severity)}</span><b>${esc(x.title)}</b> ${esc(x.target)}<span class="faint">${esc(x.muted.by)}${x.muted.note ? ': ' + esc(x.muted.note) : ''}${x.muted.until ? ' · until ' + esc(new Date(x.muted.until * 1000).toLocaleString()) : ''}</span><span class="sp"></span>${canMute ? `<button class="btn sm" onclick='nmMute(${attr(x.id)}, false)'>Unmute</button>` : ''}</div>`).join('')}</div>` : ''}
     <div class="card"><h3>Latency and loss <span class="muted" style="font-weight:400;font-size:12px">pinged from this server</span><span class="sp"></span><button class="btn sm" id="hTg">Ping targets…</button></h3><div id="hL"></div></div>
     <div class="card" id="hSrv"><h3>Server health <span class="muted" style="font-weight:400;font-size:12px">the machine this app runs on</span></h3><p class="muted">Reading the server…</p></div>`;
   serverHealth();
@@ -316,7 +318,7 @@ PAGES.health = async c => {
     { t: 'Problem', k: 'title', cls: 'wrap', f: x => `<b>${esc(x.title)}</b> <span class="faint">${esc(HK[x.kind] || '')}</span>${x.slow ? ' <span class="pill p-bad" title="likely to make customers slow">slows customers</span>' : ''}<div class="muted">${esc(x.detail)}</div>` },
     { t: 'Where', k: 'target', f: x => `<b>${esc(x.target)}</b>` }, { t: 'Customer / description', k: 'description' },
     { t: 'Since', k: 'since', f: x => ago(x.since) }, { t: 'What to do', sort: false, cls: 'wrap muted', f: x => esc(x.advice) },
-    { t: '', sort: false, cls: 'acts', f: x => /\//.test(x.target) ? `<button class="btn sm" onclick='showGraphs(${attr(x.target)})'>Graph</button>` : '' }],
+    { t: '', sort: false, cls: 'acts', f: x => (/\//.test(x.target) ? `<button class="btn sm" onclick='showGraphs(${attr(x.target)})'>Graph</button>` : '') + (canMute ? `<button class="btn sm" title="A known problem: keep it listed below but stop counting it and stop alerts" onclick='event.stopPropagation();nmMute(${attr(x.id)}, true)'>Mute</button>` : '') }],
     f, { empty: st.time || st.demo ? 'No problems found. Everything is within its normal levels.' : 'Waiting for the first check.', onRow: x => /\//.test(x.target) && interfaceDrawer(x.target) });
   table($('#hL'), [{ t: 'Address', k: 'ip', cls: 'mono', f: x => `<b>${esc(x.ip)}</b>` }, { t: 'Name', k: 'label' },
     { t: 'Average', k: 'avg', num: true, f: x => x.error ? `<span class="faint">${esc(x.error)}</span>` : x.avg == null ? '<span class="faint">no reply</span>' : x.avg.toFixed(1) + ' ms' },
@@ -1074,6 +1076,31 @@ PAGES.arp = async c => {
     r.static.map(line => ({ line })), { filter: false, toolbar: `<button class="btn" onclick="arpForm()">+ Static ARP</button>`, empty: 'None' });
 };
 function arpForm() { change({ title: 'Static ARP', action: 'arp.static_add', fields: [{ k: 'ip', label: 'IP', ph: '10.0.0.2' }, { k: 'mac', label: 'MAC', ph: '00e0-fc12-3456' }, { k: 'vpn', label: 'VPN instance', ph: 'optional' }] }); }
+
+PAGES.switching = async c => {
+  const r = await api('/api/view/switching');
+  const tile = (l, v) => `<div class="tile"><div class="l">${l}</div><div class="v">${v}</div></div>`;
+  const up = r.ports.filter(p => p.phy === 'up').length, poeOn = r.ports.filter(p => p.poe && p.poe.status === 'on');
+  c.innerHTML = head('Switching', 'ports with their VLANs, the MAC addresses behind them, PoE and spanning tree') + (r.note ? `<div class="card muted">${esc(r.note)}</div>` : '') +
+    `<div class="tiles">${tile('Ports up', `${up} / ${r.ports.length}`)}${tile('MAC addresses', r.macs.length)}${tile('VLANs', r.vlans.length)}${tile('PoE ports on', r.poe_budget ? `${poeOn.length} · ${r.poe_budget.used} of ${r.poe_budget.watts} W` : poeOn.length)}</div>
+    <div class="card"><h3>Ports</h3><div id="swP"></div></div>
+    <div class="card"><h3>MAC table</h3><div class="faint" style="font-size:12.5px;margin-bottom:6px">Type part of a MAC (aa:bb:cc…), a port or a VLAN to find where a device is.</div><div id="swMf" style="font-size:12.5px;margin-bottom:6px"></div><div id="swM"></div></div>
+    <div class="card"><h3>VLANs</h3><div id="swV"></div></div>`;
+  const vl = a => a.length ? a.map(esc).join(', ') : '<span class="faint">-</span>';
+  table($('#swP'), [{ t: 'Port', k: 'name', f: p => `<b>${esc(p.name)}</b>` }, { t: 'State', k: 'phy', f: p => p.admin_down ? '<span class="faint">disabled</span>' : p.phy === 'up' ? '<span class="ok">up</span>' : '<span class="bad">down</span>' },
+    { t: 'Speed', k: 'speed_mbps', num: true, f: p => p.speed_mbps ? (p.speed_mbps >= 1000 ? p.speed_mbps / 1000 + 'G' : p.speed_mbps + 'M') : '' },
+    { t: 'Description', k: 'description', cls: 'wrap', f: p => esc(p.description) }, { t: 'Untagged', k: 'untagged', f: p => vl(p.untagged) }, { t: 'Tagged', k: 'tagged', cls: 'wrap', f: p => vl(p.tagged) },
+    { t: 'MACs', k: 'macs', num: true, f: p => p.macs ? `<a href="#" data-mp="${esc(p.name)}">${p.macs}</a>` : '0' },
+    { t: 'PoE', k: 'poe', f: p => p.poe ? `${esc(p.poe.status)}${p.poe.watts != null ? ` · ${p.poe.watts} W` : ''}` : '' }, { t: 'STP', k: 'stp', f: p => p.stp === 'blocking' ? '<span class="warnc">blocking</span>' : esc(p.stp) },
+    { t: 'Errors in/out', k: 'in_errors', num: true, f: p => p.in_errors + p.out_errors ? `<span class="warnc">${p.in_errors} / ${p.out_errors}</span>` : '0' },
+    { t: 'Neighbour', k: 'neighbor', f: p => esc(p.neighbor) }], r.ports, { empty: 'No switch ports reported' });
+  const macs = port => { $('#swMf').innerHTML = port ? `Showing the MACs on <b>${esc(port)}</b> · <a href="#" data-mall>show all</a>` : '';
+    table($('#swM'), [{ t: 'MAC', k: 'mac', cls: 'mono' }, { t: 'VLAN', k: 'vlan' }, { t: 'Port', k: 'port', f: m => `<b>${esc(m.port)}</b>` }, { t: 'Type', k: 'type' }], port ? r.macs.filter(m => m.port === port) : r.macs, { empty: 'No MAC addresses learnt' }); };
+  macs('');
+  table($('#swV'), [{ t: 'VLAN', k: 'id', num: true, f: v => `<b>${esc(v.id)}</b>` }, { t: 'Name', k: 'name' }, { t: 'Untagged ports', k: 'untagged', cls: 'wrap', f: v => vl(v.untagged) }, { t: 'Tagged ports', k: 'tagged', cls: 'wrap', f: v => vl(v.tagged) }], r.vlans, { empty: 'No VLANs reported' });
+  $('#swP').onclick = e => { const a = e.target.closest('[data-mp]'); if (!a) return; e.preventDefault(); macs(a.dataset.mp); $('#swM').scrollIntoView({ block: 'center' }); };
+  $('#swMf').onclick = e => { if (!e.target.closest('[data-mall]')) return; e.preventDefault(); macs(''); };
+};
 
 PAGES.vpn = async c => {
   const r = await api('/api/view/vpn_instances');
@@ -1875,7 +1902,7 @@ PAGES.noc = async c => {
       <p class="muted">A <span class="wdot warn">⚠</span> on a line, a device or a town is a warning: high or changed latency, a longer path, a port filling up, flapping, errors, falling light, a fibre event from the OTDR. Click it to see what and since when.</p>
       <p class="muted">Click a line, then <b>Edit</b> to correct its details, or <b>Delete</b> / <b>Hide</b> to take it off the map.</p><div id="ncHid"></div>`;
       nocHidden(); return; }
-    const wh = nmWarnHtml((NM.warn || {})[x.id]);
+    const wh = nmWarnHtml((NM.warn || {})[x.id], 'map:' + x.id);
     if (kind === 'link') {
       const p = x.props, s = nmLinkState(x), t = NM.ifs[p.iface] || {};
       el.innerHTML = `<h3>${esc(p.label || p.iface || 'Line')}</h3><div class="row" style="gap:6px;margin:-2px 0 8px">${p.manual
@@ -1907,8 +1934,8 @@ PAGES.noc = async c => {
   const warnList = () => {
     const el = $('#ncS'), d = NM.data.diagram, W = NM.warn || {}; if (!el) return;
     const items = Object.entries(W).map(([id, ws]) => [d.links.find(l => l.id === id) || d.nodes.find(n => n.id === id), ws, d.links.some(l => l.id === id) ? 'link' : 'node']).filter(([x]) => x)
-      .sort((a, b) => (nmWorst(a[1]) !== 'crit') - (nmWorst(b[1]) !== 'crit'));
-    el.innerHTML = `<h3>Warnings (${items.length})</h3>` + (items.length ? items.map(([x, ws, k], i) => `<div class="wpick" data-i="${i}"><b>${esc(k === 'link' ? x.props.label || x.props.iface || 'Line' : x.label)}</b>${nmWarnHtml(ws)}</div>`).join('') : '<p class="muted">Nothing wrong right now.</p>');
+      .sort((a, b) => (!nmWorst(a[1]) - !nmWorst(b[1])) || (nmWorst(a[1]) !== 'crit') - (nmWorst(b[1]) !== 'crit'));
+    el.innerHTML = `<h3>Warnings (${items.filter(([, ws]) => nmWorst(ws)).length}${items.some(([, ws]) => !nmWorst(ws)) ? ` <span class="faint" style="font-weight:400">+ ${items.filter(([, ws]) => !nmWorst(ws)).length} muted</span>` : ''})</h3>` + (items.length ? items.map(([x, ws, k], i) => `<div class="wpick" data-i="${i}"><b>${esc(k === 'link' ? x.props.label || x.props.iface || 'Line' : x.label)}</b>${nmWarnHtml(ws)}</div>`).join('') : '<p class="muted">Nothing wrong right now.</p>');
     el.querySelectorAll('.wpick').forEach(w => w.onclick = () => { const [x, , k] = items[+w.dataset.i]; NM.sel = x.id; NM.noc.pick(x, k); nmDraw(); });
   };
   $('#ncWt').onclick = warnList;
@@ -1933,7 +1960,7 @@ PAGES.noc = async c => {
     NM.data.diagram.links.filter(l => (ups.has(l.from) || ups.has(l.to)) && l.props.iface).forEach(l => { if (seen.has(l.props.iface)) return; seen.add(l.props.iface); const s = nmLinkState(l); if (s.down || s.up) any = true; tin += s.down || 0; tout += s.up || 0; });
     $('#ncIn').textContent = any ? Fmt.bps(tin) : '-'; $('#ncOut').textContent = any ? Fmt.bps(tout) : '-';
     if (picked && picked[1] === 'link') { const l = NM.data.diagram.links.find(x => x.id === picked[0].id); if (l) side(l, 'link'); }
-    const all = Object.values(NM.warn || {}), crit = all.filter(ws => nmWorst(ws) === 'crit').length;
+    const all = Object.values(NM.warn || {}).filter(ws => nmWorst(ws)), crit = all.filter(ws => nmWorst(ws) === 'crit').length;
     $('#ncW').innerHTML = all.length ? `${all.length}${crit ? ` <span style="font-size:13px;font-weight:500">${crit} critical</span>` : ''}` : '0'; $('#ncW').className = 'v ' + (crit ? 'bad' : all.length ? 'warnc' : 'okc');
     if (NM.geo && GEO.sel && !picked) geoSide(); };
   const tiles = async () => {
@@ -2191,7 +2218,7 @@ async function start() {
   if (!s.connected) { $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden'); $('#tHost').textContent = 'not connected'; $('#logoutBtn').textContent = 'Connect router'; $('#saveBtn').style.display = 'none';
     $('#logoutBtn').onclick = () => { location.hash = ''; location.reload(); }; return go(want); }
   window.onhashchange = null;
-  DEMO = s.demo; VIA = s.via || ''; VENDOR = s.vendor || 'huawei'; document.body.dataset.vendor = VENDOR; $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden');
+  DEMO = s.demo; VIA = s.via || ''; VENDOR = s.vendor || 'huawei'; document.body.dataset.vendor = VENDOR; document.body.dataset.kind = s.kind || 'router'; $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden');
   routerSwitcher(s);
   topbar().catch(() => {}); setInterval(() => { if (!document.hidden) topbar().catch(() => {}); }, 30000);
   go(location.hash.slice(1) || 'dashboard');

@@ -91,7 +91,10 @@ def _os_name():
 
 
 def _host_os():
-    """The host's distribution as far as the kernel build string tells (Docker hides the host's files)."""
+    """The host's distribution: its os-release when mounted (docker-compose.yml), else what the kernel build string tells."""
+    for line in _read("/host/os-release").splitlines():
+        if line.startswith("PRETTY_NAME="):
+            return line.split("=", 1)[1].strip('"')
     v = _read("/proc/version")
     for name in ("Ubuntu", "Debian", "Red Hat", "CentOS", "Rocky", "AlmaLinux", "Fedora", "SUSE", "Alpine", "Amazon"):
         if name.lower() in v.lower():
@@ -147,7 +150,7 @@ def report(data_dir):
     out = {
         "time": time.time(),
         "host": {
-            "hostname": socket.gethostname(),
+            "hostname": _read("/host/hostname") or socket.gethostname(),
             "kernel": platform.release(),
             "arch": platform.machine(),
             "host_os": _host_os(),

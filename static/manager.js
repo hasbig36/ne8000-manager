@@ -52,7 +52,7 @@ PAGES.routers = async c => {
   c.innerHTML = head('Routers', 'the routers people can connect to', `<button class="btn primary" id="rtAdd">+ Router</button>`) +
     `<div class="card"><div id="rtT"></div><p class="faint" style="font-size:12.5px;margin-bottom:0">Once at least one router is saved, the app only connects to saved routers and the connect screen shows them as a list.
     Router passwords (SSH, or the MikroTik API) are never stored: each person types their own. An optional read-only SNMP login is kept on this server (never shown here) so people can connect and monitor without one.</p></div>`;
-  table($('#rtT'), [{ t: 'Name', k: 'name', f: r => `<b>${esc(r.name)}</b>` }, { t: 'Make', k: 'vendor', f: r => r.vendor === 'mikrotik' ? `MikroTik <span class="faint">${esc(({ api: 'API', 'api-ssl': 'API-SSL', rest: 'REST', 'rest-http': 'REST http' })[r.api] || 'API')}</span>` : 'Huawei' }, { t: 'Address', k: 'host', f: r => `<span class="mono">${esc(r.host)}:${r.port}</span>` },
+  table($('#rtT'), [{ t: 'Name', k: 'name', f: r => `<b>${esc(r.name)}</b>` }, { t: 'Make', k: 'vendor', f: r => (r.vendor === 'mikrotik' ? `MikroTik <span class="faint">${esc(({ api: 'API', 'api-ssl': 'API-SSL', rest: 'REST', 'rest-http': 'REST http' })[r.api] || 'API')}</span>` : 'Huawei' + (r.kind === 'switch' ? ` <span class="faint">${r.vrp === 'vrp8' ? 'VRP8' : 'VRP5'}</span>` : '')) + (r.kind === 'switch' ? ' · switch' : '') }, { t: 'Address', k: 'host', f: r => `<span class="mono">${esc(r.host)}:${r.port}</span>` },
     { t: 'Default username', k: 'username', f: r => esc(r.username) || '<span class="faint">none</span>' },
     { t: 'Site', k: 'site', f: r => r.site ? esc(((SR.d && SR.d.sites.find(s => s.id === r.site)) || {}).code || '?') : '<span class="warnc">needs a site</span>' },
     { t: 'SNMP', k: 'snmp', f: r => r.snmp ? (r.snmp.version === 'v2c' ? 'v2c community' : `v3 <span class="mono">${esc(r.snmp.user)}</span>`) : `<span class="faint">off (${r.vendor === 'mikrotik' ? 'API' : 'SSH'} only)</span>` }, { t: 'Notes', k: 'notes', cls: 'wrap', f: r => esc(r.notes) },
@@ -62,7 +62,10 @@ PAGES.routers = async c => {
     const m = $('#modal'), v = k => r ? esc(r[k] ?? '') : '';
     m.innerHTML = `<h2>${r ? 'Edit ' + esc(r.name) : 'New router'}</h2><div class="form">
       <label>Name</label><input id="frName" value="${v('name')}" placeholder="BNG-NDOVU1" autocomplete="off">
-      <label>Make</label><select id="frVendor"><option value="huawei">Huawei (NE8000 and other VRP routers)</option><option value="mikrotik" ${r && r.vendor === 'mikrotik' ? 'selected' : ''}>MikroTik (RouterOS v6 / v7)</option></select>
+      <label>Make</label><select id="frVendor"><option value="huawei">Huawei (NE8000 and other VRP routers)</option><option value="mikrotik" ${r && r.vendor === 'mikrotik' ? 'selected' : ''}>MikroTik (RouterOS v6 / v7, SwOS)</option></select>
+      <label>Type</label><select id="frKind"><option value="router">Router</option><option value="switch" ${r && r.kind === 'switch' ? 'selected' : ''}>Switch</option></select>
+      <div class="hwSw"><label>Huawei software</label><select id="frVrp"><option value="vrp5">VRP5: S-series campus switches (S5700, S5720, S5735, S6720, S1720…)</option><option value="vrp8" ${r && r.vrp === 'vrp8' ? 'selected' : ''}>VRP8: CloudEngine (CE6800, CE8800, CE12800…)</option></select>
+      <div class="help">Switches are monitored over SNMP (fill in SNMP below). An SSH login adds the console. Read-only: the app changes nothing on switches yet.</div></div>
       <label>Management IP / hostname</label><input id="frHost" value="${v('host')}" placeholder="192.168.0.10" autocomplete="off">
       <label>SSH port</label><input id="frPort" type="number" value="${r ? r.port : 22}">
       <div class="mtOnly"><label>MikroTik API</label><select id="frApi">${[['api', 'API, port 8728 (v6 and v7)'], ['api-ssl', 'API-SSL, port 8729 (v6 and v7, encrypted)'], ['rest', 'REST over https, port 443 (v7)'], ['rest-http', 'REST over http, port 80 (v7, not encrypted)']].map(([k, t]) => `<option value="${k}" ${r && r.api === k ? 'selected' : ''}>${t}</option>`).join('')}</select>
@@ -83,14 +86,15 @@ PAGES.routers = async c => {
       <div class="err"></div><div class="actions"><button class="btn" data-a="c">Cancel</button><button class="btn primary" data-a="s">${r ? 'Save' : 'Add router'}</button></div>`;
     $('#modalBg').classList.remove('hidden'); $('#frName').focus();
     const vis = () => { const mt = $('#frVendor').value === 'mikrotik', v2 = $('#fsVer').value === 'v2c';
+      m.querySelector('.hwSw').style.display = !mt && $('#frKind').value === 'switch' ? '' : 'none';
       m.querySelectorAll('.mtOnly').forEach(e => e.style.display = mt ? '' : 'none'); m.querySelector('.v2Only').style.display = v2 ? '' : 'none'; m.querySelector('.v3Only').style.display = v2 ? 'none' : '' };
-    $('#frVendor').onchange = vis; $('#fsVer').onchange = vis; vis();
+    $('#frVendor').onchange = vis; $('#fsVer').onchange = vis; $('#frKind').onchange = vis; vis();
     m.querySelector('.actions').onclick = async e => {
       if (e.target.dataset.a === 'c') return closeModal(); if (e.target.dataset.a !== 's') return;
       const body = { name: $('#frName').value, host: $('#frHost').value, port: $('#frPort').value, username: $('#frUser').value, notes: $('#frNotes').value, site: $('#frSite').value,
         snmp_user: $('#fsUser').value, snmp_auth_proto: $('#fsAuth').value, snmp_auth_key: $('#fsAuthKey').value, snmp_priv_proto: $('#fsPriv').value,
         snmp_priv_key: $('#fsPrivKey').value, snmp_port: $('#fsPort').value, snmp_version: $('#fsVer').value, snmp_community: $('#fsComm').value,
-        vendor: $('#frVendor').value, api: $('#frApi').value, api_port: $('#frApiPort').value };
+        vendor: $('#frVendor').value, api: $('#frApi').value, api_port: $('#frApiPort').value, kind: $('#frKind').value, vrp: $('#frVrp').value };
       if (body.snmp_version === 'v2c') body.snmp_user = '';
       try {
         if (r) await api('/api/routers/' + encodeURIComponent(r.id), { method: 'PUT', body: JSON.stringify(body) });
@@ -235,12 +239,14 @@ PAGES.audit = async c => {
       <select id="adD"><option value="1">Last 24 hours</option><option value="7" selected>Last 7 days</option><option value="30">Last 30 days</option><option value="0">All kept</option></select>
       <span class="faint" id="adN" style="align-self:center"></span></div><div id="adT"></div></div>`;
   const detail = e => {
-    const { at, user, event, lines, page, title, what, method, path, status, detail: dt, ip, ...rest } = e;
+    const { at, user, event, lines, page, title, what, method, path, status, detail: dt, ip, values, ...rest } = e;
     const head = event === 'opened' ? `<b>${esc(title || page)}</b>${page && title && page !== title ? ` <span class="faint">#${esc(page)}</span>` : ''}`
       : what ? `<b>${esc(String(what).replace(/_/g, ' '))}</b>${status ? ` <span class="faint">${esc(method || '')} ${esc(path || '')} → ${status}</span>` : ''}` : '';
     const parts = Object.entries(rest).filter(([, v]) => v !== null && v !== undefined && v !== '').map(([k, v]) => `${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`);
     return [head, dt ? `<div class="mono" style="font-size:11.5px;white-space:pre-wrap;word-break:break-word">${esc(dt)}</div>` : '', parts.length ? `<div class="faint">${esc(parts.join(' · '))}</div>` : '',
-      Array.isArray(lines) ? `<pre class="mono" style="margin:4px 0 0;font-size:11.5px">${esc(lines.join('\n'))}</pre>` : ''].filter(Boolean).join('');
+      Array.isArray(lines) ? `<pre class="mono" style="margin:4px 0 0;font-size:11.5px">${esc(lines.join('\n'))}</pre>` : '',
+      Array.isArray(values) && values.length ? `<div class="mono adVals" style="margin-top:4px;font-size:11.5px">${values.map(v => { const m = String(v).match(/^(.*?: .*?: )(.*) → (.*)$/s);
+        return m ? `<div>${esc(m[1])}<span class="bad">${esc(m[2])}</span> → <span class="ok">${esc(m[3])}</span></div>` : `<div>${esc(v)}</div>`; }).join('')}</div>` : ''].filter(Boolean).join('');
   };
   const rows = () => { const u = $('#adU').value, k = $('#adK').value, d = +$('#adD').value, since = d ? Date.now() / 1000 - d * 86400 : 0;
     return events.filter(e => (!u || e.user === u) && (!k || kind(e) === k) && e.at >= since); };

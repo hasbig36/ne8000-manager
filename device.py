@@ -464,6 +464,11 @@ class Router:
         except DeviceError:
             return ""
 
+    def switching(self):
+        """Ports with VLANs, MACs and PoE: filled in for switches (switches.SwitchViews) and MikroTik devices."""
+        return {"ports": [], "macs": [], "vlans": [], "poe_budget": None, "poe_ports": 0,
+                "note": "The switching view is for switches and MikroTik devices."}
+
     def logs(self):
         alarms_text = self.cached("display alarm active", 5)
         log_text = self.cached("display logbuffer", 5)
@@ -475,9 +480,10 @@ class RealRouter(Router):
     KEEP_EVERY = 60          # seconds between checks that the SSH session is still there
     NUDGE_AFTER = 240        # idle seconds before a harmless Enter, so the router's vty idle-timeout never closes the session
 
-    def __init__(self, host, username, password, port=22, poll=True):
+    def __init__(self, host, username, password, port=22, poll=True, device_type="huawei_vrpv8"):
         super().__init__(host)
         self.port = int(port)
+        self.device_type = device_type          # huawei_vrpv8 (NE8000, CloudEngine) or huawei (VRP5 campus switches)
         self._login = (username, password)      # kept in memory only: for reconnecting and for SFTP; never written to disk
         self.conn = self._connect()
         self.last_used = time.time()
@@ -489,7 +495,7 @@ class RealRouter(Router):
     def _connect(self):
         try:
             from netmiko import ConnectHandler
-            conn = ConnectHandler(device_type="huawei_vrpv8", host=self.host, port=self.port, username=self._login[0],
+            conn = ConnectHandler(device_type=self.device_type, host=self.host, port=self.port, username=self._login[0],
                                   password=self._login[1], timeout=30, conn_timeout=15, fast_cli=False)
         except Exception as exc:
             raise DeviceError(f"Could not connect to {self.host}:{self.port}: {exc}") from exc

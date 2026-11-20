@@ -9,6 +9,8 @@ services:
         required: false
     volumes:
       - ./data:/data            # users, plans, billing settings, audit log, session key
+      - /etc/hostname:/host/hostname:ro       # Server health shows the real server name and system,
+      - /etc/os-release:/host/os-release:ro   # not the container's
     ports:
       # 127.0.0.1 = only a reverse proxy on this host can reach it (HTTPS setup). install.sh sets
       # NE8000_BIND=0.0.0.0 for LAN / VPN use without a domain; firewall port 8080 to your network.
