@@ -52,7 +52,7 @@ PAGES.routers = async c => {
   c.innerHTML = head('Routers', 'the routers people can connect to', `<button class="btn primary" id="rtAdd">+ Router</button>`) +
     `<div class="card"><div id="rtT"></div><p class="faint" style="font-size:12.5px;margin-bottom:0">Once at least one router is saved, the app only connects to saved routers and the connect screen shows them as a list.
     Router passwords (SSH, or the MikroTik API) are never stored: each person types their own. An optional read-only SNMP login is kept on this server (never shown here) so people can connect and monitor without one.</p></div>`;
-  table($('#rtT'), [{ t: 'Name', k: 'name', f: r => `<b>${esc(r.name)}</b>` }, { t: 'Make', k: 'vendor', f: r => (r.vendor === 'mikrotik' ? `MikroTik <span class="faint">${esc(({ api: 'API', 'api-ssl': 'API-SSL', rest: 'REST', 'rest-http': 'REST http' })[r.api] || 'API')}</span>` : 'Huawei' + (r.kind === 'switch' ? ` <span class="faint">${r.vrp === 'vrp8' ? 'VRP8' : 'VRP5'}</span>` : '')) + (r.kind === 'switch' ? ' · switch' : '') }, { t: 'Address', k: 'host', f: r => `<span class="mono">${esc(r.host)}:${r.port}</span>` },
+  table($('#rtT'), [{ t: 'Name', k: 'name', f: r => `<b>${esc(r.name)}</b>` }, { t: 'Make', k: 'vendor', f: r => (r.vendor === 'mikrotik' ? `MikroTik <span class="faint">${esc(({ api: 'API', 'api-ssl': 'API-SSL', rest: 'REST', 'rest-http': 'REST http' })[r.api] || 'API')}</span>` : ({ zte: 'ZTE', nokia: 'Nokia', vsol: 'VSOL', hioso: 'HiOSO' }[r.vendor] || 'Huawei') + (r.kind === 'switch' ? ` <span class="faint">${r.vrp === 'vrp8' ? 'VRP8' : 'VRP5'}</span>` : '')) + (r.kind === 'switch' ? ' · switch' : r.kind === 'olt' ? ' · OLT' : '') }, { t: 'Address', k: 'host', f: r => `<span class="mono">${esc(r.host)}:${r.port}</span>` },
     { t: 'Default username', k: 'username', f: r => esc(r.username) || '<span class="faint">none</span>' },
     { t: 'Site', k: 'site', f: r => r.site ? esc(((SR.d && SR.d.sites.find(s => s.id === r.site)) || {}).code || '?') : '<span class="warnc">needs a site</span>' },
     { t: 'SNMP', k: 'snmp', f: r => r.snmp ? (r.snmp.version === 'v2c' ? 'v2c community' : `v3 <span class="mono">${esc(r.snmp.user)}</span>`) : `<span class="faint">off (${r.vendor === 'mikrotik' ? 'API' : 'SSH'} only)</span>` }, { t: 'Notes', k: 'notes', cls: 'wrap', f: r => esc(r.notes) },
@@ -62,8 +62,8 @@ PAGES.routers = async c => {
     const m = $('#modal'), v = k => r ? esc(r[k] ?? '') : '';
     m.innerHTML = `<h2>${r ? 'Edit ' + esc(r.name) : 'New router'}</h2><div class="form">
       <label>Name</label><input id="frName" value="${v('name')}" placeholder="BNG-NDOVU1" autocomplete="off">
-      <label>Make</label><select id="frVendor"><option value="huawei">Huawei (NE8000 and other VRP routers)</option><option value="mikrotik" ${r && r.vendor === 'mikrotik' ? 'selected' : ''}>MikroTik (RouterOS v6 / v7, SwOS)</option></select>
-      <label>Type</label><select id="frKind"><option value="router">Router</option><option value="switch" ${r && r.kind === 'switch' ? 'selected' : ''}>Switch</option></select>
+      <label>Make</label><select id="frVendor"><option value="huawei">Huawei (NE8000 and other VRP routers)</option><option value="mikrotik" ${r && r.vendor === 'mikrotik' ? 'selected' : ''}>MikroTik (RouterOS v6 / v7, SwOS)</option>${[['zte', 'ZTE (OLT: C300, C320, C600…)'], ['nokia', 'Nokia (OLT: ISAM 7360, 7362…)'], ['vsol', 'VSOL (OLT: V1600 series…)'], ['hioso', 'HiOSO (OLT, EPON / GPON)']].map(([k, t]) => `<option value="${k}" ${r && r.vendor === k ? 'selected' : ''}>${t}</option>`).join('')}</select>
+      <label>Type</label><select id="frKind"><option value="router">Router</option><option value="switch" ${r && r.kind === 'switch' ? 'selected' : ''}>Switch</option><option value="olt" ${r && r.kind === 'olt' ? 'selected' : ''}>OLT (GPON / EPON)</option></select>
       <div class="hwSw"><label>Huawei software</label><select id="frVrp"><option value="vrp5">VRP5: S-series campus switches (S5700, S5720, S5735, S6720, S1720…)</option><option value="vrp8" ${r && r.vrp === 'vrp8' ? 'selected' : ''}>VRP8: CloudEngine (CE6800, CE8800, CE12800…)</option></select>
       <div class="help">Switches are monitored over SNMP (fill in SNMP below). An SSH login adds the console. Read-only: the app changes nothing on switches yet.</div></div>
       <label>Management IP / hostname</label><input id="frHost" value="${v('host')}" placeholder="192.168.0.10" autocomplete="off">
@@ -85,7 +85,9 @@ PAGES.routers = async c => {
       <label>SNMP port</label><input id="fsPort" type="number" value="${r && r.snmp ? r.snmp.port : 161}"></div>
       <div class="err"></div><div class="actions"><button class="btn" data-a="c">Cancel</button><button class="btn primary" data-a="s">${r ? 'Save' : 'Add router'}</button></div>`;
     $('#modalBg').classList.remove('hidden'); $('#frName').focus();
-    const vis = () => { const mt = $('#frVendor').value === 'mikrotik', v2 = $('#fsVer').value === 'v2c';
+    const vis = () => { const mt = $('#frVendor').value === 'mikrotik', v2 = $('#fsVer').value === 'v2c', oltOnly = ['zte', 'nokia', 'vsol', 'hioso'].includes($('#frVendor').value);
+      if (oltOnly) $('#frKind').value = 'olt'; if (mt && $('#frKind').value === 'olt') $('#frKind').value = 'router';
+      [...$('#frKind').options].forEach(o => o.disabled = (oltOnly && o.value !== 'olt') || (mt && o.value === 'olt'));
       m.querySelector('.hwSw').style.display = !mt && $('#frKind').value === 'switch' ? '' : 'none';
       m.querySelectorAll('.mtOnly').forEach(e => e.style.display = mt ? '' : 'none'); m.querySelector('.v2Only').style.display = v2 ? '' : 'none'; m.querySelector('.v3Only').style.display = v2 ? 'none' : '' };
     $('#frVendor').onchange = vis; $('#fsVer').onchange = vis; $('#frKind').onchange = vis; vis();

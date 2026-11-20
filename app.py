@@ -109,7 +109,7 @@ ROUTERS = {}   # browser session id -> Router. Credentials are never stored.
 NAME_RE = re.compile(r"^[A-Za-z0-9/.:\-_]{1,64}$")
 
 VIEWS = ("overview", "interfaces", "vlans", "qos", "arp", "neighbors", "vpn_instances", "bgp", "ospf", "isis", "mpls",
-         "system", "hardware", "logs", "route_policies", "switching")
+         "system", "hardware", "logs", "route_policies", "switching", "onus")
 
 
 def router():
@@ -148,7 +148,8 @@ OPEN = {"index", "static", "auth_login", "auth_me", "healthz", "otdr_event", "si
 VIEWER_POST = {"audit_view", "connect", "connect_ssh", "disconnect", "cli", "run_action", "auth_logout", "auth_password", "sites_check", "sites_run", "ipam_layout", "ipam_renumber"}
 ADMIN_ONLY = {"alerts_channel_add", "alerts_channel_delete", "alerts_test", "alerts_rules", "alerts_settings", "alerts_check_save", "alerts_check_delete",
               "users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
-              "routers_test_snmp", "adopt_discover", "adopt_scan", "adopt_build", "adopt_apply", "adopt_identify"}
+              "routers_test_snmp", "adopt_discover", "adopt_scan", "adopt_build", "adopt_apply", "adopt_identify",
+              "olt_snapshot"}
 
 
 def current_user():
@@ -785,7 +786,12 @@ def connect():
         username, password = data.get("username", ""), data.get("password", "")
         r = None
         vendor = (saved or {}).get("vendor") or ("mikrotik" if data.get("vendor") == "mikrotik" else "huawei")
-        if vendor == "mikrotik":
+        if (saved or {}).get("kind") == "olt":
+            import olt
+            if not snmp_login:
+                raise DeviceError("OLTs are monitored over SNMP: add its SNMP login under Manager > Routers.")
+            r = olt.Olt(host, snmp_login, vendor, port)
+        elif vendor == "mikrotik":
             r, warning = connect_mikrotik(saved or {}, host, port, snmp_login, username, password, data)
         elif (saved or {}).get("kind") == "switch":
             r, warning = connect_huawei_switch(saved, host, port, snmp_login, username, password)
@@ -798,7 +804,7 @@ def connect():
                 if not (username and password):
                     raise SshRequired(f"{exc} Enter your SSH login to connect over SSH instead.")
                 warning = f"{exc} Connected over SSH instead."
-        if vendor == "huawei" and (saved or {}).get("kind") != "switch" and (r is None or (username and password)):
+        if vendor == "huawei" and (saved or {}).get("kind") not in ("switch", "olt") and (r is None or (username and password)):
             THROTTLE_ROUTER.check(me())
             try:
                 if r is None:
@@ -826,8 +832,8 @@ def connect():
     else:
         r.billing = billing.BillingEngine(r, config_file=os.path.join(DATA_DIR, "billing.json"),
                                           state_file=os.path.join(DATA_DIR, "billing_state.json"))
-    if not r.demo and (saved or {}).get("kind") == "switch":
-        r.kind = "switch"
+    if not r.demo and (saved or {}).get("kind") in ("switch", "olt"):
+        r.kind = saved["kind"]
     session["sid"] = uuid.uuid4().hex
     session["router_id"] = "" if r.demo else (data.get("router_id") or "")
     ROUTERS[session["sid"]] = r
@@ -1582,6 +1588,18 @@ def panel_photo_set():
         raise DeviceError(str(exc))
     AUDIT.log(me(), "panel_photo", host=router().host, **({"source": source} if source else {}))
     return jsonify(out)
+
+
+@app.get("/api/olt/snapshot")
+def olt_snapshot():
+    """Admin: a read-only SNMP walk of the connected OLT's own MIB, as a text file (no community or keys in it)."""
+    r = router()
+    if getattr(r, "kind", "") != "olt" or not hasattr(r, "snmp_snapshot"):
+        raise DeviceError("Connect to an OLT first.")
+    text = r.snmp_snapshot()
+    AUDIT.log(me(), "olt_snapshot", host=r.host, lines=text.count("\n"))
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", f"olt-{getattr(r, 'vendor', '')}-{r.host}-snmp.txt")
+    return Response(text, mimetype="text/plain", headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
 @app.get("/api/panel/maker-photo")

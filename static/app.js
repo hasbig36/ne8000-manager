@@ -194,7 +194,7 @@ const I = {
 };
 const NAV = [
   [null, [['dashboard', 'Dashboard', I.dash], ['health', 'Health check', I.health], ['alerts', 'Alerts', I.bell], ['sites', 'Sites', I.site], ['changes', 'Change log', I.log]]],
-  ['Network', [['interfaces', 'Interfaces', I.ifs], ['switching', 'Switching (ports, MACs, PoE)', I.vlan], ['graphs', 'Graphs', I.graph], ['netflow', 'Traffic per address', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
+  ['Network', [['interfaces', 'Interfaces', I.ifs], ['switching', 'Switching (ports, MACs, PoE)', I.vlan], ['onus', 'ONUs (OLT)', I.ifs], ['graphs', 'Graphs', I.graph], ['netflow', 'Traffic per address', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
   ['IP', [['ipplan', 'IP plan', I.plan], ['addresses', 'Addresses', I.ip], ['routes', 'Routes', I.route], ['arp', 'ARP', I.ip], ['vpn', 'VPN instances', I.ip], ['neighbors', 'Neighbors (LLDP)', I.ip]]],
   ['Planning', [['netmap', 'Network map', I.plan], ['plans', 'Network plans', I.plan]]],
   ['Billing', [['billing', 'Splynx billing', I.bill]]],
@@ -267,8 +267,9 @@ PAGES.dashboard = async c => {
     `<div class="tiles">${t('CPU', Fmt.pct(o.cpu), '', o.cpu)}${t('Memory', Fmt.pct(o.memory.percent), o.memory.total_kb ? `${Fmt.bytes(o.memory.used_kb * 1024)} of ${Fmt.bytes(o.memory.total_kb * 1024)}` : '', o.memory.percent)}
     ${t('Uptime', esc(o.uptime.replace(/ days?,?/, 'd').replace(/ hours?,?/, 'h').replace(/ minutes?/, 'm')), esc(o.patch ? 'Patch ' + o.patch : ''))}${t('Max temperature', Fmt.temp(o.max_temp), 'hottest sensor')}
     ${t('Ports up', `${o.interfaces.up} / ${o.interfaces.total}`, `${o.interfaces.admin_down} admin down · ${o.interfaces.all} interfaces total`)}
-    ${VENDOR === 'mikrotik' && !o.bgp.total && !/API/.test(VIA) ? t('BGP established', '-', '<a href="#bgp">sign in with a MikroTik login to read BGP</a>') : t('BGP established', `${o.bgp.established ?? 0} / ${o.bgp.total ?? 0}`, `AS ${esc(o.bgp.local_as || '-')} · RID ${esc(o.bgp.router_id || '-')}`)}
-    ${o.alarms.total == null ? t('Active alarms', '-', `<a href="#logs">sign in with ${VENDOR === 'mikrotik' ? 'a MikroTik login' : 'SSH'} to read ${VENDOR === 'mikrotik' ? 'the log' : 'alarms'}</a>`) : t('Active alarms', o.alarms.total, `${o.alarms.critical} major or critical`)}
+    ${document.body.dataset.kind === 'olt' ? t('ONUs online', o.onus ? `${o.onus.online} / ${o.onus.total}` : '-', o.onus ? `<a href="#onus">${o.onus.weak} with a weak signal</a>` : '<a href="#onus">see ONUs</a>') :
+      VENDOR === 'mikrotik' && !o.bgp.total && !/API/.test(VIA) ? t('BGP established', '-', '<a href="#bgp">sign in with a MikroTik login to read BGP</a>') : t('BGP established', `${o.bgp.established ?? 0} / ${o.bgp.total ?? 0}`, `AS ${esc(o.bgp.local_as || '-')} · RID ${esc(o.bgp.router_id || '-')}`)}
+    ${o.alarms.total == null ? t('Active alarms', '-', document.body.dataset.kind === 'olt' ? '<a href="#onus">see the ONUs page</a>' : `<a href="#logs">sign in with ${VENDOR === 'mikrotik' ? 'a MikroTik login' : 'SSH'} to read ${VENDOR === 'mikrotik' ? 'the log' : 'alarms'}</a>`) : t('Active alarms', o.alarms.total, `${o.alarms.critical} major or critical`)}
     <a class="tile" href="#health" id="dHealth" style="text-decoration:none;color:inherit"><div class="l">Health check</div><div class="v">…</div></a></div>
     <div class="card"><h3>Ports<span class="sp"></span><a href="#interfaces" class="btn sm">Interfaces</a></h3><div id="dPorts"><span class="muted">Loading…</span></div></div>
     <div class="grid g2"><div class="card"><h3>CPU <span class="sp"></span><a href="#resources" class="btn sm">Resources</a></h3><div id="cCpu"></div></div>
@@ -1133,6 +1134,33 @@ PAGES.switching = async c => {
   table($('#swV'), [{ t: 'VLAN', k: 'id', num: true, f: v => `<b>${esc(v.id)}</b>` }, { t: 'Name', k: 'name' }, { t: 'Untagged ports', k: 'untagged', cls: 'wrap', f: v => vl(v.untagged) }, { t: 'Tagged ports', k: 'tagged', cls: 'wrap', f: v => vl(v.tagged) }], r.vlans, { empty: 'No VLANs reported' });
   $('#swP').onclick = e => { const a = e.target.closest('[data-mp]'); if (!a) return; e.preventDefault(); macs(a.dataset.mp); $('#swM').scrollIntoView({ block: 'center' }); };
   $('#swMf').onclick = e => { if (!e.target.closest('[data-mall]')) return; e.preventDefault(); macs(''); };
+};
+
+/* ----- OLT: every ONU with its state, optical levels and distance; PON ports with how many are up (read-only) ----- */
+PAGES.onus = async c => {
+  const r = await api('/api/view/onus');
+  const tile = (l, v, cls = '') => `<div class="tile"><div class="l">${l}</div><div class="v ${cls}">${v}</div></div>`;
+  const off = r.total - r.online, cuts = r.ports.filter(p => p.suspect_cut);
+  const dbm = (v, o) => v == null ? '' : `<span class="${o && o.health ? 'onu-' + o.health : ''}">${v.toFixed(2)}</span>`;
+  const st = o => o.status === 'online' ? '<span class="ok">online</span>' : `<span class="${o.status === 'power off' ? 'warnc' : 'bad'}">${esc(o.status)}</span>`;
+  c.innerHTML = head('ONUs', `${esc(r.make)} OLT · read-only`) + (r.note ? `<div class="card muted">${esc(r.note)}</div>` : '') +
+    (cuts.length ? `<div class="card"><div class="err">Possible fibre cut: most ONUs on ${cuts.map(p => `<b>${esc(p.port)}</b> (${p.los} of ${p.total} LOS)`).join(', ')} went down by loss of signal at once. That is usually the feeder fibre or a splitter, not the customers.</div></div>` : '') +
+    `<div class="tiles">${tile('ONUs online', `${r.online} / ${r.total}`)}${tile('Offline', off, off ? 'bad' : '')}${tile('LOS (fibre)', r.onus.filter(o => o.status === 'los').length)}${tile('Power off', r.onus.filter(o => o.status === 'power off').length)}${tile(`Weak signal (below ${r.weak_dbm} dBm)`, r.weak, r.weak ? 'warnc' : '')}</div>
+    <div class="card"><h3>PON ports</h3><div id="onP"></div></div>
+    <div class="card"><h3>ONUs</h3><div class="faint" style="font-size:12.5px;margin-bottom:6px">Type a serial, a name or a port to find an ONU. Receive level below ${r.weak_dbm} dBm is weak, below ${r.bad_dbm} dBm too low.</div><div id="onF" style="font-size:12.5px;margin-bottom:6px"></div><div id="onT"></div></div>
+    ${ME && ME.role === 'admin' ? `<div class="card"><h3>SNMP snapshot</h3><p class="muted" style="font-size:12.5px">For an OLT whose ONUs don't show yet: downloads a read-only walk of the OLT's own SNMP data (no passwords in it), so the app can be taught this make or firmware. It can take a minute on a big OLT.</p><a class="btn" href="/api/olt/snapshot" download>Download SNMP snapshot</a></div>` : ''}`;
+  table($('#onP'), [{ t: 'Port', k: 'port', f: p => `<a href="#" data-op="${esc(p.port)}"><b>${esc(p.port)}</b></a>` }, { t: 'ONUs', k: 'total', num: true }, { t: 'Online', k: 'online', num: true },
+    { t: 'Offline', k: 'offline', num: true, f: p => p.offline ? `<span class="bad">${p.offline}</span>` : '0' }, { t: 'LOS', k: 'los', num: true }, { t: 'Power off', k: 'power_off', num: true },
+    { t: 'Weak', k: 'weak', num: true, f: p => p.weak ? `<span class="warnc">${p.weak}</span>` : '0' }, { t: 'Average Rx', k: 'avg_rx', num: true, f: p => p.avg_rx == null ? '' : p.avg_rx.toFixed(2) + ' dBm' },
+    { t: 'Worst Rx', k: 'worst_rx', num: true, f: p => p.worst_rx == null ? '' : p.worst_rx.toFixed(2) + ' dBm' }], r.ports, { empty: 'No PON ports with ONUs', filter: false });
+  const list = port => { $('#onF').innerHTML = port ? `Showing the ONUs on <b>${esc(port)}</b> · <a href="#" data-oall>show all</a>` : '';
+    table($('#onT'), [{ t: 'Port', k: 'port' }, { t: 'ONU', k: 'id', num: true }, { t: 'Serial / MAC', k: 'sn', cls: 'mono' }, { t: 'Name', k: 'name', cls: 'wrap' }, { t: 'State', k: 'status', f: st },
+      { t: 'Rx (dBm)', k: 'rx_dbm', num: true, f: o => dbm(o.rx_dbm, o) }, { t: 'OLT Rx (dBm)', k: 'olt_rx_dbm', num: true, f: o => dbm(o.olt_rx_dbm) }, { t: 'Tx (dBm)', k: 'tx_dbm', num: true, f: o => dbm(o.tx_dbm) },
+      { t: 'Distance', k: 'distance_m', num: true, f: o => o.distance_m == null ? '' : o.distance_m >= 1000 ? (o.distance_m / 1000).toFixed(2) + ' km' : o.distance_m + ' m' },
+      { t: 'Last down', k: 'down_cause', f: o => esc(o.down_cause) }], port ? r.onus.filter(o => o.port === port) : r.onus, { empty: 'No ONUs' }); };
+  list('');
+  $('#onP').onclick = e => { const a = e.target.closest('[data-op]'); if (!a) return; e.preventDefault(); list(a.dataset.op); $('#onT').scrollIntoView({ block: 'start' }); };
+  $('#onF').onclick = e => { if (!e.target.closest('[data-oall]')) return; e.preventDefault(); list(''); };
 };
 
 PAGES.vpn = async c => {

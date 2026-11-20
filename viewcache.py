@@ -16,7 +16,7 @@ import time
 
 TTL = {"overview": 8, "interfaces": 8, "arp": 25, "bgp": 20, "ospf": 60, "isis": 120, "mpls": 120, "neighbors": 120,
        "vlans": 60, "qos": 60, "vpn_instances": 300, "system": 300, "hardware": 300, "logs": 15,
-       "track": 240, "route_policies": 120, "switching": 30}
+       "track": 240, "route_policies": 120, "switching": 30, "onus": 30}
 MAX_STALE = 600          # never show data older than this without fetching it first
 IDLE = 300               # stop warming a router nobody has looked at for this long
 # (view, every N rounds of 5 s): the busy views first, then the slower ones (each takes the router 1-7 s), so that no page

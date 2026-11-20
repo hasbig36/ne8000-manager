@@ -416,3 +416,11 @@ body[data-kind=switch] #side a[data-p=switching], body[data-vendor=mikrotik] #si
 body[data-kind=switch] #side a[data-p=bgp], body[data-kind=switch] #side a[data-p=policies], body[data-kind=switch] #side a[data-p=ospf],
 body[data-kind=switch] #side a[data-p=isis], body[data-kind=switch] #side a[data-p=mpls], body[data-kind=switch] #side a[data-p=vpn],
 body[data-kind=switch] #side a[data-p=billing], body[data-kind=switch] #side a[data-p=config], body[data-kind=switch] #saveBtn { display: none !important; }
+/* OLTs: the ONU page, no routing pages, billing or config editor */
+#side a[data-p=onus] { display: none; }
+body[data-kind=olt] #side a[data-p=onus] { display: flex; }
+body[data-kind=olt] #side a[data-p=bgp], body[data-kind=olt] #side a[data-p=policies], body[data-kind=olt] #side a[data-p=ospf],
+body[data-kind=olt] #side a[data-p=isis], body[data-kind=olt] #side a[data-p=mpls], body[data-kind=olt] #side a[data-p=vpn],
+body[data-kind=olt] #side a[data-p=billing], body[data-kind=olt] #side a[data-p=config], body[data-kind=olt] #side a[data-p=routes],
+body[data-kind=olt] #side a[data-p=queues], body[data-kind=olt] #saveBtn { display: none !important; }
+.onu-weak{color:var(--warn,#b7791f);font-weight:600}.onu-bad{color:var(--bad);font-weight:700}

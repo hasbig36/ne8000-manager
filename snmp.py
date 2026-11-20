@@ -27,6 +27,11 @@ def _value(v):
         return ".".join(str(b) for b in v.asOctets())
     if cls == "ObjectIdentifier" or cls == "ObjectName":
         return str(v)
+    if cls == "ObjectIdentity":          # an OID value (sysObjectID) as pysnmp hands it back
+        try:
+            return str(v.get_oid() if hasattr(v, "get_oid") else v.getOid())
+        except Exception:
+            return str(v)
     if cls in ("NoSuchObject", "NoSuchInstance", "EndOfMibView", "Null"):
         return None
     return v.asOctets() if hasattr(v, "asOctets") else bytes(v)

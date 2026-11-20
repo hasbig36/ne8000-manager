@@ -464,6 +464,10 @@ class Router:
         except DeviceError:
             return ""
 
+    def onus(self):
+        return {"make": "", "onus": [], "ports": [], "total": 0, "online": 0, "weak": 0,
+                "note": "This device is not an OLT. Add OLTs under Manager > Routers with the type OLT.", "weak_dbm": -27.0, "bad_dbm": -28.5}
+
     def switching(self):
         """Ports with VLANs, MACs and PoE: filled in for switches (switches.SwitchViews) and MikroTik devices."""
         return {"ports": [], "macs": [], "vlans": [], "poe_budget": None, "poe_ports": 0,

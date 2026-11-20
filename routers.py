@@ -17,7 +17,8 @@ from auth import AuthError, _write_private
 HOST_RE = re.compile(r"^[A-Za-z0-9.:\-\[\]]{1,253}$")
 SNMP_AUTH = ("sha256", "sha384", "sha512", "sha224", "sha", "md5")
 SNMP_PRIV = ("aes128", "aes192", "aes256", "des")
-VENDORS = ("huawei", "mikrotik")
+VENDORS = ("huawei", "mikrotik", "zte", "nokia", "vsol", "hioso")
+OLT_ONLY = ("zte", "nokia", "vsol", "hioso")         # makes the app knows only as OLTs
 MT_API = ("api", "api-ssl", "rest", "rest-http")      # RouterOS API 8728 / 8729, REST over https 443 / http 80
 
 
@@ -59,8 +60,17 @@ class RouterStore:
         if vendor not in VENDORS:
             raise AuthError("Unsupported router make.")
         kind = (d.get("kind") or "router").lower()
-        if kind not in ("router", "switch"):
+        if kind not in ("router", "switch", "olt"):
             raise AuthError("Unsupported device type.")
+        if vendor in OLT_ONLY and kind != "olt":
+            raise AuthError(f"{vendor.upper() if vendor in ('zte',) else vendor.capitalize()} devices are supported as OLTs.")
+        if kind == "olt":
+            if vendor == "mikrotik":
+                raise AuthError("MikroTik makes no OLTs: pick the OLT's make.")
+            out["kind"] = "olt"
+            if vendor != "huawei":
+                out["vendor"] = vendor
+            return out
         if kind == "switch":
             out["kind"] = "switch"
             if vendor == "huawei":
