@@ -93,7 +93,9 @@ class SnmpRouter(Router):
             got = self.snmp.get(SYS + ".5.0")
         except SnmpError as exc:
             self._close_snmp()
-            raise DeviceError(f"SNMP to {host} failed: {exc}") from exc
+            hint = (" Check the community: a device ignores a wrong community, so it shows up as a timeout."
+                    if snmp.get("version") == "v2c" and "timeout" in str(exc).lower() else "")
+            raise DeviceError(f"SNMP to {host} failed: {exc}.{hint}") from exc
         if got.get(SYS + ".5.0") is None:
             self._close_snmp()
             raise DeviceError(f"SNMP to {host} gave no answer.")

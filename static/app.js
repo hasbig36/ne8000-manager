@@ -486,7 +486,25 @@ function chassisHtml(rows, hw) {
 }
 /* ----- front panel photo: the router's own photo with each port marked on it, coloured live ----- */
 let PANEL = null;    // {photo, version, marks: {port: [x, y]}, size} for the connected router
-async function panelLoad() { try { PANEL = await api('/api/panel'); } catch (e) { if (e.stale) throw e; PANEL = { error: e.message, marks: {} }; } await notesLoad(); return PANEL; }
+async function panelLoad() { try { PANEL = await api('/api/panel'); } catch (e) { if (e.stale) throw e; PANEL = { error: e.message, marks: {} }; }
+  if (!PANEL.photo && !PANEL.removed && !PANEL.error && VENDOR === 'mikrotik' && !DEMO && ME && ME.role !== 'viewer') await makerPhoto(false).catch(() => {});
+  await notesLoad(); return PANEL; }
+/* no photo yet: use the maker's product photo of this model (fetched once by the server from the maker's site, kept on it) */
+const MAKER_TRIED = new Set();
+async function makerPhoto(manual) {
+  const key = (localStorage.getItem('ne8000.router') || '') + '|' + VENDOR;
+  if (!manual && MAKER_TRIED.has(key)) return; MAKER_TRIED.add(key);
+  const res = await fetch('/api/panel/maker-photo', { headers: { 'X-Requested-With': 'ne8000' }, credentials: 'same-origin' });
+  if (!res.ok) { const d = await res.json().catch(() => ({})); if (manual) throw new Error(d.error || 'No photo from the maker.'); return; }
+  const source = res.headers.get('X-Photo-Source') || '', blob = await res.blob(), img = new Image();
+  const url = await new Promise((ok, bad) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = () => bad(new Error('The maker\'s photo could not be read.')); f.readAsDataURL(blob); });
+  await new Promise((ok, bad) => { img.onload = ok; img.onerror = () => bad(new Error('The maker\'s photo could not be opened.')); img.src = url; });
+  const k = Math.min(1, 2000 / Math.max(img.naturalWidth, img.naturalHeight)), c = document.createElement('canvas');
+  c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+  const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+  PANEL = await post('/api/panel/photo', { image: c.toDataURL('image/jpeg', 0.9), source });
+  return PANEL;
+}
 /* ----- crop and straighten the front photo: find the router's front automatically, adjust the 4 corners, warp to a rectangle ----- */
 async function photoCanvas(file, max = 2000) {
   const url = await new Promise((ok, bad) => { const f = new FileReader(); f.onload = () => ok(f.result); f.onerror = () => bad(new Error('Could not read that file.')); f.readAsDataURL(file); }), img = new Image();
@@ -604,15 +622,25 @@ function cropPhoto(src, startFull) {
       if (a === 'ok') finish({ image: warpQuad(src, q).toDataURL('image/jpeg', 0.88), q }); };
   });
 }
-function photoHtml(phys, st) {
+/* the marker takes the shape of the port: a square RJ45 jack, a wide SFP cage, a wider QSFP cage */
+function portShape(p, hw) {
+  const n = String(p.name), o = ((hw && hw.optics) || {})[n], g = /^(?:\d+\|)?(\d+)GE/i.exec(n);
+  const sp = g ? +g[1] * 1000 : /^(xgigabit|xg)/i.test(n) ? 10000 : (p.speed_mbps && p.speed_mbps < 4e6 ? p.speed_mbps : 0);
+  if (/^qsfp/i.test(n) || sp >= 40000) return 'qsfp';
+  if (o || /^(sfp|xgigabit|xg)/i.test(n) || sp >= 10000) return 'sfp';
+  return 'rj45';       // ether1, MEth, GigabitEthernet without an optic: a copper jack
+}
+function photoHtml(phys, st, hw) {
   const P = PANEL || {}, edit = !(ME && ME.role === 'viewer'), m = st.mark;
   if (P.error) return `<div class="pnophoto muted">${esc(P.error)}</div>`;
   const pick = `<label class="btn primary">${P.photo ? 'New photo' : 'Take or upload a photo'}<input type="file" accept="image/*" capture="environment" class="pfile" hidden></label>`;
-  if (!P.photo) return `<div class="pnophoto"><b>Show your real router here.</b><span class="muted">Take a straight-on photo of the router's front with every port visible (on a phone this opens the camera), then tap where each port is, once. After that every port lights up on your photo with its live state.</span>${edit ? pick : '<span class="muted">An operator or admin can add the photo.</span>'}</div>`;
+  const maker = edit && VENDOR === 'mikrotik' && !DEMO ? '<button class="btn" data-a="maker">Use the maker\'s photo</button>' : '';
+  if (!P.photo) return `<div class="pnophoto"><b>Show your real router here.</b><span class="muted">Take a straight-on photo of the router's front with every port visible (on a phone this opens the camera), then tap where each port is, once. After that every port lights up on your photo with its live state.</span>${edit ? pick + maker : '<span class="muted">An operator or admin can add the photo.</span>'}</div>`;
+  const credit = P.source ? `<div class="faint pcredit" style="font-size:11px;margin-top:4px">Product photo from <a href="${esc(P.source)}" target="_blank" rel="noopener noreferrer">${esc(new URL(P.source).hostname)}</a>. Replace it with your own photo for the real port layout and cabling.</div>` : '';
   const marks = m ? m.marks : P.marks || {}, size = m ? m.size : P.size || 4;
   const short = n => (/(\d+\/\d+\/\d+)$/.exec(n) || [, n])[1];
   const pins = phys.filter(p => marks[p.name]).map(p => { const [x, y] = marks[p.name];
-    return `<button class="pmark ps-${portState(p)}${m && phys[m.i] && phys[m.i].name === p.name ? ' cur' : ''}" data-p="${esc(p.name)}" style="left:${x * 100}%;top:${y * 100}%" title="${esc(portTip(p) + noteTip(p.name))}"><span>${esc(short(p.name))}${notesFor(p.name).length ? ' 📝' : ''}</span></button>`; }).join('');
+    return `<button class="pmark pm-${portShape(p, hw)} ps-${portState(p)}${m && phys[m.i] && phys[m.i].name === p.name ? ' cur' : ''}" data-p="${esc(p.name)}" style="left:${x * 100}%;top:${y * 100}%" title="${esc(portTip(p) + noteTip(p.name))}"><span>${esc(short(p.name))}${notesFor(p.name).length ? ' 📝' : ''}</span></button>`; }).join('');
   const missing = phys.filter(p => !(P.marks || {})[p.name]);
   const cur = m && phys[m.i];
   const tools = m ? `<div class="pmarkbar"><span>${cur ? `Tap where <b>${esc(cur.name)}</b> is on the photo <span class="muted">(${m.i + 1} of ${phys.length}${cur.description ? ', ' + esc(cur.description) : ''})</span>` : '<b>All ports placed.</b> Save to keep them.'}</span><span class="sp"></span>
@@ -620,7 +648,7 @@ function photoHtml(phys, st) {
       <button class="btn sm" data-a="m-back" ${m.i ? '' : 'disabled'}>Back</button>${cur ? '<button class="btn sm" data-a="m-skip">Skip</button>' : ''}<button class="btn sm" data-a="m-cancel">Cancel</button><button class="btn sm primary" data-a="m-save">Save</button></div>`
     : `<div class="bar pphototools">${missing.length ? `<span class="muted" style="font-size:12px">Not marked yet: ${esc(missing.map(p => p.name).join(', '))}</span>` : `<span class="muted" style="font-size:12px">Hover over a port for its traffic and optic, and click it for details.</span>`}<span class="sp"></span>
       ${edit ? `<button class="btn sm${missing.length === phys.length ? ' primary' : ''}" data-a="mark">Mark ports</button><button class="btn sm" data-a="crop">Crop / straighten</button>${pick.replace('btn primary', 'btn sm')}<button class="btn sm ghost" data-a="del">Remove photo</button>` : ''}</div>`;
-  return `<div class="pphoto${m ? ' marking' : ''}" style="--ms:${size}"><img src="/api/panel/photo?v=${P.version}" alt="Front of the router" draggable="false">${pins}</div>${tools}`;
+  return `<div class="pphoto${m ? ' marking' : ''}" style="--ms:${size}"><img src="/api/panel/photo?v=${P.version}" alt="Front of the router" draggable="false">${pins}</div>${credit}${tools}`;
 }
 /* ----- device notes: what engineers need to know about this router, beside its picture ----- */
 let NOTES = null;
@@ -677,7 +705,7 @@ function portPanel(host, rows, opts = {}) {
   host.innerHTML = `<div class="bar"><div class="seg pchips">${PORT_CHIPS.map(([k, l]) => `<button data-c="${k}" class="${st.chip === k ? 'on' : ''}">${l}${count(k)}</button>`).join('')}</div><span class="sp"></span>
     <div class="legend plegend"><span><i class="ps-up"></i>Up</span><span><i class="ps-half"></i>Protocol down</span><span><i class="ps-down"></i>Down</span><span><i class="ps-off"></i>Disabled</span><span><i class="pe"></i>Errors</span><span>bar = traffic</span></div></div>
     <div class="bar pviewbar"><div class="seg pview">${[['drawing', 'Drawing'], ['photo', 'Photo']].map(([k, l]) => `<button data-v="${k}" class="${view === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
-    <div class="pfront"><div class="pfview">${view === 'photo' ? photoHtml(phys, st) : (opts.hw && chassisHtml(rows, opts.hw)) || `<div class="pfplate">${phys.map(face).join('') || '<span class="muted">No physical ports found.</span>'}</div>`}</div><div class="pnotes"></div></div>
+    <div class="pfront"><div class="pfview">${view === 'photo' ? photoHtml(phys, st, opts.hw) : (opts.hw && chassisHtml(rows, opts.hw)) || `<div class="pfplate">${phys.map(face).join('') || '<span class="muted">No physical ports found.</span>'}</div>`}</div><div class="pnotes"></div></div>
     <div class="pports">${phys.filter(p => subsOf(p).length).map(port).join('')}</div>`;
   host.querySelector('.pchips').onclick = e => { const b = e.target.closest('[data-c]'); if (b) { st.chip = b.dataset.c; portPanel(host, rows, opts); } };
   const again = () => portPanel(host, rows, opts);
@@ -702,13 +730,14 @@ function portPanel(host, rows, opts = {}) {
         const c = await cropPhoto(src, true); if (!c) return;
         const old = PANEL.marks || {}, size = PANEL.size || 4, marks = {};
         for (const [n, [x, y]] of Object.entries(old)) { const [u, v] = quadInverse(c.q, x * src.width, y * src.height); if (u >= 0 && u <= 1 && v >= 0 && v <= 1) marks[n] = [u, v]; }
-        PANEL = await post('/api/panel/photo', { image: c.image });
+        PANEL = await post('/api/panel/photo', { image: c.image, source: PANEL.source || '' });
         // the panel is now a smaller part of the picture, so the rings scale up with it
         const w0 = Math.hypot(c.q[1][0] - c.q[0][0], c.q[1][1] - c.q[0][1]);
         if (Object.keys(marks).length) PANEL = await post('/api/panel/marks', { marks, size: Math.min(12, size * src.width / Math.max(1, w0)) });
         const lost = Object.keys(old).length - Object.keys(marks).length;
         toast(lost ? `Cropped. ${lost} port mark${lost > 1 ? 's were' : ' was'} outside the crop; mark ${lost > 1 ? 'them' : 'it'} again.` : 'Cropped; port marks kept.'); again();
       })().catch(fail); return; }
+      if (k === 'maker') { toast('Getting the maker\'s photo…'); makerPhoto(true).then(() => { st.view = 'photo'; again(); }).catch(fail); return; }
       if (k === 'del') { if (confirm('Remove the photo and the port positions?')) post('/api/panel/delete').then(x => { PANEL = x; st.mark = null; again(); }).catch(fail); return; }
       return;
     }

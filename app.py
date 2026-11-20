@@ -32,6 +32,7 @@ import ipdisabled
 import netdesign
 import netflow
 import netmap
+import makerphoto
 import panel
 import plans
 import policy
@@ -70,6 +71,7 @@ NETMAP = netmap.NetMapStore(DATA_DIR)
 NETMAP_CACHE = {}   # map key -> (time, response)
 DISABLED_IPS = ipdisabled.DisabledIPs(DATA_DIR)
 PANELS = panel.PanelStore(DATA_DIR)
+MAKERPHOTOS = makerphoto.MakerPhotos(DATA_DIR)
 NOTES = panel.NotesStore(DATA_DIR)
 BACKUPS = backups.BackupStore(DATA_DIR)
 VIEWCACHE = viewcache.ViewCache()   # router views kept in server memory, so pages open without waiting for the router
@@ -515,7 +517,9 @@ def routers_test_snmp(rid):
         finally:
             c.close()
     except SnmpError as exc:
-        raise DeviceError(f"SNMP failed: {exc}")
+        hint = (" Check the community: a device ignores a wrong community, so it shows up as a timeout."
+                if s.get("version") == "v2c" and "timeout" in str(exc).lower() else "")
+        raise DeviceError(f"SNMP failed: {exc}.{hint}")
     name = text(got.get("1.3.6.1.2.1.1.5.0"))
     if not name:
         raise DeviceError("SNMP answered, but without a system name.")
@@ -708,8 +712,8 @@ def connect_mikrotik(saved, host, ssh_port, snmp_login, username, password, data
         except DeviceError as exc:
             AUDIT.log(me(), "router_snmp_failed", host=host, error=str(exc)[:200], ip=client_ip())
             if not (username and password):
-                raise mikrotik.ApiRequired(f"{exc}. Enter a MikroTik login to connect over the API instead.")
-            warning = f"{exc}. Connected over the API instead."
+                raise mikrotik.ApiRequired(f"{exc} Enter a MikroTik login to connect over the API instead.")
+            warning = f"{exc} Connected over the API instead."
     if r is None and not (username and password):
         raise mikrotik.ApiRequired("Enter a MikroTik login (a read-only user is enough).")
     if username and password:
@@ -792,8 +796,8 @@ def connect():
             except DeviceError as exc:
                 AUDIT.log(me(), "router_snmp_failed", host=host, error=str(exc)[:200], ip=client_ip())
                 if not (username and password):
-                    raise SshRequired(f"{exc}. Enter your SSH login to connect over SSH instead.")
-                warning = f"{exc}. Connected over SSH instead."
+                    raise SshRequired(f"{exc} Enter your SSH login to connect over SSH instead.")
+                warning = f"{exc} Connected over SSH instead."
         if vendor == "huawei" and (saved or {}).get("kind") != "switch" and (r is None or (username and password)):
             THROTTLE_ROUTER.check(me())
             try:
@@ -1568,12 +1572,32 @@ def panel_photo():
 
 @app.post("/api/panel/photo")
 def panel_photo_set():
+    body = request.get_json(force=True) or {}
+    source = str(body.get("source") or "")
+    if source and not makerphoto._allowed(source, getattr(router(), "vendor", "huawei")):
+        source = ""
     try:
-        out = PANELS.set_photo(panel_key(), (request.get_json(force=True) or {}).get("image"), by=me())
+        out = PANELS.set_photo(panel_key(), body.get("image"), by=me(), source=source)
     except ValueError as exc:
         raise DeviceError(str(exc))
-    AUDIT.log(me(), "panel_photo", host=router().host)
+    AUDIT.log(me(), "panel_photo", host=router().host, **({"source": source} if source else {}))
     return jsonify(out)
+
+
+@app.get("/api/panel/maker-photo")
+def panel_maker_photo():
+    """The maker's product photo for the connected device's model (MikroTik), for routers without a photo."""
+    r = router()
+    vendor = getattr(r, "vendor", "huawei")
+    if r.demo:
+        return jsonify(error="No maker photo in demo mode."), 404
+    model = (VIEWCACHE.get(r, "overview")[0] or {}).get("model", "")
+    try:
+        raw, mime, page = MAKERPHOTOS.get(vendor, model)
+    except makerphoto.PhotoError as exc:
+        return jsonify(error=str(exc)), 404
+    return Response(raw, mimetype=mime, headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff",
+                                                 "X-Photo-Source": page})
 
 
 @app.post("/api/panel/marks")

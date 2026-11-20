@@ -1216,8 +1216,9 @@ class MikroTikSnmpRouter(SwitchViews, SnmpRouter):
             return self.ssh.neighbors()
         names = {i: _txt(v) for i, v in self.walk(IFX + ".1", 300).items()}
         addr, ident, ifx = (self._walk_or_empty_ttl(MT_NEIGH + c, 30) for c in (".2", ".6", ".8"))
+        ip = lambda a: a if isinstance(a, str) and a != "0.0.0.0" else ""
         rows = [{"local": names.get(str(ifx.get(i)), str(ifx.get(i) or "")), "exptime": "", "neighbor_port": "",
-                 "neighbor": _txt(ident.get(i)) or (a if isinstance(a, str) else "-"), "address": a if isinstance(a, str) else ""}
+                 "neighbor": _txt(ident.get(i)) or ip(a) or "-", "address": ip(a)}
                 for i, a in addr.items()]
         return rows and {"lldp": rows} or super().neighbors()
 

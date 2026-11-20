@@ -47,12 +47,13 @@ class PanelStore:
         except (OSError, ValueError):
             pass
         return {"photo": bool(path), "version": int(os.path.getmtime(path)) if path else 0,
-                "marks": meta.get("marks") or {}, "size": meta.get("size") or 4.0, "by": meta.get("by", ""), "at": meta.get("at", 0)}
+                "marks": meta.get("marks") or {}, "size": meta.get("size") or 4.0, "by": meta.get("by", ""), "at": meta.get("at", 0),
+                "source": meta.get("source", "") if path else "", "removed": bool(meta.get("removed")) and not path}
 
     def photo(self, key):
         return self._photo(self.key(key))
 
-    def set_photo(self, key, data_url, by=""):
+    def set_photo(self, key, data_url, by="", source=""):
         key = self.key(key)
         m = re.match(r"^data:image/(?:jpeg|jpg|png);base64,(.+)$", str(data_url or ""), re.S)
         if not m:
@@ -76,7 +77,10 @@ class PanelStore:
             with open(tmp, "wb") as f:
                 f.write(raw)
             os.replace(tmp, os.path.join(self.dir, f"{key}.{kind[0]}"))
-            self._write_meta(key, {"marks": {}, "size": 4.0, "by": by, "at": int(time.time())})   # a new photo: the old positions no longer fit
+            meta = {"marks": {}, "size": 4.0, "by": by, "at": int(time.time())}   # a new photo: the old positions no longer fit
+            if source:      # the maker's product photo, credited under it
+                meta["source"] = str(source)[:300]
+            self._write_meta(key, meta)
         return self.get(key)
 
     def set_marks(self, key, marks, size, by=""):
@@ -95,17 +99,19 @@ class PanelStore:
             raise ValueError("Too many ports.")
         size = min(15.0, max(1.0, float(size or 4.0)))
         with self.lock:
-            self._write_meta(key, {"marks": out, "size": size, "by": by, "at": int(time.time())})
+            src = self.get(key).get("source", "")
+            self._write_meta(key, {"marks": out, "size": size, "by": by, "at": int(time.time()), **({"source": src} if src else {})})
         return self.get(key)
 
     def delete(self, key):
         key = self.key(key)
         with self.lock:
-            for p in (os.path.join(self.dir, f"{key}.jpg"), os.path.join(self.dir, f"{key}.png"), self._meta_path(key)):
+            for p in (os.path.join(self.dir, f"{key}.jpg"), os.path.join(self.dir, f"{key}.png")):
                 try:
                     os.remove(p)
                 except OSError:
                     pass
+            self._write_meta(key, {"removed": True})     # removed on purpose: don't fetch the maker's photo again
 
     def _write_meta(self, key, meta):
         tmp = self._meta_path(key) + ".tmp"
