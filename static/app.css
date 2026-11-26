@@ -385,8 +385,10 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
 #side .sideTop .gs input::placeholder{color:#8d99a6}
 #side .sideTop #gqR{position:fixed;top:92px;left:12px;width:min(560px,calc(100vw - 24px));color:var(--text)}
 #side .sideTop #gqR a{display:block;border-left:0;padding:6px 12px;color:var(--text)}
-#side .sideTop #nocBtn{display:block;width:100%;text-align:left;background:transparent;border:1px solid rgba(255,255,255,.14);color:var(--sidetext);border-radius:6px;padding:5px 10px}
-#side .sideTop #nocBtn:hover{background:var(--sidehi);color:#fff}
+#side .sideTop .sideBtns{display:flex;gap:6px}
+#side .sideTop #nocBtn,#side .sideTop #oltmBtn{display:block;flex:1;min-width:0;white-space:nowrap;text-align:left;background:transparent;border:1px solid rgba(255,255,255,.14);color:var(--sidetext);border-radius:6px;padding:5px 10px}
+#side .sideTop #oltmBtn.on{background:var(--sidehi);color:#fff}
+#side .sideTop #nocBtn:hover,#side .sideTop #oltmBtn:hover{background:var(--sidehi);color:#fff}
 #top{gap:12px}
 #top .meta{gap:6px;font-size:12px;align-items:center;min-width:0;flex:1 1 auto;justify-content:flex-end}
 #top .meta>span{display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border:1px solid var(--line);border-radius:999px;background:var(--panel2);white-space:nowrap}
@@ -408,19 +410,32 @@ pre.diff .dadd{color:var(--ok);display:inline}pre.diff .ddel{color:var(--bad);di
   .noc .tile{padding:8px 10px}.noc .tile .v{font-size:21px}.noc .tile .l{font-size:10.5px;line-height:1.25}
 }
 
-/* MikroTik routers: read-only in the app, and no IS-IS or VRP config editor */
-body[data-vendor=mikrotik] #side a[data-p=isis], body[data-vendor=mikrotik] #side a[data-p=config], body[data-vendor=mikrotik] #saveBtn { display: none !important; }
-/* Switching page only for switches and MikroTik devices; switches have no routing pages or billing */
-#side a[data-p=switching] { display: none; }
-body[data-kind=switch] #side a[data-p=switching], body[data-vendor=mikrotik] #side a[data-p=switching] { display: flex; }
-body[data-kind=switch] #side a[data-p=bgp], body[data-kind=switch] #side a[data-p=policies], body[data-kind=switch] #side a[data-p=ospf],
-body[data-kind=switch] #side a[data-p=isis], body[data-kind=switch] #side a[data-p=mpls], body[data-kind=switch] #side a[data-p=vpn],
-body[data-kind=switch] #side a[data-p=billing], body[data-kind=switch] #side a[data-p=config], body[data-kind=switch] #saveBtn { display: none !important; }
-/* OLTs: the ONU page, no routing pages, billing or config editor */
-#side a[data-p=onus] { display: none; }
-body[data-kind=olt] #side a[data-p=onus] { display: flex; }
-body[data-kind=olt] #side a[data-p=bgp], body[data-kind=olt] #side a[data-p=policies], body[data-kind=olt] #side a[data-p=ospf],
-body[data-kind=olt] #side a[data-p=isis], body[data-kind=olt] #side a[data-p=mpls], body[data-kind=olt] #side a[data-p=vpn],
-body[data-kind=olt] #side a[data-p=billing], body[data-kind=olt] #side a[data-p=config], body[data-kind=olt] #side a[data-p=routes],
-body[data-kind=olt] #side a[data-p=queues], body[data-kind=olt] #saveBtn { display: none !important; }
+/* The left menu is the same for every device; MikroTik devices, switches and OLTs have no "Save config" (read-only or not needed) */
+body[data-vendor=mikrotik] #saveBtn, body[data-kind=switch] #saveBtn, body[data-kind=olt] #saveBtn { display: none !important; }
 .onu-weak{color:var(--warn,#b7791f);font-weight:600}.onu-bad{color:var(--bad);font-weight:700}
+
+/* OLT management */
+.oltm-tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px;margin-bottom:14px}
+.oltm-tile{border-radius:10px;padding:14px 16px;color:#fff;cursor:pointer;border:0;text-align:left;font:inherit;display:flex;flex-direction:column;gap:4px;min-height:92px}
+.oltm-tile .l{font-size:13px;opacity:.92}.oltm-tile .v{font-size:30px;font-weight:700;line-height:1.1}.oltm-tile .s{font-size:12px;opacity:.92;display:flex;gap:10px;flex-wrap:wrap}
+.oltm-tile .s a{color:#fff;text-decoration:underline}
+.oltm-tile.wait{background:#2f80c8}.oltm-tile.on{background:#2e9a5b}.oltm-tile.off{background:#5f6b78}.oltm-tile.low{background:#d08419}
+.oltm-tile:hover{filter:brightness(1.07)}
+.sigb{display:inline-flex;align-items:flex-end;gap:2px;height:14px;vertical-align:-2px;margin-right:6px}
+.sigb i{display:block;width:4px;background:var(--line);border-radius:1px}.sigb i:nth-child(1){height:5px}.sigb i:nth-child(2){height:8px}.sigb i:nth-child(3){height:11px}.sigb i:nth-child(4){height:14px}
+.sigb.good i.f{background:var(--ok)}.sigb.warning i.f{background:var(--warn)}.sigb.critical i.f{background:var(--bad)}
+.ost{display:inline-flex;align-items:center;gap:6px;white-space:nowrap}.ost::before{content:"";width:9px;height:9px;border-radius:50%;background:var(--muted)}
+.ost.online::before{background:var(--ok)}.ost.los::before{background:var(--bad)}.ost.power-fail::before{background:var(--warn)}.ost.offline::before{background:#7b8794}.ost.disabled::before{background:#b8c0c8}
+.oltm-filters{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:10px;align-items:center}.oltm-filters input{flex:1 1 220px;min-width:160px}.oltm-filters select{width:auto;min-width:110px}
+.oltm-pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:8px;font-size:12.5px}
+.oltm-onu{display:grid;grid-template-columns:minmax(260px,1fr) minmax(300px,1.3fr);gap:14px}
+@media (max-width:900px){.oltm-onu{grid-template-columns:1fr}}
+.okv{display:grid;grid-template-columns:max-content 1fr;gap:6px 16px;font-size:13px}.okv>div:nth-child(odd){color:var(--muted)}.okv>div:nth-child(even){word-break:break-word}
+.omap{position:relative;height:min(620px,70vh);min-height:360px;overflow:hidden;border-radius:8px;border:1px solid var(--line);background:#dfe6ea;touch-action:none;user-select:none}
+.omap-tiles{position:absolute;inset:0}.omap-tiles img{position:absolute;left:0;top:0;width:256px;height:256px;max-width:none}
+.omap canvas{position:absolute;inset:0;cursor:grab}.omap canvas:active{cursor:grabbing}
+.omap-zoom{position:absolute;top:10px;left:10px;display:flex;flex-direction:column;gap:4px}.omap-zoom .btn{width:32px;padding:4px 0;background:var(--panel);font-size:15px}
+.omap-legend{position:absolute;top:10px;right:10px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;display:flex;flex-direction:column;gap:3px;color:var(--text)}
+.omap-legend i{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;vertical-align:-1px}
+.omap-attr{position:absolute;right:0;bottom:0;background:rgba(255,255,255,.8);font-size:10.5px;padding:1px 5px;color:#333}.omap-attr a{color:#246}
+.omap-pop{position:absolute;width:220px;background:var(--panel);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:12.5px;box-shadow:0 4px 16px rgba(0,0,0,.2);line-height:1.5}

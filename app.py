@@ -33,6 +33,7 @@ import netdesign
 import netflow
 import netmap
 import makerphoto
+import oltfleet
 import panel
 import plans
 import policy
@@ -72,6 +73,16 @@ NETMAP_CACHE = {}   # map key -> (time, response)
 DISABLED_IPS = ipdisabled.DisabledIPs(DATA_DIR)
 PANELS = panel.PanelStore(DATA_DIR)
 MAKERPHOTOS = makerphoto.MakerPhotos(DATA_DIR)
+
+
+def _olt_reader(saved):
+    import olt
+    return olt.Olt(saved["host"], saved["snmp"], saved.get("vendor") or "huawei", saved.get("port") or 22)
+
+
+# OLT management: every ONU on every OLT (SmartOLT API and OLTs saved with their SNMP login), read in the background
+OLTFLEET = oltfleet.OltFleet(DATA_DIR, saved_olts=lambda: [r for r in SAVED.routers if r.get("kind") == "olt" and r.get("snmp")],
+                             snmp_reader=_olt_reader)
 NOTES = panel.NotesStore(DATA_DIR)
 BACKUPS = backups.BackupStore(DATA_DIR)
 VIEWCACHE = viewcache.ViewCache()   # router views kept in server memory, so pages open without waiting for the router
@@ -149,7 +160,7 @@ VIEWER_POST = {"audit_view", "connect", "connect_ssh", "disconnect", "cli", "run
 ADMIN_ONLY = {"alerts_channel_add", "alerts_channel_delete", "alerts_test", "alerts_rules", "alerts_settings", "alerts_check_save", "alerts_check_delete",
               "users_list", "users_add", "users_update", "users_delete", "audit_log", "routers_add", "routers_update", "routers_delete",
               "routers_test_snmp", "adopt_discover", "adopt_scan", "adopt_build", "adopt_apply", "adopt_identify",
-              "olt_snapshot"}
+              "olt_snapshot", "oltm_settings_save", "oltm_test"}
 
 
 def current_user():
@@ -244,7 +255,7 @@ def audit_view():
 
 
 VALUE_FILES_MAX = 512 * 1024      # settings files compared before and after a change (bigger stores are skipped)
-VALUE_SKIP = {"alerts_state.json", "billing_state.json", "audit.log"}
+VALUE_SKIP = {"alerts_state.json", "billing_state.json", "audit.log", "oltm_history.json"}
 
 
 def _settings_snapshot():
@@ -358,7 +369,7 @@ def security_headers(resp):
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Referrer-Policy", "same-origin")
     resp.headers.setdefault("Content-Security-Policy", "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; "
-                            "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+                            "img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
     # a change made on the router through the app (a commit, a reset, a restore) or a new login: the stored views are
     # out of date. Reviews, Check only, notes, backups, billing and the like leave them alone, so pages stay instant.
     if request.method == "POST" and resp.status_code < 400 and request.path.startswith("/api/"):
@@ -1590,6 +1601,86 @@ def panel_photo_set():
     return jsonify(out)
 
 
+# ---- OLT management (all OLTs, no connect needed; read-only) ----------------------------------
+@app.get("/api/oltm/summary")
+def oltm_summary():
+    return jsonify(OLTFLEET.summary())
+
+
+@app.get("/api/oltm/onus")
+def oltm_onus():
+    a = request.args
+    try:
+        page, per = int(a.get("page") or 1), int(a.get("per") or 100)
+    except ValueError:
+        page, per = 1, 100
+    return jsonify(OLTFLEET.onus(q=a.get("q", ""), olt=a.get("olt", ""), board=a.get("board", ""), port=a.get("port", ""),
+                                 status=a.get("status", ""), signal=a.get("signal", ""), page=page, per=per))
+
+
+@app.get("/api/oltm/onu")
+def oltm_onu():
+    o = OLTFLEET.onu(request.args.get("key", ""))
+    if not o:
+        return jsonify(error="That ONU is not in the latest reading. Go back to the list."), 404
+    return jsonify(o)
+
+
+@app.get("/api/oltm/unconfigured")
+def oltm_unconfigured():
+    return jsonify(OLTFLEET.unconfigured())
+
+
+@app.get("/api/oltm/settings")
+def oltm_settings():
+    return jsonify(OLTFLEET.settings())
+
+
+@app.post("/api/oltm/settings")
+def oltm_settings_save():
+    try:
+        out = OLTFLEET.save_settings(request.get_json(silent=True) or {})
+    except (oltfleet.FleetError, ValueError) as exc:
+        raise DeviceError(str(exc))
+    AUDIT.log(me(), "oltm_settings", subdomain=out["smartolt"]["subdomain"], enabled=out["smartolt"]["enabled"],
+              tr069=out["acs"]["url"], tr069_on=out["acs"]["enabled"])
+    g.audited = True
+    return jsonify(out)
+
+
+@app.get("/api/oltm/map")
+def oltm_map():
+    return jsonify(OLTFLEET.map_points())
+
+
+@app.get("/api/oltm/tr069")
+def oltm_tr069():
+    return jsonify(OLTFLEET.tr069(request.args.get("q", "")))
+
+
+@app.post("/api/oltm/test")
+def oltm_test():
+    body = request.get_json(silent=True) or {}
+    if "acs" in body:
+        a = body.get("acs") or {}
+        try:
+            return jsonify(OLTFLEET.test_acs(str(a.get("url") or "").strip() or None, str(a.get("user") or "").strip() or None, str(a.get("password") or "") or None))
+        except oltfleet.FleetError as exc:
+            raise DeviceError(str(exc))
+    so = body.get("smartolt") or {}
+    sub = re.sub(r"^https?://", "", str(so.get("subdomain") or "").strip().lower()).split(".smartolt.com")[0].strip("/")
+    try:
+        return jsonify(OLTFLEET.test_smartolt(sub or None, str(so.get("key") or "").strip() or None))
+    except oltfleet.FleetError as exc:
+        raise DeviceError(str(exc))
+
+
+@app.post("/api/oltm/refresh")
+def oltm_refresh():
+    OLTFLEET.wake.set()
+    return jsonify(ok=True)
+
+
 @app.get("/api/olt/snapshot")
 def olt_snapshot():
     """Admin: a read-only SNMP walk of the connected OLT's own MIB, as a text file (no community or keys in it)."""
@@ -2677,6 +2768,8 @@ if __name__ == "__main__":
         serverinfo.start(DATA_DIR)  # server health: CPU, memory and disk use every minute
         SITEREG.start()     # sites: ping the devices, power, door and camera systems registered at each, every minute
         SITES.start()   # major sites: ping and trace to Google, YouTube, Facebook... every 5 minutes
+    if env_on("NE8000_OLTM", "1"):
+        OLTFLEET.start()    # OLT management: all OLTs' ONUs every 5 minutes (SmartOLT API and saved OLTs over SNMP)
     if env_on("NE8000_CHANGES", "1"):
         TRACK.start()   # 24/7 change log over SNMP for every saved router with an SNMP login  # smart health check every 5 minutes (errors, drops, full links, optics, latency)
     if int(os.environ.get("NE8000_NETFLOW_PORT", "2055") or 0):

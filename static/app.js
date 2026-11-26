@@ -194,7 +194,7 @@ const I = {
 };
 const NAV = [
   [null, [['dashboard', 'Dashboard', I.dash], ['health', 'Health check', I.health], ['alerts', 'Alerts', I.bell], ['sites', 'Sites', I.site], ['changes', 'Change log', I.log]]],
-  ['Network', [['interfaces', 'Interfaces', I.ifs], ['switching', 'Switching (ports, MACs, PoE)', I.vlan], ['onus', 'ONUs (OLT)', I.ifs], ['graphs', 'Graphs', I.graph], ['netflow', 'Traffic per address', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
+  ['Network', [['interfaces', 'Interfaces', I.ifs], ['switching', 'Switching (ports, MACs, PoE)', I.vlan], ['graphs', 'Graphs', I.graph], ['netflow', 'Traffic per address', I.graph], ['vlan', 'VLAN', I.vlan], ['queues', 'Queues / QoS', I.q]]],
   ['IP', [['ipplan', 'IP plan', I.plan], ['addresses', 'Addresses', I.ip], ['routes', 'Routes', I.route], ['arp', 'ARP', I.ip], ['vpn', 'VPN instances', I.ip], ['neighbors', 'Neighbors (LLDP)', I.ip]]],
   ['Planning', [['netmap', 'Network map', I.plan], ['plans', 'Network plans', I.plan]]],
   ['Billing', [['billing', 'Splynx billing', I.bill]]],
@@ -206,7 +206,10 @@ const NAV = [
 $('#side').innerHTML = NAV.map(([g, items]) => (g ? `<div class="grp">${g}</div>` : '') + items.map(([k, t, ic]) =>
   `<a data-p="${k}"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4">${ic}</svg>${t}</a>`).join('')).join('');
 // Search and NOC live at the top of the left menu (moved, so their handlers stay)
-{ const st = document.createElement('div'); st.className = 'sideTop'; const nb = $('#nocBtn'); st.append($('#gs'), nb); nb.innerHTML = '▣ NOC view'; $('#side').prepend(st); }
+{ const st = document.createElement('div'); st.className = 'sideTop'; const nb = $('#nocBtn'); nb.innerHTML = '▣ NOC view';
+  const ob = document.createElement('button'); ob.className = 'btn sm'; ob.id = 'oltmBtn'; ob.title = 'OLT management: every ONU on every OLT'; ob.innerHTML = '◎ OLTs';
+  ob.onclick = () => { location.hash = 'oltm'; $('#side').classList.remove('open'); };
+  const row = document.createElement('div'); row.className = 'sideBtns'; row.append(nb, ob); st.append($('#gs'), row); $('#side').prepend(st); }
 $('#side').onclick = e => { const a = e.target.closest('a[data-p]'); if (a) { location.hash = a.dataset.p; $('#side').classList.remove('open'); } };
 $('#menuBtn').onclick = () => $('#side').classList.toggle('open');
 
@@ -229,6 +232,7 @@ async function go(page, keepScroll) {
   NAVCTL.abort(); NAVCTL = new AbortController(); const my = ++NAVSEQ;
   const navKey = key === 'plan' ? 'plans' : key;
   document.querySelectorAll('#side a').forEach(a => a.classList.toggle('active', a.dataset.p === navKey));
+  { const ob = $('#oltmBtn'); if (ob) ob.classList.toggle('on', key === 'oltm'); }
   const host = $('#content'), y = host.scrollTop, old = [...host.querySelectorAll(':scope > .pagebox')];
   const c = document.createElement('div'); c.className = 'pagebox';
   // page state kept on the container (filters, chosen VPN) carries over to the new box
@@ -1162,6 +1166,264 @@ PAGES.onus = async c => {
   $('#onP').onclick = e => { const a = e.target.closest('[data-op]'); if (!a) return; e.preventDefault(); list(a.dataset.op); $('#onT').scrollIntoView({ block: 'start' }); };
   $('#onF').onclick = e => { if (!e.target.closest('[data-oall]')) return; e.preventDefault(); list(''); };
 };
+
+/* ----- OLT management: every ONU on every OLT, without connecting to each one (SmartOLT API + OLTs saved with SNMP). Read-only for now. ----- */
+let OLTM_F = { q: '', olt: '', board: '', port: '', status: '', signal: '', page: 1 };
+const OLTM_LATER = 'Authorising, rebooting and changing ONUs come in the next step: for now OLT management only reads.';
+function sigBars(rx, level) {
+  if (rx == null) return '<span class="faint">-</span>';
+  const n = rx >= -20 ? 4 : rx >= -24 ? 3 : rx >= -27 ? 2 : 1;
+  return `<span class="sigb ${esc(level || 'good')}" title="${esc(level)}">${[1, 2, 3, 4].map(i => `<i class="${i <= n ? 'f' : ''}"></i>`).join('')}</span>${rx.toFixed(2)} dBm`;
+}
+const onuState = s => `<span class="ost ${esc(String(s).replace(/ /g, '-'))}">${esc(s === 'los' ? 'LOS' : s === 'power fail' ? 'Power fail' : s === 'n/a' ? 'N/A' : s.charAt(0).toUpperCase() + s.slice(1))}</span>`;
+function oltmGo(f) { OLTM_F = { q: '', olt: '', board: '', port: '', status: '', signal: '', page: 1, ...f }; if (location.hash === '#oltm/configured') refresh(); else location.hash = 'oltm/configured'; }
+
+PAGES.oltm = async (c, arg) => {
+  arg = arg || 'dashboard';
+  const tab = arg.startsWith('onu=') ? 'configured' : arg;
+  const admin = ME && ME.role === 'admin';
+  const tabs = [['dashboard', 'Dashboard'], ['unconfigured', 'Unconfigured'], ['configured', 'Configured'], ['map', 'Map'], ['tr069', 'TR-069'], ...(admin ? [['settings', 'Settings']] : [])];
+  c.innerHTML = head('OLT management', 'every OLT and ONU · read-only', `<button class="btn" id="omRef" title="read all OLTs again now">Refresh</button>`) +
+    `<div class="tabs">${tabs.map(([k, t]) => `<button data-t="${k}" class="${k === tab ? 'on' : ''}">${t}<span class="tcount" data-n="${k}"></span></button>`).join('')}</div><div id="om"></div>`;
+  c.querySelector('.tabs').onclick = e => { const b = e.target.closest('[data-t]'); if (b) location.hash = 'oltm/' + b.dataset.t; };
+  $('#omRef').onclick = async () => { await post('/api/oltm/refresh'); toast('Reading all OLTs again: the page updates in a minute or two.'); setTimeout(() => { if (String(current).startsWith('oltm')) refresh(); }, 20000); };
+  const box = $('#om');
+  if (arg.startsWith('onu=')) return oltmOnu(box, decodeURIComponent(arg.slice(4)));
+  if (tab === 'unconfigured') return oltmUnconf(box);
+  if (tab === 'configured') return oltmList(box);
+  if (tab === 'settings') return oltmSettings(box);
+  if (tab === 'map') return oltmMap(box);
+  if (tab === 'tr069') return oltmTr069(box);
+  return oltmDash(box);
+};
+
+async function oltmDash(box) {
+  const r = await api('/api/oltm/summary');
+  const n = r.counts, off = n['power fail'] + n.los + n.offline + n['n/a'];
+  const w = $('[data-n=unconfigured]'); if (w && r.waiting) w.textContent = ` (${r.waiting})`;
+  box.innerHTML = (!r.configured ? `<div class="card"><h3>Set up OLT management</h3><p class="muted">Nothing to read yet. ${ME && ME.role === 'admin' ? 'Enter your SmartOLT address and API key under <a href="#oltm/settings">Settings</a>' : 'An admin can enter the SmartOLT address and API key under Settings'}, or add an OLT under <a href="#routers">Manager › Routers</a> with the type <b>OLT</b> and its SNMP login. Every OLT is then read in the background every few minutes, with no need to connect to it.</p></div>` : '') +
+    (r.errors.length ? `<div class="card"><div class="err">${r.errors.map(esc).join('<br>')}</div></div>` : '') +
+    `<div class="oltm-tiles">
+      <button class="oltm-tile wait" data-go="unconfigured"><span class="l">Waiting authorisation</span><span class="v">${r.waiting}</span><span class="s">new ONUs the OLTs can see</span></button>
+      <button class="oltm-tile on" data-f='{"status":"online"}'><span class="l">Online</span><span class="v">${n.online}</span><span class="s">of ${r.total} authorised</span></button>
+      <button class="oltm-tile off" data-f='{"status":"offline"}'><span class="l">Total offline</span><span class="v">${off}</span><span class="s"><a data-f='{"status":"power fail"}'>Power fail ${n['power fail']}</a><a data-f='{"status":"los"}'>LOS ${n.los}</a><a data-f='{"status":"n/a"}'>N/A ${n['n/a'] + n.offline}</a></span></button>
+      <button class="oltm-tile low" data-f='{"signal":"warning"}'><span class="l">Low signals</span><span class="v">${r.signal.warning + r.signal.critical}</span><span class="s"><a data-f='{"signal":"warning"}'>Warning ${r.signal.warning}</a><a data-f='{"signal":"critical"}'>Critical ${r.signal.critical}</a></span></button>
+    </div>
+    <div class="card"><h3>Network status <span class="sub">ONUs by state, last 7 days</span></h3><div id="omH" style="height:220px"></div>${legend([['Online', '--ok'], ['Power fail', '--warn'], ['LOS', '--bad'], ['Offline / N/A', '--muted']])}</div>
+    <div class="card"><h3>OLTs</h3><div id="omO"></div></div>
+    <div class="card"><h3>PON outages <span class="sub">ports where many ONUs went down the same way</span></h3><div id="omP"></div></div>
+    <div class="faint" style="font-size:12px">Read ${ago(r.time)} · Rx warning below ${r.warn_dbm} dBm, critical below ${r.crit_dbm} dBm</div>`;
+  box.querySelector('.oltm-tiles').onclick = e => {
+    const a = e.target.closest('[data-f],[data-go]'); if (!a) return; e.preventDefault();
+    if (a.dataset.go) location.hash = 'oltm/' + a.dataset.go; else oltmGo(JSON.parse(a.dataset.f));
+  };
+  const h = r.history, ser = (k, col, f) => ({ name: k, color: col, values: h.map(x => [x.t, f(x)]) });
+  chart($('#omH'), { fmt: v => Math.round(v), span: 7 * 86400 }).set([ser('Online', '--ok', x => x.online), ser('Power fail', '--warn', x => x['power fail']),
+    ser('LOS', '--bad', x => x.los), ser('Offline / N/A', '--muted', x => x.offline + x['n/a'])]);
+  table($('#omO'), [{ t: 'OLT', k: 'name', f: o => `<a href="#" data-olt="${esc(o.id)}"><b>${esc(o.name)}</b></a>` }, { t: 'Source', k: 'source' }, { t: 'Model', k: 'model' }, { t: 'IP', k: 'ip', cls: 'mono' },
+    { t: 'ONUs online', k: 'online', num: true, f: o => o.error ? `<span class="bad" title="${esc(o.error)}">not read</span>` : `${o.online} / ${o.total}` },
+    { t: 'Uptime', k: 'uptime' }, { t: 'Temperature', k: 'temp', num: true, f: o => o.temp == null ? '' : `<span class="${o.temp >= 60 ? 'bad' : o.temp >= 50 ? 'warnc' : ''}">${Math.round(o.temp)} °C</span>` }],
+    r.olts, { filter: false, empty: 'No OLTs yet' });
+  $('#omO').onclick = e => { const a = e.target.closest('[data-olt]'); if (!a) return; e.preventDefault(); oltmGo({ olt: a.dataset.olt }); };
+  table($('#omP'), [{ t: 'PON port', k: 'port', f: o => `<a href="#" data-pon='${attr({ olt: o.olt_id, board: o.board, port: o.pon })}'><b>${esc(o.port)}</b></a>` },
+    { t: 'What', k: 'what', f: o => `<span class="${o.kind === 'power' ? 'warnc' : 'bad'}">${esc(o.what)}</span>` }, { t: 'ONUs down', k: 'count', num: true, f: o => `${o.count} of ${o.total}` },
+    { t: 'Likely cause', k: 'kind', sort: false, f: o => esc(o.kind === 'power' ? 'mains power off in the area (ONUs sent a dying gasp)' : o.kind === 'full' ? 'feeder fibre or the PON port' : 'a branch fibre or a splitter') }],
+    r.outages, { filter: false, empty: 'No PON outages' });
+  $('#omP').onclick = e => { const a = e.target.closest('[data-pon]'); if (!a) return; e.preventDefault(); oltmGo(JSON.parse(a.dataset.pon)); };
+  every(60000, async () => { if (['oltm', 'oltm/dashboard'].includes(String(current))) refresh(); });
+}
+
+async function oltmUnconf(box) {
+  const r = await api('/api/oltm/unconfigured');
+  const total = r.olts.reduce((a, o) => a + o.onus.length, 0);
+  const w = $('[data-n=unconfigured]'); if (w && total) w.textContent = ` (${total})`;
+  box.innerHTML = `<div class="card muted" style="font-size:12.5px">ONUs an OLT can see but that are not authorised yet. ${esc(OLTM_LATER)}${r.olts.some(o => o.source === 'SNMP') ? ' OLTs read over SNMP do not list new ONUs yet; SmartOLT OLTs do.' : ''}</div>` +
+    (r.olts.length ? r.olts.map((o, i) => `<div class="card"><h3>${esc(o.olt)} <span class="sub">${o.onus.length ? o.onus.length + ' waiting' : 'no new ONUs'}</span></h3><div id="omU${i}"></div></div>`).join('') : '<div class="card muted">No OLTs yet.</div>') +
+    `<div class="faint" style="font-size:12px">Read ${ago(r.time)}</div>`;
+  r.olts.forEach((o, i) => table($('#omU' + i), [{ t: 'PON type', k: 'pon_type' }, { t: 'Board', k: 'board', num: true }, { t: 'Port', k: 'port', num: true }, { t: 'PON description', k: 'pon_description' },
+    { t: 'SN', k: 'sn', cls: 'mono', f: u => `<b>${esc(u.sn)}</b>` }, { t: 'Type', k: 'type' }, { t: 'Detected', k: 'detected' },
+    { t: '', sort: false, cls: 'acts', f: () => `<button class="btn sm primary" disabled title="${esc(OLTM_LATER)}">Authorise</button>` }], o.onus, { filter: o.onus.length > 10, empty: 'No ONUs waiting on this OLT' }));
+  every(60000, async () => { if (current === 'oltm/unconfigured') refresh(); });
+}
+
+async function oltmList(box) {
+  const f = OLTM_F, qs = new URLSearchParams(Object.entries(f).filter(([, v]) => v !== '' && v != null)).toString();
+  const r = await api('/api/oltm/onus?' + qs);
+  const opt = (k, list, all) => `<select data-k="${k}"><option value="">${all}</option>${list.map(([v, t]) => `<option value="${esc(v)}" ${String(f[k]) === String(v) ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
+  box.innerHTML = `<div class="card"><div class="oltm-filters">
+      <input type="search" data-k="q" placeholder="Search: SN, name, address, zone, ONU path" value="${esc(f.q)}">
+      ${opt('olt', r.olts.map(o => [o.id, o.name]), 'Any OLT')}${opt('board', r.boards.map(b => [b, 'Board ' + b]), 'Any board')}${opt('port', r.ports.map(p => [p, 'Port ' + p]), 'Any port')}
+      ${opt('status', [['online', 'Online'], ['power fail', 'Power fail'], ['los', 'LOS'], ['offline', 'Offline'], ['n/a', 'N/A'], ['disabled', 'Disabled']], 'Any status')}
+      ${opt('signal', [['good', 'Good signal'], ['warning', 'Warning'], ['critical', 'Critical'], ['none', 'No reading']], 'Any signal')}
+      ${Object.entries(f).some(([k, v]) => k !== 'page' && v) ? '<a href="#" id="omClr">clear</a>' : ''}</div><div id="omL"></div>
+    <div class="oltm-pager"><span>${r.total} ONU${r.total === 1 ? '' : 's'}</span>${r.pages > 1 ? `<button class="btn sm" data-pg="${r.page - 1}" ${r.page <= 1 ? 'disabled' : ''}>‹ Prev</button><span>page ${r.page} of ${r.pages}</span><button class="btn sm" data-pg="${r.page + 1}" ${r.page >= r.pages ? 'disabled' : ''}>Next ›</button>` : ''}</div></div>`;
+  table($('#omL'), [{ t: 'Status', k: 'status', f: o => onuState(o.status) }, { t: '', k: 'key', sort: false, f: o => `<a class="btn sm" href="#oltm/onu=${encodeURIComponent(o.key)}">View</a>` },
+    { t: 'Name', k: 'name', cls: 'wrap', f: o => `<b>${esc(o.name)}</b>` }, { t: 'SN / MAC', k: 'sn', cls: 'mono' }, { t: 'ONU', k: 'onu_path', cls: 'mono', f: o => `${esc(o.olt)}<br><span class="faint">${esc(o.onu_path)}</span>` },
+    { t: 'Zone', k: 'zone' }, { t: 'Signal', k: 'rx', num: true, f: o => sigBars(o.rx, o.signal) }, { t: 'Mode', k: 'mode' }, { t: 'VLAN', k: 'vlan' }, { t: 'Type', k: 'type' }, { t: 'Authorised', k: 'auth_date' }],
+    r.onus, { filter: false, empty: 'No ONUs match', onRow: o => { location.hash = 'oltm/onu=' + encodeURIComponent(o.key); } });
+  let t = null;
+  box.querySelector('.oltm-filters').oninput = e => { const k = e.target.dataset.k; if (!k) return;
+    f[k] = e.target.value; f.page = 1; if (k === 'olt') { f.board = ''; f.port = ''; } if (k === 'board') f.port = '';
+    clearTimeout(t); t = setTimeout(() => oltmList(box).then(() => { const i = box.querySelector('input[data-k=q]'); if (k === 'q' && i) { i.focus(); i.setSelectionRange(i.value.length, i.value.length); } }).catch(() => {}), k === 'q' ? 350 : 0); };
+  const clr = $('#omClr'); if (clr) clr.onclick = e => { e.preventDefault(); OLTM_F = { q: '', olt: '', board: '', port: '', status: '', signal: '', page: 1 }; oltmList(box); };
+  box.querySelector('.oltm-pager').onclick = e => { const b = e.target.closest('[data-pg]'); if (!b) return; f.page = +b.dataset.pg; oltmList(box).then(() => box.scrollIntoView({ block: 'start' })); };
+}
+
+async function oltmOnu(box, key) {
+  const o = await api('/api/oltm/onu?key=' + encodeURIComponent(key));
+  const kv = rows => `<div class="okv">${rows.filter(([, v]) => v !== '' && v != null).map(([k, v]) => `<div>${esc(k)}</div><div>${v}</div>`).join('')}</div>`;
+  const dist = o.distance_m == null ? '' : o.distance_m >= 1000 ? (o.distance_m / 1000).toFixed(2) + ' km' : o.distance_m + ' m';
+  const btn = t => `<button class="btn sm" disabled title="${esc(OLTM_LATER)}">${t}</button>`;
+  box.innerHTML = `<div style="margin-bottom:10px"><a href="#oltm/configured">‹ Back to the ONU list</a></div>
+    <div class="oltm-onu"><div class="card"><h3>${esc(o.name || o.sn)}</h3>${kv([['OLT', esc(o.olt)], ['Board', esc(o.board)], ['Port', esc(o.port)], ['ONU', esc(o.onu)], ['GPON channel', esc(o.pon_type)],
+      ['SN / MAC', `<span class="mono">${esc(o.sn)}</span>`], ['ONU type', esc(o.type)], ['Zone', esc(o.zone)], ['Name', esc(o.name)], ['Address', esc(o.address)], ['Contact', esc(o.contact)],
+      ['Mode', esc(o.mode)], ['VLAN', esc(o.vlan)], ['Authorised', esc(o.auth_date)], ['ONU external ID', `<span class="mono">${esc(o.ext_id)}</span>`], ['Read from', esc(o.source)],
+      ['Location', o.lat != null && o.lon != null ? `${o.lat.toFixed(5)}, ${o.lon.toFixed(5)}` : '']])}</div>
+    <div><div class="card"><h3>Status</h3>${kv([['Status', onuState(o.status) + (o.since ? ` <span class="faint">since ${esc(o.since)}</span>` : '')], ['ONU/OLT Rx signal', `${sigBars(o.rx, o.signal)}${o.olt_rx != null ? ` / ${o.olt_rx.toFixed(2)} dBm` : ''}`],
+      ['Distance', dist], ['Last down cause', esc(o.down_cause)], ['ONU path', `<span class="mono">${esc(o.onu_path)}</span>`]])}
+      <div class="actions" style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">${btn('Reboot')}${btn('Resync config')}${btn('Disable ONU')}${btn('Configure')}</div>
+      <div class="faint" style="font-size:12px;margin-top:6px">${esc(OLTM_LATER)}</div></div>
+    ${oltmTrCard(o)}
+    <div class="card"><h3>Signal history <span class="sub">ONU receive level, last 2 days</span></h3>${o.rx_history.length ? '<div id="omRx" style="height:200px"></div>' : '<div class="muted">Points are kept every 15 minutes from now on; the graph fills in as they come.</div>'}</div></div></div>`;
+  if (o.rx_history.length) chart($('#omRx'), { min: -32, max: -10, fmt: v => v.toFixed(1) + ' dBm', span: 2 * 86400 }).set([{ name: 'Rx', color: '--s1', values: o.rx_history }]);
+}
+
+/* TR-069 (customer router / ONT) card on an ONU's page */
+function oltmTrCard(o) {
+  const d = o.tr069, later = 'Changing Wi-Fi, PPPoE, reboot and the like come in the next step, with a check before anything is sent.';
+  if (!d) return `<div class="card"><h3>TR-069</h3><div class="muted" style="font-size:12.5px">${o.acs_on ? 'This ONU is not on the TR-069 server (no device with its serial). It may not be set to report to it yet.' : 'No TR-069 server set up yet. An admin can add the GenieACS address under OLTs › Settings.'}</div></div>`;
+  const kv = rows => `<div class="okv">${rows.filter(([, v]) => v !== '' && v != null).map(([k, v]) => `<div>${esc(k)}</div><div>${v}</div>`).join('')}</div>`;
+  const btn = t => `<button class="btn sm" disabled title="${esc(later)}">${t}</button>`;
+  return `<div class="card"><h3>TR-069 <span class="sub">${d.recent ? '<span class="ok">reporting</span>' : '<span class="warnc">not reporting lately</span>'}</span></h3>${kv([
+    ['Device', esc([d.maker, d.model].filter(Boolean).join(' '))], ['Serial', `<span class="mono">${esc(d.serial)}</span>`], ['Firmware', esc(d.firmware)], ['Hardware', esc(d.hardware)],
+    ['Last report', d.last_inform ? `${esc(ago(d.last_inform))}` : ''], ['Uptime', d.uptime_s != null ? esc(oltmDur(d.uptime_s)) : ''],
+    ['WAN', [d.wan_status, d.wan_ip].filter(Boolean).map(esc).join(' · ')], ['PPPoE user', esc(d.pppoe_user)],
+    ['Wi-Fi', [d.ssid, d.ssid_5g && d.ssid_5g !== d.ssid ? d.ssid_5g + ' (5 GHz)' : ''].filter(Boolean).map(esc).join(' · ')], ['Wi-Fi clients', d.wifi_clients], ['LAN hosts', d.lan_hosts]])}
+    <div class="actions" style="margin-top:12px;display:flex;gap:6px;flex-wrap:wrap">${btn('Change Wi-Fi')}${btn('Set PPPoE')}${btn('Reboot router')}${btn('Ping from router')}</div>
+    <div class="faint" style="font-size:12px;margin-top:6px">${esc(later)}</div></div>`;
+}
+const oltmDur = s => { const d = Math.floor(s / 86400), h = Math.floor(s % 86400 / 3600), m = Math.floor(s % 3600 / 60); return d ? `${d} d ${h} h` : h ? `${h} h ${m} min` : `${m} min`; };
+
+async function oltmTr069(box) {
+  const r = await api('/api/oltm/tr069');
+  if (!r.on && !r.devices.length) {
+    box.innerHTML = `<div class="card"><h3>TR-069</h3><p class="muted">Shows the customer routers / ONTs managed over TR-069: model, firmware, last report, uptime, WAN IP and PPPoE user, Wi-Fi name and clients, matched to their ONU by serial number. ${ME && ME.role === 'admin' ? 'Add your GenieACS address under <a href="#oltm/settings">Settings</a>.' : 'An admin can add the GenieACS address under Settings.'}</p></div>`;
+    return;
+  }
+  box.innerHTML = `<div class="card"><h3>TR-069 devices <span class="sub">${r.total} on the server · ${r.devices.filter(d => d.recent).length} reported in the last 3 hours · read ${ago(r.time)}</span></h3><div id="omT"></div></div>`;
+  table($('#omT'), [{ t: 'State', k: 'recent', f: d => d.recent ? '<span class="ost online">Reporting</span>' : '<span class="ost offline">Quiet</span>' },
+    { t: 'ONU', k: 'onu_name', cls: 'wrap', f: d => d.onu_key ? `<a href="#oltm/onu=${encodeURIComponent(d.onu_key)}"><b>${esc(d.onu_name || d.serial)}</b></a><br><span class="faint">${esc(d.onu_olt)}</span>` : '<span class="faint">no ONU matched</span>' },
+    { t: 'Serial', k: 'serial', cls: 'mono' }, { t: 'Device', k: 'model', f: d => esc([d.maker, d.model].filter(Boolean).join(' ')) }, { t: 'Firmware', k: 'firmware' },
+    { t: 'Last report', k: 'last_inform', num: true, f: d => esc(ago(d.last_inform)) }, { t: 'WAN IP', k: 'wan_ip', cls: 'mono' }, { t: 'PPPoE user', k: 'pppoe_user' },
+    { t: 'Wi-Fi', k: 'ssid' }, { t: 'Clients', k: 'wifi_clients', num: true }], r.devices, { empty: 'No TR-069 devices yet', sort: 'recent', dir: -1 });
+}
+
+/* Map: every ONU with a location on a street map (OpenStreetMap tiles, loaded by the browser), coloured by state or signal */
+const OM_COL = { online: '#1a9f55', 'power fail': '#e08a00', los: '#d62a2a', offline: '#6b7785', disabled: '#a8b0b8', 'n/a': '#6b7785', good: '#1a9f55', warning: '#e08a00', critical: '#d62a2a', none: '#8a96a3' };
+let OLTM_MAPF = { olt: '', status: '', signal: '', q: '', by: 'status' };
+async function oltmMap(box) {
+  const r = await api('/api/oltm/map'), F = r.fields, P = r.points.map(a => Object.fromEntries(F.map((k, i) => [k, a[i]])));
+  const f = OLTM_MAPF;
+  const opt = (k, list, all) => `<select data-k="${k}">${all ? `<option value="">${all}</option>` : ''}${list.map(([v, t]) => `<option value="${esc(v)}" ${f[k] === v ? 'selected' : ''}>${esc(t)}</option>`).join('')}</select>`;
+  box.innerHTML = `<div class="card"><div class="oltm-filters"><input type="search" data-k="q" placeholder="Search name" value="${esc(f.q)}">
+      ${opt('olt', r.olts.map(o => [o.id, o.name]), 'Any OLT')}${opt('status', [['online', 'Online'], ['power fail', 'Power fail'], ['los', 'LOS'], ['offline', 'Offline'], ['disabled', 'Disabled']], 'Any status')}
+      ${opt('signal', [['good', 'Good signal'], ['warning', 'Warning'], ['critical', 'Critical'], ['none', 'No signal']], 'Any signal')}${opt('by', [['status', 'Colour by state'], ['signal', 'Colour by signal']])}</div>
+    <div class="omap" id="omMap"><div class="omap-tiles"></div><canvas></canvas><div class="omap-pop hidden"></div>
+      <div class="omap-zoom"><button class="btn sm" data-z="1">+</button><button class="btn sm" data-z="-1">−</button><button class="btn sm" data-z="0" title="show all">⤢</button></div>
+      <div class="omap-legend"></div><div class="omap-attr">© <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors</div></div>
+    <div class="faint" id="omMapNote" style="font-size:12px;margin-top:6px"></div></div>`;
+  const shown = () => { const q = f.q.trim().toLowerCase(); return P.filter(p => (!f.olt || p.olt_id === f.olt) && (!f.status || p.status === f.status || (f.status === 'offline' && p.status === 'n/a')) && (!f.signal || p.signal === f.signal) && (!q || String(p.name).toLowerCase().includes(q))); };
+  const m = oltmSlippy($('#omMap'), p => OM_COL[p[f.by]] || '#6b7785', p => `<b>${esc(p.name || 'ONU')}</b><br>${onuState(p.status)}<br><span class="faint">${esc((r.olts.find(o => o.id === p.olt_id) || {}).name || '')} · board ${esc(p.board)} port ${esc(p.port)}</span><br><a class="btn sm" style="margin-top:6px" href="#oltm/onu=${encodeURIComponent(p.key)}">View</a>`);
+  const legend = list => { const keys = f.by === 'signal' ? ['good', 'warning', 'critical', 'none'] : ['online', 'power fail', 'los', 'offline', 'disabled'];
+    const n = k => list.filter(p => p[f.by] === k || (k === 'offline' && f.by === 'status' && p.status === 'n/a')).length;
+    $('#omMap .omap-legend').innerHTML = keys.map(k => `<span><i style="background:${OM_COL[k]}"></i>${esc(k === 'los' ? 'LOS' : k === 'none' ? 'No signal' : k.charAt(0).toUpperCase() + k.slice(1))} <b>${n(k)}</b></span>`).join(''); };
+  const draw = fit => { const list = shown(); m.set(list, fit); legend(list);
+    $('#omMapNote').textContent = r.total ? `${P.length} of ${r.total} ONUs have a location (set in SmartOLT); ${list.length} shown.${P.length < r.total ? ' ONUs without a location are not on the map.' : ''}` : 'No ONUs read yet.'; };
+  draw(true);
+  let t = null;
+  box.querySelector('.oltm-filters').oninput = e => { const k = e.target.dataset.k; if (!k) return; f[k] = e.target.value; clearTimeout(t); t = setTimeout(() => draw(k === 'olt'), k === 'q' ? 250 : 0); };
+}
+
+function oltmSlippy(host, colour, popup) {
+  const T = 256, tiles = host.querySelector('.omap-tiles'), cv = host.querySelector('canvas'), pop = host.querySelector('.omap-pop'), cache = new Map();
+  const st = { z: 6, x: 0, y: 0, pts: [] };      // x, y: world pixels of the centre at zoom z
+  const wx = (lon, z) => (lon + 180) / 360 * T * 2 ** z;
+  const wy = (lat, z) => { const s = Math.sin(lat * Math.PI / 180); return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * T * 2 ** z; };
+  let tileErr = false;
+  const render = () => {
+    const w = host.clientWidth, h = host.clientHeight, x0 = st.x - w / 2, y0 = st.y - h / 2, n = 2 ** st.z, want = new Set();
+    for (let tx = Math.floor(x0 / T); tx <= Math.floor((x0 + w) / T); tx++) for (let ty = Math.floor(y0 / T); ty <= Math.floor((y0 + h) / T); ty++) {
+      if (ty < 0 || ty >= n) continue;
+      const k = `${st.z}/${((tx % n) + n) % n}/${ty}`, id = `${k}@${tx}`; want.add(id);
+      let im = cache.get(id);
+      if (!im) { im = new Image(); im.referrerPolicy = 'strict-origin'; im.alt = ''; im.draggable = false; im.onerror = () => { if (!tileErr) { tileErr = true; const nt = document.getElementById('omMapNote'); if (nt) nt.textContent = 'The map background could not load (this browser cannot reach openstreetmap.org); the ONUs still show. ' + nt.textContent; } };
+        im.src = `https://tile.openstreetmap.org/${k}.png`; cache.set(id, im); tiles.appendChild(im); }
+      im.style.transform = `translate(${tx * T - x0}px,${ty * T - y0}px)`;
+    }
+    for (const [id, im] of cache) if (!want.has(id)) { im.remove(); cache.delete(id); }
+    const dpr = window.devicePixelRatio || 1; cv.width = w * dpr; cv.height = h * dpr; cv.style.width = w + 'px'; cv.style.height = h + 'px';
+    const g = cv.getContext('2d'); g.scale(dpr, dpr); const r = st.z >= 15 ? 6 : st.z >= 12 ? 5 : 4;
+    for (const p of st.pts) { const px = wx(p.lon, st.z) - x0, py = wy(p.lat, st.z) - y0; if (px < -10 || py < -10 || px > w + 10 || py > h + 10) continue;
+      g.beginPath(); g.arc(px, py, r, 0, 7); g.fillStyle = colour(p); g.fill(); g.lineWidth = 1.2; g.strokeStyle = '#fff'; g.stroke(); }
+  };
+  const fit = () => {
+    const w = host.clientWidth || 800, h = host.clientHeight || 500;
+    if (!st.pts.length) { st.z = 6; st.x = wx(37.9, 6); st.y = wy(0.2, 6); return; }   // Kenya
+    const la = st.pts.map(p => p.lat), lo = st.pts.map(p => p.lon);
+    const [a, b, c, d] = [Math.min(...la), Math.max(...la), Math.min(...lo), Math.max(...lo)];
+    let z = 17; while (z > 3 && (wx(d, z) - wx(c, z) > w - 60 || wy(a, z) - wy(b, z) > h - 60)) z--;
+    st.z = z; st.x = (wx(c, z) + wx(d, z)) / 2; st.y = (wy(a, z) + wy(b, z)) / 2;
+  };
+  const zoom = (dz, cx, cy) => { const nz = Math.max(3, Math.min(19, st.z + dz)); if (nz === st.z) return; const w = host.clientWidth, h = host.clientHeight;
+    cx = cx ?? w / 2; cy = cy ?? h / 2; const k = 2 ** (nz - st.z), ax = st.x - w / 2 + cx, ay = st.y - h / 2 + cy;
+    st.x = ax * k - cx + w / 2; st.y = ay * k - cy + h / 2; st.z = nz; pop.classList.add('hidden'); render(); };
+  host.querySelector('.omap-zoom').onclick = e => { const b = e.target.closest('[data-z]'); if (!b) return; if (+b.dataset.z) zoom(+b.dataset.z); else { fit(); render(); } };
+  host.addEventListener('wheel', e => { e.preventDefault(); const r = host.getBoundingClientRect(); zoom(e.deltaY < 0 ? 1 : -1, e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  let drag = null;
+  cv.addEventListener('pointerdown', e => { drag = { x: e.clientX, y: e.clientY, sx: st.x, sy: st.y, moved: false }; cv.setPointerCapture(e.pointerId); });
+  cv.addEventListener('pointermove', e => { if (!drag) return; const dx = e.clientX - drag.x, dy = e.clientY - drag.y; if (Math.abs(dx) + Math.abs(dy) > 3) drag.moved = true;
+    if (drag.moved) { st.x = drag.sx - dx; st.y = drag.sy - dy; pop.classList.add('hidden'); render(); } });
+  cv.addEventListener('pointerup', e => { const d = drag; drag = null; if (!d || d.moved) return;
+    const r = host.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top, x0 = st.x - host.clientWidth / 2, y0 = st.y - host.clientHeight / 2;
+    let best = null, bd = 100; for (const p of st.pts) { const dd = (wx(p.lon, st.z) - x0 - mx) ** 2 + (wy(p.lat, st.z) - y0 - my) ** 2; if (dd < bd) { bd = dd; best = p; } }
+    if (!best) { pop.classList.add('hidden'); return; }
+    pop.innerHTML = popup(best); pop.classList.remove('hidden'); pop.style.left = Math.min(mx + 10, host.clientWidth - 230) + 'px'; pop.style.top = Math.max(8, my - 20) + 'px'; });
+  host.addEventListener('dblclick', e => { const r = host.getBoundingClientRect(); zoom(1, e.clientX - r.left, e.clientY - r.top); });
+  const ro = new ResizeObserver(() => render()); ro.observe(host); charts.push({ destroy: () => ro.disconnect() });
+  return { set(pts, refit) { st.pts = pts; if (refit) fit(); render(); } };
+}
+
+async function oltmSettings(box) {
+  const s = await api('/api/oltm/settings'), so = s.smartolt;
+  box.innerHTML = `<div class="card"><h3>SmartOLT</h3><p class="muted" style="font-size:12.5px">The app reads all your SmartOLT OLTs and ONUs through the SmartOLT API, read-only. In SmartOLT go to <b>Settings › API KEY</b>, create a key, and paste it here (not in chat). The key stays on this server and is never shown again.</p>
+    <div class="form"><label>SmartOLT address</label><input id="soSub" value="${esc(so.subdomain)}" placeholder="yourcompany (from yourcompany.smartolt.com)" autocomplete="off">
+    <label>API key</label><input id="soKey" type="password" autocomplete="new-password" placeholder="${so.key_set ? 'saved · leave empty to keep it' : 'paste the API key'}">
+    <label>Read SmartOLT</label><input id="soOn" type="checkbox" style="width:auto" ${so.enabled || !so.key_set ? 'checked' : ''}>
+    <label>Read every (minutes)</label><input id="soEv" type="number" min="2" max="60" value="${Math.round(s.every / 60)}"></div>
+    <div class="err" id="soErr"></div><div class="actions" style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="soTest">Test</button><button class="btn primary" id="soSave">Save</button></div><div id="soRes" class="muted" style="margin-top:8px;font-size:12.5px"></div></div>
+    <div class="card"><h3>TR-069 server (GenieACS)</h3><p class="muted" style="font-size:12.5px">The customer routers / ONTs that report to a GenieACS server are shown under the TR-069 tab and on each ONU's page, matched by serial number. Read-only: the app only lists what GenieACS already knows. Use the north-bound API address, usually port 7557.</p>
+    <div class="form"><label>GenieACS address</label><input id="acUrl" value="${esc(s.acs.url)}" placeholder="http://10.0.0.5:7557" autocomplete="off">
+    <label>Username (if the API asks for one)</label><input id="acUser" value="${esc(s.acs.user)}" autocomplete="off">
+    <label>Password</label><input id="acPass" type="password" autocomplete="new-password" placeholder="${s.acs.password_set ? 'saved · leave empty to keep it' : 'only if the API asks for one'}">
+    <label>Read TR-069</label><input id="acOn" type="checkbox" style="width:auto" ${s.acs.enabled || !s.acs.url ? 'checked' : ''}></div>
+    <div class="err" id="acErr"></div><div class="actions" style="display:flex;gap:8px;margin-top:10px"><button class="btn" id="acTest">Test</button><button class="btn primary" id="acSave">Save</button></div><div id="acRes" class="muted" style="margin-top:8px;font-size:12.5px"></div></div>
+    <div class="card"><h3>OLTs read directly</h3><p class="muted" style="font-size:12.5px">OLTs saved under <a href="#routers">Manager › Routers</a> with the type <b>OLT</b> and an SNMP login are read too (Huawei and ZTE today), with no SmartOLT needed. The server must be able to reach the OLT's management address.</p></div>`;
+  const acBody = () => ({ acs: { url: $('#acUrl').value.trim(), user: $('#acUser').value.trim(), password: $('#acPass').value, enabled: $('#acOn').checked } });
+  $('#acTest').onclick = async () => { $('#acErr').textContent = ''; $('#acRes').textContent = 'Testing…';
+    try { const x = await post('/api/oltm/test', acBody()); $('#acRes').innerHTML = `✓ GenieACS answered: ${x.devices} device${x.devices === 1 ? '' : 's'}, ${x.recent} reported in the last 3 hours${x.models.length ? ' (' + x.models.map(esc).join(', ') + ')' : ''}.`; }
+    catch (e) { $('#acRes').textContent = ''; $('#acErr').textContent = e.message; } };
+  $('#acSave').onclick = async () => { $('#acErr').textContent = '';
+    try { await post('/api/oltm/settings', acBody()); toast('Saved. TR-069 devices show within a minute or two.'); location.hash = 'oltm/tr069'; }
+    catch (e) { $('#acErr').textContent = e.message; } };
+  const body = () => ({ smartolt: { subdomain: $('#soSub').value.trim(), key: $('#soKey').value.trim(), enabled: $('#soOn').checked }, every: Math.round(+$('#soEv').value * 60) });
+  $('#soTest').onclick = async () => { $('#soErr').textContent = ''; $('#soRes').textContent = 'Testing…';
+    try { const x = await post('/api/oltm/test', body()); $('#soRes').innerHTML = `✓ SmartOLT answered: ${x.olts} OLT${x.olts === 1 ? '' : 's'}${x.names.length ? ' (' + x.names.map(esc).join(', ') + ')' : ''}.`; }
+    catch (e) { $('#soRes').textContent = ''; $('#soErr').textContent = e.message; } };
+  $('#soSave').onclick = async () => { $('#soErr').textContent = '';
+    try { const b = body(); if (b.smartolt.subdomain && !b.smartolt.key && !so.key_set) throw new Error('Paste the API key too.');
+      await post('/api/oltm/settings', b); toast('Saved. Reading the OLTs now: the dashboard fills in within a minute or two.'); location.hash = 'oltm/dashboard'; }
+    catch (e) { $('#soErr').textContent = e.message; } };
+}
 
 PAGES.vpn = async c => {
   const r = await api('/api/view/vpn_instances');
@@ -2271,9 +2533,10 @@ async function start() {
   const s = await api('/api/status');
   document.querySelectorAll('.adminOnly').forEach(e => e.style.display = ME.role === 'admin' ? '' : 'none');
   const want = location.hash.slice(1);
-  if (!s.connected && !['account', 'routers', 'adopt', 'appusers', 'audit'].includes(want)) {
+  const NOROUTER = ['account', 'routers', 'adopt', 'appusers', 'audit', 'oltm'];   // pages that need no connected router
+  if (!s.connected && !NOROUTER.includes(want.split('/')[0])) {
     $('#login').classList.remove('hidden'); $('#shell').classList.add('hidden'); (ROUTER_LIST.length || $('#host').value ? $('#username') : $('#host')).focus();
-    window.onhashchange = () => { if (['account', 'routers', 'adopt', 'appusers', 'audit'].includes(location.hash.slice(1))) location.reload(); };
+    window.onhashchange = () => { if (NOROUTER.includes(location.hash.slice(1).split('/')[0])) location.reload(); };
     return;
   }
   if (!s.connected) { $('#login').classList.add('hidden'); $('#shell').classList.remove('hidden'); $('#tHost').textContent = 'not connected'; $('#logoutBtn').textContent = 'Connect router'; $('#saveBtn').style.display = 'none';
