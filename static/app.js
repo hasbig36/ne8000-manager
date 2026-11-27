@@ -1026,16 +1026,16 @@ PAGES.queues = async c => {
   window._qIfs = ifl; window._qProfiles = q.profiles || []; window._qRules = q.rules;
   window._qBound = {}; q.rules.filter(r => r.kind === 'profile').forEach(r => { (window._qBound[r.interface] = window._qBound[r.interface] || {})[r.direction] = r.profile; });
   q.rules.forEach(r => { r.description = (ifCache.find(x => x.name === r.interface) || {}).description || ''; });    // which customer each rule is for
-  table($('#qRules'), [{ t: 'Interface', k: 'interface', f: r => `<b>${esc(r.interface)}</b>` }, { t: 'Description', k: 'description', f: r => descCell(r.interface, r.description) }, { t: 'Type', k: 'kind', f: r => ({ 'rate-limit': 'Rate limit (CAR)', shaping: 'Port shaping', policy: 'Traffic policy ' + esc(r.policy), profile: 'QoS profile <b>' + esc(r.profile) + '</b>' }[r.kind]) },
+  table($('#qRules'), [{ t: 'Interface', k: 'interface', f: r => `<b>${esc(r.interface)}</b>` }, { t: 'Description', k: 'description', f: r => `<div class="dcw">${descCell(r.interface, r.description)}</div>` }, { t: 'Type', k: 'kind', f: r => `<div class="dcw" style="min-width:0;max-width:120px">${{ 'rate-limit': 'Rate limit (CAR)', shaping: 'Port shaping', policy: 'Traffic policy ' + esc(r.policy), profile: 'QoS profile <b>' + esc(r.profile) + '</b>' }[r.kind]}</div>` },
     { t: 'Direction', k: 'direction' }, { t: 'Rate (CIR)', k: 'cir_kbps', num: true, f: r => r.cir_kbps ? Fmt.bps(r.cir_kbps * 1000) : '-' }, { t: 'Peak (PIR)', k: 'pir_kbps', num: true, f: r => r.pir_kbps ? Fmt.bps(r.pir_kbps * 1000) : '-' },
     { t: 'Current', sort: false, f: r => { const i = ifCache.find(x => x.name === r.interface); return i ? ubar(r.direction === 'inbound' ? i.in_util : i.out_util) : ''; } },
-    { t: 'Command', k: 'line', cls: 'mono faint' },
+    { t: 'Command', k: 'line', cls: 'mono faint', f: r => cmdCell(r.line, 150) },
     { t: '', sort: false, cls: 'acts', f: r => (r.kind === 'profile' ? `<button class="btn sm" onclick='profileForm(${attr(r.interface)})'>Change</button>` : r.kind === 'rate-limit' ? `<button class="btn sm" onclick='carChange(${attr(r.interface)})'>Change</button>` : '') + `<button class="btn sm danger" onclick='change(${attr(r.kind === 'profile' ? { title: 'Remove QoS profile ' + r.profile + ' (' + r.direction + ') from ' + r.interface, action: 'qos.profile_remove', params: { interface: r.interface, profile: r.profile, direction: r.direction } } : r.kind === 'shaping' ? { title: 'Remove shaping on ' + r.interface, action: 'qos.shaping_remove', params: { interface: r.interface } } : r.kind === 'policy' ? { title: 'Unbind policy from ' + r.interface, action: 'qos.policy_unbind', params: { interface: r.interface, direction: r.direction } } : { title: 'Remove rate limit on ' + r.interface, action: 'qos.car_remove', params: { interface: r.interface, direction: r.direction } })})'>Remove</button>` }],
     q.rules, { toolbar: `<button class="btn" onclick="profileForm()">+ Apply QoS profile</button><button class="btn" onclick="carForm()">+ Rate limit</button><button class="btn" onclick="shapeForm()">+ Port shaping</button>`, empty: 'No rate limits configured' });
   table($('#qProf'), [{ t: 'Profile', k: 'name', f: x => `<b>${esc(x.name)}</b>` }, { t: 'CIR (guaranteed)', k: 'cir_kbps', num: true, f: x => x.cir_kbps ? Fmt.bps(x.cir_kbps * 1000) : '-' },
     { t: 'PIR (max)', k: 'pir_kbps', num: true, f: x => x.pir_kbps ? Fmt.bps(x.pir_kbps * 1000) : '-' },
     { t: 'Used by', k: 'interfaces', cls: 'wrap', f: x => x.interfaces.length ? x.interfaces.map(esc).join(', ') : '<span class="faint">not used</span>' },
-    { t: 'Command', k: 'lines', cls: 'mono faint wrap', f: x => esc(x.lines.join(' / ')) },
+    { t: 'Command', k: 'lines', cls: 'mono faint', f: x => cmdCell(x.lines.join(' / ')) },
     { t: '', sort: false, cls: 'acts', f: x => `<button class="btn sm" onclick='profileForm(null, ${attr(x.name)})'>Apply to interface</button>` }],
     q.profiles || [], { toolbar: `<button class="btn" onclick="profileCreateForm()">+ QoS profile</button>`, empty: 'No QoS profiles defined' });
   table($('#qQ'), [{ t: 'Interface', k: 'interface' }, { t: 'Setting', k: 'line', cls: 'mono' }], q.queues, { toolbar: `<button class="btn" onclick="queueForm()">+ Queue scheduling</button>`, empty: 'Default scheduling on all ports' });
@@ -1054,6 +1054,8 @@ async function queueStats(name) {
   };
   await draw(); const t = setInterval(() => { if (!document.hidden) draw().catch(() => {}); }, 5000); timers.push(t); timers._q = t;
 }
+// a router command on one line, cut with … when long (the full text on hover); the same look in every QoS table
+const cmdCell = (t, w) => `<span class="cmdcell${w ? ' cmdwrap' : ''}" title="${esc(t)}"${w ? ` style="max-width:${w}px"` : ''}>${esc(t)}</span>`;
 const busy = n => { const i = ifCache.find(x => x.name === n); return i ? i.in_util + i.out_util : 0; };
 const ifOpts = () => (window._qIfs || ifCache.map(i => i.name));
 /* change an existing rate limit (an upgrade or downgrade): same interface, new rate; the old limit is replaced in the same commit */
