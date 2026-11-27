@@ -149,6 +149,8 @@ def interface_ip_add(p):
     ip, plen = ip_iface(p)
     line = f"ip address {ip} {plen}" + (" sub" if p.get("secondary") in (True, "true", "1") else "")
     lines = [f"interface {name}"]
+    if s(p, "description"):           # optional: name the interface after what the address is for
+        lines.append(f"description {text_line(p, 'description')}")
     vpn = word(p, "vpn", "VPN instance", required=False)
     if vpn:
         lines.append(f"ip binding vpn-instance {vpn}")

@@ -128,10 +128,12 @@ async function ipmAllocate() {
       <div class="faint" style="font-size:11.5px">Both open the usual form: you review the commands before anything is sent to the router.</div></div>`;
     const addr = `${h[0]}/${l}`;
     $('#ipSub').onclick = () => subifForm(undefined, { address: addr, description: a.name });
-    $('#ipAdd').onclick = async () => { await ensureIfs(); addrForm({ address: addr }); };
+    $('#ipAdd').onclick = async () => { await ensureIfs(); addrForm({ address: addr, descHint: a.name }); };
     // configure it now: the usual change form, filled in; Review shows the commands, Apply & commit puts them on the router
     if (how === 'sub') subifForm(port, { address: addr, description: a.name, vlan, vpn });
-    else if (how === 'if') { await ensureIfs(); addrForm({ address: addr, interface: itf, secondary: !!(ifCache.find(i => i.name === itf) || {}).ip }); }
+    else if (how === 'if') { await ensureIfs(); const cur = ifCache.find(i => i.name === itf) || {};
+      // the "For" name becomes the description when the interface has none; an existing description is kept unless you type one
+      addrForm({ address: addr, interface: itf, secondary: !!cur.ip, description: cur.description ? '' : a.name, descHint: a.name }); }
   } catch (e) { err.textContent = e.message; }
 }
 function ipmBlock() {

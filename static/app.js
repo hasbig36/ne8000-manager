@@ -1083,7 +1083,8 @@ PAGES.addresses = async c => {
       ...(r.ipv6 || []).map(ip => ({ ...r, ip, v6: true, description: (r.description ? r.description + ' · ' : '') + 'IPv6' }))])
       .map(r => { const n = r.v6 ? [] : ipNeighbours(r.ip, r.name); return { ...r, _nb: n, nb: nbSearch(n) }; }), { toolbar: `<button class="btn" onclick="addrForm()">+ Address</button>` });
 };
-function addrForm(pre = {}) { change({ title: 'Add IP address', action: 'interface.ip_add', fields: [{ k: 'interface', label: 'Interface', type: 'select', options: ifCache.filter(i => i.type !== 'null' && !i.l2).map(i => i.name), value: pre.interface }, { k: 'address', label: 'Address/prefix', ph: '10.0.0.1/30', value: pre.address }, { k: 'secondary', label: 'Secondary (sub)', type: 'check', value: pre.secondary ?? true, help: 'Untick only on an interface with no address yet. The manager refuses to replace an existing primary from here.' }] }); }
+function addrForm(pre = {}) { change({ title: 'Add IP address', action: 'interface.ip_add', fields: [{ k: 'interface', label: 'Interface', type: 'select', options: ifCache.filter(i => i.type !== 'null' && !i.l2).map(i => i.name), value: pre.interface }, { k: 'address', label: 'Address/prefix', ph: '10.0.0.1/30', value: pre.address }, { k: 'secondary', label: 'Secondary (sub)', type: 'check', value: pre.secondary ?? true, help: 'Untick only on an interface with no address yet. The manager refuses to replace an existing primary from here.' },
+  { k: 'description', label: 'Description', value: pre.description || '', ph: pre.descHint || 'optional', help: 'Sets the interface description, replacing the one it has. Leave empty to keep it as it is.' }] }); }
 
 PAGES.routes = async c => {
   const vpns = (await api('/api/view/vpn_instances')).instances.map(v => v.name);
