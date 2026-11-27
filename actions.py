@@ -314,12 +314,15 @@ def vlan_port(p):
 def qos_car(p):
     name = iface(p)
     direction = s(p, "direction") or "inbound"
-    if direction not in ("inbound", "outbound"):
-        raise ActionError("Direction must be inbound or outbound.")
+    if direction not in ("inbound", "outbound", "both"):
+        raise ActionError("Direction must be inbound, outbound or both.")
     cir = integer(p, "cir", 8, 400_000_000, "CIR (kbit/s)")
     pir = integer(p, "pir", cir, 400_000_000, "PIR (kbit/s)", required=False)
-    line = f"qos car cir {cir}" + (f" pir {pir}" if pir else "") + " green pass yellow pass red discard " + direction
-    return [f"interface {name}", line]
+    # Without a burst (PIR) the router keeps no yellow bucket (PBS 0) and refuses a "yellow" action, so the
+    # line names only green and red (checked on the NE8000); with a PIR yellow is spelled out too.
+    dirs = ("inbound", "outbound") if direction == "both" else (direction,)
+    return [f"interface {name}"] + [f"qos car cir {cir} pir {pir} green pass yellow pass red discard {d}" if pir
+                                    else f"qos car cir {cir} green pass red discard {d}" for d in dirs]
 
 
 @action("qos.car_remove")
