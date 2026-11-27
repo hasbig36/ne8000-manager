@@ -1023,14 +1023,14 @@ PAGES.queues = async c => {
     <div class="grid g2"><div class="card"><h3>Port-queue scheduling</h3><div id="qQ"></div></div>
     <div class="card"><h3>Queue statistics <span class="sp"></span><select id="qIf">${ifl.filter(n => !n.includes('.')).sort((a, b) => busy(b) - busy(a)).map(n => `<option>${esc(n)}</option>`).join('')}</select></h3><div id="qStats" class="muted">Pick an interface.</div></div></div>
     <div class="card"><h3>Traffic policies <span class="sp"></span><button class="btn sm" onclick="simpleQueueForm()">+ Simple queue (policy)</button><button class="btn sm" onclick="bindForm()">Bind policy to interface</button></h3><pre>${esc(q.policies || '(none)')}</pre></div>`;
-  window._qIfs = ifl; window._qProfiles = q.profiles || [];
+  window._qIfs = ifl; window._qProfiles = q.profiles || []; window._qRules = q.rules;
   window._qBound = {}; q.rules.filter(r => r.kind === 'profile').forEach(r => { (window._qBound[r.interface] = window._qBound[r.interface] || {})[r.direction] = r.profile; });
   q.rules.forEach(r => { r.description = (ifCache.find(x => x.name === r.interface) || {}).description || ''; });    // which customer each rule is for
   table($('#qRules'), [{ t: 'Interface', k: 'interface', f: r => `<b>${esc(r.interface)}</b>` }, { t: 'Description', k: 'description', f: r => descCell(r.interface, r.description) }, { t: 'Type', k: 'kind', f: r => ({ 'rate-limit': 'Rate limit (CAR)', shaping: 'Port shaping', policy: 'Traffic policy ' + esc(r.policy), profile: 'QoS profile <b>' + esc(r.profile) + '</b>' }[r.kind]) },
     { t: 'Direction', k: 'direction' }, { t: 'Rate (CIR)', k: 'cir_kbps', num: true, f: r => r.cir_kbps ? Fmt.bps(r.cir_kbps * 1000) : '-' }, { t: 'Peak (PIR)', k: 'pir_kbps', num: true, f: r => r.pir_kbps ? Fmt.bps(r.pir_kbps * 1000) : '-' },
     { t: 'Current', sort: false, f: r => { const i = ifCache.find(x => x.name === r.interface); return i ? ubar(r.direction === 'inbound' ? i.in_util : i.out_util) : ''; } },
     { t: 'Command', k: 'line', cls: 'mono faint' },
-    { t: '', sort: false, cls: 'acts', f: r => (r.kind === 'profile' ? `<button class="btn sm" onclick='profileForm(${attr(r.interface)})'>Change</button>` : '') + `<button class="btn sm danger" onclick='change(${attr(r.kind === 'profile' ? { title: 'Remove QoS profile ' + r.profile + ' (' + r.direction + ') from ' + r.interface, action: 'qos.profile_remove', params: { interface: r.interface, profile: r.profile, direction: r.direction } } : r.kind === 'shaping' ? { title: 'Remove shaping on ' + r.interface, action: 'qos.shaping_remove', params: { interface: r.interface } } : r.kind === 'policy' ? { title: 'Unbind policy from ' + r.interface, action: 'qos.policy_unbind', params: { interface: r.interface, direction: r.direction } } : { title: 'Remove rate limit on ' + r.interface, action: 'qos.car_remove', params: { interface: r.interface, direction: r.direction } })})'>Remove</button>` }],
+    { t: '', sort: false, cls: 'acts', f: r => (r.kind === 'profile' ? `<button class="btn sm" onclick='profileForm(${attr(r.interface)})'>Change</button>` : r.kind === 'rate-limit' ? `<button class="btn sm" onclick='carChange(${attr(r.interface)})'>Change</button>` : '') + `<button class="btn sm danger" onclick='change(${attr(r.kind === 'profile' ? { title: 'Remove QoS profile ' + r.profile + ' (' + r.direction + ') from ' + r.interface, action: 'qos.profile_remove', params: { interface: r.interface, profile: r.profile, direction: r.direction } } : r.kind === 'shaping' ? { title: 'Remove shaping on ' + r.interface, action: 'qos.shaping_remove', params: { interface: r.interface } } : r.kind === 'policy' ? { title: 'Unbind policy from ' + r.interface, action: 'qos.policy_unbind', params: { interface: r.interface, direction: r.direction } } : { title: 'Remove rate limit on ' + r.interface, action: 'qos.car_remove', params: { interface: r.interface, direction: r.direction } })})'>Remove</button>` }],
     q.rules, { toolbar: `<button class="btn" onclick="profileForm()">+ Apply QoS profile</button><button class="btn" onclick="carForm()">+ Rate limit</button><button class="btn" onclick="shapeForm()">+ Port shaping</button>`, empty: 'No rate limits configured' });
   table($('#qProf'), [{ t: 'Profile', k: 'name', f: x => `<b>${esc(x.name)}</b>` }, { t: 'CIR (guaranteed)', k: 'cir_kbps', num: true, f: x => x.cir_kbps ? Fmt.bps(x.cir_kbps * 1000) : '-' },
     { t: 'PIR (max)', k: 'pir_kbps', num: true, f: x => x.pir_kbps ? Fmt.bps(x.pir_kbps * 1000) : '-' },
@@ -1056,6 +1056,17 @@ async function queueStats(name) {
 }
 const busy = n => { const i = ifCache.find(x => x.name === n); return i ? i.in_util + i.out_util : 0; };
 const ifOpts = () => (window._qIfs || ifCache.map(i => i.name));
+/* change an existing rate limit (an upgrade or downgrade): same interface, new rate; the old limit is replaced in the same commit */
+function carChange(name) {
+  const rows = (window._qRules || []).filter(r => r.kind === 'rate-limit' && r.interface === name), dirs = rows.map(r => r.direction);
+  const both = dirs.includes('inbound') && dirs.includes('outbound');
+  const opts = [...(both ? [['both', 'Both directions']] : []), ...rows.map(r => [r.direction, r.direction === 'inbound' ? 'Inbound (upload from customer)' : 'Outbound (download to customer)'])];
+  const cur = rows[0] || {};
+  change({ title: `Change rate limit on ${name}`, action: 'qos.car', params: { interface: name },
+    intro: `Now: ${rows.map(r => `${r.direction} ${Fmt.bps(r.cir_kbps * 1000)}${r.pir_kbps ? ' (peak ' + Fmt.bps(r.pir_kbps * 1000) + ')' : ''}`).join(', ')}. The new rate replaces the old one.`,
+    fields: [{ k: 'direction', label: 'Direction', type: 'select', options: opts, value: both ? 'both' : cur.direction },
+      { k: 'cir', label: 'New max rate (kbit/s)', type: 'number', value: cur.cir_kbps || '', ph: '100000 = 100 Mbit/s' }, { k: 'pir', label: 'Burst rate (kbit/s)', type: 'number', value: cur.pir_kbps || '', ph: 'optional' }] });
+}
 function carForm() { change({ title: 'Rate limit (CAR)', action: 'qos.car', intro: 'Polices traffic on an interface or sub-interface, like a MikroTik simple queue max-limit.', fields: [{ k: 'interface', label: 'Interface', type: 'select', options: ifOpts() }, { k: 'direction', label: 'Direction', type: 'select', options: [['both', 'Both directions (same limit up and down)'], ['inbound', 'Inbound (upload from customer)'], ['outbound', 'Outbound (download to customer)']] }, { k: 'cir', label: 'Max rate (kbit/s)', type: 'number', ph: '100000 = 100 Mbit/s' }, { k: 'pir', label: 'Burst rate (kbit/s)', type: 'number', ph: 'optional' }] }); }
 const profLabel = x => `${x.name} (${x.pir_kbps && x.pir_kbps !== x.cir_kbps ? 'max ' + Fmt.bps(x.pir_kbps * 1000) + ', guaranteed ' + Fmt.bps(x.cir_kbps * 1000) : Fmt.bps((x.cir_kbps || 0) * 1000)})`;
 function profileForm(ifn, prof) {

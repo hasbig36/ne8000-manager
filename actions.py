@@ -264,6 +264,8 @@ def subif_create(p):
         lines.append("arp broadcast enable")
     if s(p, "description"):
         lines.append(f"description {text_line(p, 'description')}")
+    # without it a Huawei sub-interface reports 0 traffic, so graphs, usage and health checks could not see it
+    lines.append("statistic enable")
     return lines
 
 
@@ -321,6 +323,7 @@ def qos_car(p):
     # Without a burst (PIR) the router keeps no yellow bucket (PBS 0) and refuses a "yellow" action, so the
     # line names only green and red (checked on the NE8000); with a PIR yellow is spelled out too.
     dirs = ("inbound", "outbound") if direction == "both" else (direction,)
+    # changing an existing limit (an upgrade) needs no undo: the NE8000 replaces the line for that direction
     return [f"interface {name}"] + [f"qos car cir {cir} pir {pir} green pass yellow pass red discard {d}" if pir
                                     else f"qos car cir {cir} green pass red discard {d}" for d in dirs]
 

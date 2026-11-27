@@ -480,6 +480,8 @@ class DemoRouter(Router):
             i["desc"] = line.split(" ", 1)[1]
         elif line == "undo description":
             i["desc"] = ""
+        elif line in ("statistic enable", "undo statistic enable"):
+            i["stats"] = line == "statistic enable"
         elif w[0] == "mtu":
             i["mtu"] = int(w[1])
         elif w[:2] == ["ip", "address"]:
